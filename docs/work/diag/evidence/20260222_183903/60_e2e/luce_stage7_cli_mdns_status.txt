@@ -1,0 +1,49 @@
+TS=2026-02-22T21:42:39Z
+PORT=/dev/cu.usbserial-40110
+BAUD=115200
+DURATION=20
+SENT=mdns.status\r\n2026-02-22T21:42:40Z I (69942) luce_boot: Stack watermark (stage4_main_wait): cli=3760 diag=6024 current=2028
+I (70112) luce_boot: CLI cmd='mdns.status' argc=1
+I (70112) luce_boot: CLI arg[0]='mdns.status'
+I (70112) luce_boot: Heap integrity (cli_pre_cmd): OK
+I (70112) luce_boot: Stack watermark (cli_pre_cmd): cli=3760 diag=6024 current=3760
+I (70122) luce_boot: CLI command mdns.status: state=DISABLED_BY_CONFIG enabled=0 hostname=luce services=(none)
+I (70132) luce_boot: Heap integrity (cli_post_cmd): OK
+I (70132) luce_boot: Stack watermark (cli_post_cmd): cli=3600 diag=6024 current=3600
+2026-02-22T21:42:40Z I (70522) luce_boot: LUCE S3 70 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:41Z I (70912) luce_boot: [WIFI][STATUS] state=DISABLED enabled=0 attempt=0 max=6 backoff_ms=250 next2026-02-22T21:42:41Z _ms=0 ip=0.0.0.0 gw=0.0.0.0 mask=0.0.0.0 rssi=-1000
+I (70932) luce_boot: [NTP] status state=DISABLED unsynced_reason="not-enabled"
+I (70942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:42Z I (71942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:42Z I (72522) luce_boot: LUCE S3 72 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:43Z I (72942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:44Z I (73942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:44Z I (74522) luce_boot: LUCE S3 74 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:45Z I (74942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:46Z I (75912) luce_boot: [WIFI][STATUS] state=DISABLED enabled=0 attempt=0 max=6 backoff_ms=250 next_ms=0 ip=0.0.0.0 gw=0.0.0.0 mask=0.0.0.0 rssi=-1000
+I (75942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:46Z I (76522) luce_boot: LUCE S3 76 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:47Z I (76942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:48Z I (77942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:48Z I (78522) luce_boot: LUCE S3 78 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:49Z I (78942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:50Z I (79942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:50Z I (80522) luce_boot: LUCE S3 80 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:51Z I (80912) luce_boot: [WIFI][STATUS] state=DISABLED enabled=0 attempt=0 max=6 backoff_ms=250 next_ms=0 ip=0.0.0.0 gw=0.0.0.0 mask=0.0.0.0 rssi=-1000
+I (80932) luce_boot: [NTP] status state=DISABLED unsynced_reason="not-enabled"
+I (80942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:52Z I (81942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:52Z I (82522) luce_boot: LUCE S3 82 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:53Z I (82942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:54Z I (83942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:54Z I (84522) luce_boot: LUCE S3 84 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:55Z I (84942) luce_boot: Stack watermark (stage4_main_wait): cli=3602026-02-22T21:42:55Z 0 diag=6024 current=2028
+2026-02-22T21:42:56Z I (85912) luce_boot: [WIFI][STATUS] state=DISABLED enabled=0 attempt=0 max=6 backoff_ms=250 next_ms=0 ip=0.0.0.0 gw=0.0.0.0 mask=0.0.0.0 rssi=-1000
+I (85942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:56Z I (86522) luce_boot: LUCE S3 86 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:57Z I (86942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:58Z I (87942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:42:58Z I (88522) luce_boot: LUCE S3 88 | I2C:ok MCP:no REL:0xFF BTN:0x00
+2026-02-22T21:42:59Z I (88942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+2026-02-22T21:43:00Z I (89942) luce_boot: Stack watermark (stage4_main_wait): cli=3600 diag=6024 current=2028
+RESULT=PASS

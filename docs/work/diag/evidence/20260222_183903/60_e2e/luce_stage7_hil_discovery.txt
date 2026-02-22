@@ -1,0 +1,53 @@
+# command: dns-sd -B _services._dns-sd._udp .
+Browsing for _services._dns-sd._udp
+DATE: ---Sun 22 Feb 2026---
+18:43:06.788  ...STARTING...
+Timestamp     A/R    Flags  if Domain               Service Type         Instance Name
+18:43:06.789  Add        3   6 .                    _tcp.local.          _spotify-connect
+18:43:06.789  Add        3  12 .                    _tcp.local.          _spotify-connect
+18:43:06.789  Add        3   6 .                    _tcp.local.          _companion-link
+18:43:06.789  Add        3  12 .                    _tcp.local.          _companion-link
+18:43:06.789  Add        3   6 .                    _tcp.local.          _airplay
+18:43:06.789  Add        3   6 .                    _tcp.local.          _raop
+18:43:06.789  Add        3  12 .                    _tcp.local.          _airplay
+18:43:06.789  Add        3  12 .                    _tcp.local.          _raop
+18:43:06.789  Add        3   6 .                    _tcp.local.          _ssh
+18:43:06.789  Add        3   6 .                    _tcp.local.          _sftp-ssh
+18:43:06.789  Add        3   6 .                    _tcp.local.          _rfb
+18:43:06.789  Add        3   6 .                    _tcp.local.          _smb
+18:43:06.789  Add        3  12 .                    _tcp.local.          _ssh
+18:43:06.789  Add        3  12 .                    _tcp.local.          _sftp-ssh
+18:43:06.789  Add        3  12 .                    _tcp.local.          _rfb
+18:43:06.789  Add        3  12 .                    _tcp.local.          _smb
+18:43:06.789  Add        3   6 .                    _tcp.local.          _hap
+18:43:06.789  Add        3  12 .                    _tcp.local.          _hap
+18:43:06.789  Add        3   6 .                    _udp.local.          _asquic
+18:43:06.789  Add        2  12 .                    _udp.local.          _asquic
+18:43:06.939  Add        3   1 .                    _tcp.local.          _ssh
+18:43:06.939  Add        3   1 .                    _tcp.local.          _sftp-ssh
+18:43:06.939  Add        3   1 .                    _tcp.local.          _rfb
+18:43:06.939  Add        3   1 .                    _tcp.local.          _smb
+18:43:06.939  Add        3   1 .                    _tcp.local.          _companion-link
+18:43:06.939  Add        3   1 .                    _tcp.local.          _airplay
+18:43:06.939  Add        3   1 .                    _tcp.local.          _raop
+18:43:06.939  Add        3   6 .                    _udp.local.          _sleep-proxy
+18:43:06.939  Add        3   6 .                    _tcp.local.          _acp-sync
+18:43:06.939  Add        3   6 .                    _tcp.local.          _airport
+18:43:06.939  Add        3   6 .                    _tcp.local.          _afpovertcp
+18:43:06.939  Add        3   6 .                    _tcp.local.          _adisk
+18:43:06.939  Add        3  12 .                    _udp.local.          _sleep-proxy
+18:43:06.939  Add        3  12 .                    _tcp.local.          _acp-sync
+18:43:06.939  Add        3  12 .                    _tcp.local.          _airport
+18:43:06.939  Add        3  12 .                    _tcp.local.          _afpovertcp
+18:43:06.939  Add        3  12 .                    _tcp.local.          _adisk
+18:43:06.939  Add        3   6 .                    _tcp.local.          _http
+18:43:06.939  Add        2   6 .                    _tcp.local.          _soundtouch
+18:43:07.066  Add        3   6 .                    _tcp.local.          _JBRemoteServer
+18:43:07.066  Add        3  12 .                    _tcp.local.          _http
+18:43:07.066  Add        3  12 .                    _tcp.local.          _soundtouch
+18:43:07.066  Add        2  12 .                    _tcp.local.          _JBRemoteServer
+18:43:07.271  Add        2   6 .                    _tcp.local.          _smart
+18:43:07.398  Add        2  12 .                    _tcp.local.          _smart
+
+# command: python-runner dns-sd -G v4v6 luce-esp32.local (timeout 8s)
+RESULT=TIMEOUT

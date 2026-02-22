@@ -1,0 +1,9 @@
+Checking luce_stage7 > cppcheck (platform: espressif32; board: nodemcu-32s; framework: espidf)
+--------------------------------------------------------------------------------
+No defects found
+========================== [PASSED] Took 0.56 seconds ==========================
+
+Environment    Tool      Status    Duration
+-------------  --------  --------  ------------
+luce_stage7    cppcheck  PASSED    00:00:00.561
+========================= 1 succeeded in 00:00:00.561 =========================

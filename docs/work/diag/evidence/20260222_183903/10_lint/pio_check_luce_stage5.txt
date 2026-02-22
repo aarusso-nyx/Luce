@@ -1,0 +1,15 @@
+Checking luce_stage5 > cppcheck (platform: espressif32; board: nodemcu-32s; framework: espidf)
+--------------------------------------------------------------------------------
+src/main.cpp:856: [low:style] The function 'wifi_has_ip' is never used. [unusedFunction]
+========================== [PASSED] Took 0.49 seconds ==========================
+
+Component     HIGH    MEDIUM    LOW
+-----------  ------  --------  -----
+src            0        0        1
+
+Total          0        0        1
+
+Environment    Tool      Status    Duration
+-------------  --------  --------  ------------
+luce_stage5    cppcheck  PASSED    00:00:00.487
+========================= 1 succeeded in 00:00:00.487 =========================

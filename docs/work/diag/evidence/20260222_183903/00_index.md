@@ -1,0 +1,33 @@
+# Stage7 Evidence Index
+- generated_at_utc: 2026-02-22T21:44:00Z
+- evidence_root: docs/work/diag/evidence/20260222_183903
+- git_sha: e3477281b09989308765196c9c8000522e355b30
+- stage: 7
+
+## Evidence Artifacts
+- 01_env.md
+- 02_tool_versions.md
+- 03_repo_state.md
+- 10_lint/pio_check_luce_stage0.txt
+- 10_lint/pio_check_luce_stage1.txt
+- 10_lint/pio_check_luce_stage2.txt
+- 10_lint/pio_check_luce_stage3.txt
+- 10_lint/pio_check_luce_stage4.txt
+- 10_lint/pio_check_luce_stage5.txt
+- 10_lint/pio_check_luce_stage6.txt
+- 10_lint/pio_check_luce_stage7.txt
+- 20_build/build_luce_stage0.txt
+- 20_build/build_luce_stage1.txt
+- 20_build/build_luce_stage2.txt
+- 20_build/build_luce_stage3.txt
+- 20_build/build_luce_stage4.txt
+- 20_build/build_luce_stage5.txt
+- 20_build/build_luce_stage6.txt
+- 20_build/build_luce_stage7.txt
+- 30_unit/unit_native.txt
+- 40_upload/upload_luce_stage0.txt
+- 40_upload/upload_luce_stage7.txt
+- 50_boot/luce_stage0_boot.txt
+- 50_boot/luce_stage7_boot.txt
+- 60_e2e/luce_stage7_cli_mdns_status.txt
+- 60_e2e/luce_stage7_hil_discovery.txt

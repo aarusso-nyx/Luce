@@ -1,0 +1,16 @@
+Checking luce_stage3 > cppcheck (platform: espressif32; board: nodemcu-32s; framework: espidf)
+--------------------------------------------------------------------------------
+src/main.cpp:281: [low:style] The function 'log_status_health_lines' is never used. [unusedFunction]
+src/main.cpp:2107: [low:style] The function 'write_text' is never used. [unusedFunction]
+========================== [PASSED] Took 0.10 seconds ==========================
+
+Component     HIGH    MEDIUM    LOW
+-----------  ------  --------  -----
+src            0        0        2
+
+Total          0        0        2
+
+Environment    Tool      Status    Duration
+-------------  --------  --------  ------------
+luce_stage3    cppcheck  PASSED    00:00:00.097
+========================= 1 succeeded in 00:00:00.097 =========================
