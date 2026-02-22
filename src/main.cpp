@@ -1,5 +1,6 @@
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "luce_build.h"
@@ -20,9 +21,14 @@
 #include "nvs_flash.h"
 #endif
 
+#if LUCE_HAS_I2C
+#include "driver/i2c.h"
+#endif
+
 namespace {
 
 constexpr const char* kTag = "luce_boot";
+void blink_alive();
 
 const char* reset_reason_to_string(esp_reset_reason_t reason) {
   switch (reason) {
@@ -351,6 +357,290 @@ void update_boot_state_record() {
 }
 #endif  // LUCE_HAS_NVS
 
+#if LUCE_HAS_I2C
+constexpr i2c_port_t kI2CPort = I2C_NUM_0;
+constexpr gpio_num_t kI2CSclPin = GPIO_NUM_22;
+constexpr gpio_num_t kI2CSdaPin = GPIO_NUM_23;
+constexpr gpio_num_t kMcpIntPin = GPIO_NUM_19;
+constexpr uint32_t kI2CClockHz = 100000;
+constexpr uint8_t kMcpAddress = 0x20;
+
+// MCP23017 register map for BANK=0
+constexpr uint8_t kIocon = 0x0A;
+constexpr uint8_t kIodira = 0x00;
+constexpr uint8_t kIodirb = 0x01;
+constexpr uint8_t kGppua = 0x0C;
+constexpr uint8_t kGppub = 0x0D;
+constexpr uint8_t kGpioa = 0x12;
+constexpr uint8_t kGpiob = 0x13;
+
+constexpr bool kRelayActiveHigh = false;
+constexpr uint8_t kRelayOffValue = kRelayActiveHigh ? 0x00 : 0xFF;
+constexpr uint8_t kI2CSampleAddressStart = 0x08;
+constexpr uint8_t kI2CSampleAddressEnd = 0x77;
+constexpr uint8_t kButtonDebounceThreshold = 3;
+constexpr TickType_t kRelayStepDelay = pdMS_TO_TICKS(250);
+constexpr TickType_t kButtonSamplePeriod = pdMS_TO_TICKS(40);
+constexpr TickType_t kIntSamplePeriod = pdMS_TO_TICKS(200);
+
+struct Mcp23017State {
+  bool connected = false;
+  uint8_t relay_mask = kRelayOffValue;
+};
+
+esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks = pdMS_TO_TICKS(20)) {
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  if (!cmd) {
+    return ESP_ERR_NO_MEM;
+  }
+
+  esp_err_t err = i2c_master_start(cmd);
+  if (err == ESP_OK) {
+    err = i2c_master_write_byte(cmd, static_cast<uint8_t>((address << 1) | I2C_MASTER_WRITE),
+                                true);
+  }
+  if (err == ESP_OK) {
+    err = i2c_master_stop(cmd);
+  }
+  if (err == ESP_OK) {
+    err = i2c_master_cmd_begin(kI2CPort, cmd, timeout_ticks);
+  }
+
+  i2c_cmd_link_delete(cmd);
+  return err;
+}
+
+uint8_t relay_mask_for_channel(int channel) {
+  const uint8_t bit = static_cast<uint8_t>(1u << channel);
+  return kRelayActiveHigh ? bit : static_cast<uint8_t>(kRelayOffValue & ~bit);
+}
+
+esp_err_t mcp_write_reg(uint8_t reg, uint8_t value) {
+  uint8_t payload[2] = {reg, value};
+  return i2c_master_write_to_device(kI2CPort, kMcpAddress, payload, sizeof(payload),
+                                   pdMS_TO_TICKS(100));
+}
+
+esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value) {
+  if (!value) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  return i2c_master_write_read_device(kI2CPort, kMcpAddress, &reg, sizeof(reg), value,
+                                     sizeof(*value), pdMS_TO_TICKS(100));
+}
+
+bool init_i2c() {
+  i2c_config_t config;
+  std::memset(&config, 0, sizeof(config));
+  config.mode = I2C_MODE_MASTER;
+  config.sda_io_num = kI2CSdaPin;
+  config.scl_io_num = kI2CSclPin;
+  config.sda_pullup_en = GPIO_PULLUP_ENABLE;
+  config.scl_pullup_en = GPIO_PULLUP_ENABLE;
+  config.master.clk_speed = kI2CClockHz;
+
+  esp_err_t err = i2c_param_config(kI2CPort, &config);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "I2C config failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  err = i2c_driver_install(kI2CPort, I2C_MODE_MASTER, 0, 0, 0);
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(kTag, "I2C install failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  ESP_LOGI(kTag, "I2C init: port=%d SCL=%d SDA=%d", kI2CPort, kI2CSclPin, kI2CSdaPin);
+  return true;
+}
+
+void scan_i2c_bus() {
+  bool found_expected = false;
+  int found_count = 0;
+
+  for (uint8_t addr = kI2CSampleAddressStart; addr <= kI2CSampleAddressEnd; ++addr) {
+    esp_err_t probe = i2c_probe_device(addr);
+    if (probe == ESP_OK) {
+      found_expected = found_expected || (addr == kMcpAddress);
+      ESP_LOGI(kTag, "I2C found 0x%02X", addr);
+      ++found_count;
+    }
+  }
+
+  if (found_count == 0) {
+    ESP_LOGW(kTag, "I2C scan: no devices detected on bus");
+  } else {
+    ESP_LOGI(kTag, "I2C scan summary: %d device(s) detected", found_count);
+  }
+  if (found_expected) {
+    ESP_LOGI(kTag, "I2C scan expects MCP23017 at 0x20: found");
+  } else {
+    ESP_LOGW(kTag, "I2C scan expects MCP23017 at 0x20: not found");
+  }
+}
+
+bool init_mcp23017(Mcp23017State& state) {
+  ESP_LOGI(kTag, "MCP23017 init: start");
+  state = {};
+  if (i2c_probe_device(kMcpAddress, pdMS_TO_TICKS(100)) != ESP_OK) {
+    ESP_LOGW(kTag, "MCP23017 not detected at 0x%02X", kMcpAddress);
+    return false;
+  }
+
+  constexpr uint8_t kIoconValue = 0x00;
+  const esp_err_t errors[] = {
+      mcp_write_reg(kIocon, kIoconValue),
+      mcp_write_reg(kIodira, 0x00),  // Port A outputs
+      mcp_write_reg(kIodirb, 0xFF),  // Port B inputs
+      mcp_write_reg(kGppub, 0xFF),   // Pull-ups on buttons
+      mcp_write_reg(kGpioa, kRelayOffValue),
+      mcp_write_reg(kGppua, 0x00),
+      mcp_write_reg(kGpiob, 0x00),
+  };
+
+  for (const esp_err_t err : errors) {
+    if (err != ESP_OK) {
+      ESP_LOGW(kTag, "MCP23017 init register write failed: %s", esp_err_to_name(err));
+      return false;
+    }
+  }
+
+  state.connected = true;
+  state.relay_mask = kRelayOffValue;
+  ESP_LOGI(kTag, "MCP23017 configured: relays OFF, buttons pullups enabled, IOCON=0x%02X", kIoconValue);
+  return true;
+}
+
+esp_err_t set_relay_mask(Mcp23017State& state, uint8_t mask) {
+  const esp_err_t err = mcp_write_reg(kGpioa, mask);
+  if (err == ESP_OK) {
+    state.relay_mask = mask;
+    ESP_LOGI(kTag, "Relay mask set: 0x%02X", mask);
+  }
+  return err;
+}
+
+bool read_button_inputs(uint8_t* value) {
+  return mcp_read_reg(kGpiob, value) == ESP_OK;
+}
+
+void configure_int_pin() {
+  gpio_config_t conf;
+  std::memset(&conf, 0, sizeof(conf));
+  conf.pin_bit_mask = (1ULL << kMcpIntPin);
+  conf.mode = GPIO_MODE_INPUT;
+  conf.pull_up_en = GPIO_PULLUP_ENABLE;
+  conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  conf.intr_type = GPIO_INTR_DISABLE;
+
+  const esp_err_t err = gpio_config(&conf);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "MCP INT pin config failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGI(kTag, "MCP INTB pin configured on GPIO%d", kMcpIntPin);
+  }
+}
+
+void run_stage2_diagnostics() {
+  if (!init_i2c()) {
+    ESP_LOGW(kTag, "Stage2 abort: I2C bus init failed");
+    return;
+  }
+
+  scan_i2c_bus();
+
+  Mcp23017State mcp_state;
+  if (!init_mcp23017(mcp_state)) {
+    ESP_LOGW(kTag, "Stage2 diagnostics degraded: MCP23017 missing or unresponsive");
+    return;
+  }
+
+  configure_int_pin();
+
+  if (set_relay_mask(mcp_state, kRelayOffValue) != ESP_OK) {
+    ESP_LOGW(kTag, "Stage2 diagnostics degraded: cannot write initial relay state");
+    return;
+  }
+
+  uint8_t debounce_counts[8] = {0};
+  uint8_t debounced_buttons = kRelayOffValue;  // placeholder replaced by first read
+  uint8_t last_reported_buttons = 0x00;
+  uint8_t current_buttons = 0x00;
+  uint8_t channel = 0;
+  bool have_button_snapshot = false;
+  TickType_t last_relay_tick = 0;
+  TickType_t last_button_tick = 0;
+  TickType_t last_int_tick = 0;
+  int last_int_level = gpio_get_level(kMcpIntPin);
+
+  ESP_LOGI(kTag, "Entering Stage2 runtime diagnostics loop (1 ch at a time relay sweep + button sample)");
+  while (true) {
+    const TickType_t now = xTaskGetTickCount();
+
+    if ((now - last_relay_tick) >= kRelayStepDelay) {
+      const uint8_t relay_mask = relay_mask_for_channel(channel);
+      if (set_relay_mask(mcp_state, relay_mask) == ESP_OK) {
+        ESP_LOGI(kTag, "Relay channel=%d sweep mask=0x%02X", static_cast<int>(channel), relay_mask);
+      }
+      channel = static_cast<uint8_t>((channel + 1) % 8);
+      last_relay_tick = now;
+    }
+
+    if ((now - last_button_tick) >= kButtonSamplePeriod) {
+      last_button_tick = now;
+      if (read_button_inputs(&current_buttons)) {
+        if (!have_button_snapshot) {
+          debounced_buttons = current_buttons;
+          last_reported_buttons = current_buttons;
+          have_button_snapshot = true;
+          ESP_LOGI(kTag, "Button init mask: 0x%02X (1=pressed? check wiring polarity)", current_buttons);
+        } else {
+          bool changed = false;
+          for (uint8_t bit = 0; bit < 8; ++bit) {
+            bool raw = (current_buttons & (1u << bit)) != 0;
+            bool stable = (debounced_buttons & (1u << bit)) != 0;
+
+            if (raw == stable) {
+              debounce_counts[bit] = 0;
+              continue;
+            }
+
+            if (++debounce_counts[bit] >= kButtonDebounceThreshold) {
+              debounced_buttons ^= (1u << bit);
+              debounce_counts[bit] = 0;
+              changed = true;
+            }
+          }
+          if (changed && debounced_buttons != last_reported_buttons) {
+            ESP_LOGI(kTag, "Button mask change: 0x%02X", debounced_buttons);
+            last_reported_buttons = debounced_buttons;
+          }
+        }
+      } else {
+        ESP_LOGW(kTag, "Button read failed; retaining last stable mask");
+      }
+    }
+
+    if ((now - last_int_tick) >= kIntSamplePeriod) {
+      last_int_tick = now;
+      const int level = gpio_get_level(kMcpIntPin);
+      if (level != last_int_level) {
+        ESP_LOGI(kTag, "MCP INTB changed to %d", level);
+        last_int_level = level;
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+}
+
+void blink_alive_task(void*) {
+  blink_alive();
+}
+
+#endif  // LUCE_HAS_I2C
+
 void blink_alive() {
   const gpio_num_t leds[] = {GPIO_NUM_25, GPIO_NUM_26, GPIO_NUM_27};
 
@@ -394,6 +684,12 @@ extern "C" void app_main(void) {
 
 #if LUCE_HAS_NVS
   update_boot_state_record();
+#endif
+
+#if LUCE_HAS_I2C
+  xTaskCreate(blink_alive_task, "blink", 2048, nullptr, 1, nullptr);
+  run_stage2_diagnostics();
+  ESP_LOGW(kTag, "Stage2 diagnostics loop exited; staying in blink-only fallback");
 #endif
 
   blink_alive();

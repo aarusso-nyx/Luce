@@ -28,3 +28,18 @@
 - Build result: `SUCCESS` on 2026-02-22
 - Build command: `python3 -m platformio run -e luce_stage1`
 - Build result: `SUCCESS` on 2026-02-22
+
+## STAGE2 complete
+- [x] I2C bring-up and bus scan for stage2.
+- [x] MCP23017 relay/button diagnostics with graceful degradation when MCP absent.
+- [x] Relay sweep with masked control and debounced button-change logging.
+- [x] MCP INT pin sampled/configured and logged.
+- [x] Stage0..stage2 build gating confirmed in compile.
+
+## Evidence
+- Build command: `python3 -m platformio run -e luce_stage2`
+- Build result: `SUCCESS` on 2026-02-22
+- Build command: `python3 -m platformio run -e luce_stage0`
+- Build result: `SUCCESS` on 2026-02-22
+- Build command: `python3 -m platformio run -e luce_stage1`
+- Build result: `SUCCESS` on 2026-02-22

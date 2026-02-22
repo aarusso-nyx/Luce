@@ -27,10 +27,17 @@ Acceptance criteria:
 
 ## Stage2 - Control Semantics
 Acceptance criteria:
-- Physical button authority semantics are enforced.
-- Relay safe defaults and fail-safe behavior are explicit and tested.
-- Local control loops remain deterministic under rapid input changes.
-- Event/log output is sufficient for fault triage.
+- I2C bus initializes on GPIO22/23 and logs detected 7-bit addresses.
+- MCP23017 at `0x20` is detected and configured with:
+  - PORT A (`IODIRA`) as outputs for relays `A0..A7`
+  - PORT B (`IODIRB`) as inputs for buttons `B0..B7`
+  - `GPPUB` set for button pull-ups
+  - relays powered off on startup (active polarity defined and logged)
+- Relay sweep runs one relay at a time and reports mask changes each step.
+- Button sample path prints only transitions after debounce (no per-cycle spam).
+- MCP INT line (`GPIO19`) is configured as input and its level is logged on change.
+- If MCP is absent, firmware stays alive and reports clear graceful-degrade messages.
+- Stage2 build gates prevent I2C path from compiling in Stage0/Stage1.
 
 ## Stage3 - Interface Integration
 Acceptance criteria:
