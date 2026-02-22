@@ -1,0 +1,24 @@
+# Stage5 HIL evidence: boot_stage5
+
+Timestamp: __REPLACE_WITH_TS__
+Environment: luce_stage5
+Host ports:
+  - upload: /dev/cu.usbserial-0001
+  - monitor: /dev/cu.usbserial-40110
+
+Commands:
+- `source ~/.zshrc && pio run -e luce_stage5 -t upload --upload-port /dev/cu.usbserial-0001`
+- `source ~/.zshrc && pio device monitor -p /dev/cu.usbserial-40110 --filter time`
+
+Expected capture:
+- first 80 lines immediately after boot
+- include these required signatures if connect succeeds:
+  - LUCE STAGE5
+  - [WIFI][NVS] ...
+  - [WIFI][LIFECYCLE] state=INIT...
+  - [WIFI][LIFECYCLE] state=CONNECTING...
+  - [WIFI][LIFECYCLE] state=GOT_IP...
+  - [WIFI][IP] got_ip=... gw=... mask=...
+
+Observed output:
+<paste full timed log lines here>
