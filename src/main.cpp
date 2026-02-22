@@ -534,6 +534,7 @@ void update_boot_state_record() {
 constexpr i2c_port_t kI2CPort = I2C_NUM_0;
 constexpr gpio_num_t kI2CSclPin = GPIO_NUM_22;
 constexpr gpio_num_t kI2CSdaPin = GPIO_NUM_23;
+// ITB (GPIO19) is used for MCP interrupt signaling; ITA is intentionally unused on this hardware.
 constexpr gpio_num_t kMcpIntPin = GPIO_NUM_19;
 constexpr uint32_t kI2CClockHz = 100000;
 constexpr uint8_t kMcpAddress = 0x20;
@@ -547,6 +548,8 @@ constexpr uint8_t kGppub = 0x0D;
 constexpr uint8_t kGpioa = 0x12;
 constexpr uint8_t kGpiob = 0x13;
 
+// Relay channels are active LOW on MCP GPIOA for this board revision:
+// written bit=1 means OFF, bit=0 means ON.
 constexpr bool kRelayActiveHigh = false;
 constexpr uint8_t kRelayOffValue = kRelayActiveHigh ? 0x00 : 0xFF;
 constexpr uint8_t kI2CSampleAddressStart = 0x08;
@@ -577,6 +580,7 @@ struct I2cScanResult {
 
 I2cScanResult scan_i2c_bus();
 
+// LCD I2C backpack is fixed at 0x27 on the current hardware map and 3.3V bus-compatible.
 constexpr uint8_t kLcdAddress = 0x27;
 
 #if LUCE_HAS_LCD
@@ -930,6 +934,7 @@ bool init_mcp23017(Mcp23017State& state) {
   g_mcp_available = true;
   g_relay_mask = kRelayOffValue;
   g_button_mask = 0x00;
+  // Buttons on GPIOB are configured as inputs with weak pull-ups (idle-high, active-low semantics).
   ESP_LOGI(kTag, "MCP23017 configured: relays OFF, buttons pullups enabled, IOCON=0x%02X", kIoconValue);
   return true;
 }

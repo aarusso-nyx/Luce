@@ -60,6 +60,14 @@ std::size_t tokenize_cli_line(char* line, char* argv[], std::size_t max_args) {
   return argc;
 }
 
+constexpr bool kRelayActiveHigh = false;
+constexpr uint8_t kRelayOffValue = kRelayActiveHigh ? 0x00 : 0xFF;
+
+uint8_t relay_mask_for_channel_state_active_low(int channel, bool on, uint8_t current_mask) {
+  const uint8_t bit = static_cast<uint8_t>(1u << channel);
+  return on ? static_cast<uint8_t>(current_mask & ~bit) : static_cast<uint8_t>(current_mask | bit);
+}
+
 void format_mask_line(char* out, std::size_t out_size, uint8_t relay_mask, uint8_t button_mask) {
   std::snprintf(out, out_size, "REL:0x%02X BTN:0x%02X", relay_mask, button_mask);
 }
@@ -79,6 +87,20 @@ void test_bitmask_helpers_set_clear_sequence() {
   current = relay_mask_for_channel_state(1, true, current);
   current = relay_mask_for_channel_state(4, true, current);
   TEST_ASSERT_EQUAL_UINT8(0x12, current);
+}
+
+void test_bitmask_helpers_active_low_semantics() {
+  TEST_ASSERT_TRUE(kRelayActiveHigh == false);
+  TEST_ASSERT_EQUAL_UINT8(0xFF, kRelayOffValue);
+
+  uint8_t current = kRelayOffValue;
+  current = relay_mask_for_channel_state_active_low(2, true, current);
+  TEST_ASSERT_EQUAL_UINT8(0xFB, current);
+  current = relay_mask_for_channel_state_active_low(2, false, current);
+  TEST_ASSERT_EQUAL_UINT8(0xFF, current);
+
+  current = relay_mask_for_channel_state_active_low(7, true, 0x00);
+  TEST_ASSERT_EQUAL_UINT8(0x7F, current);
 }
 
 void test_parse_u32_with_base_decimal() {
@@ -145,6 +167,7 @@ int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_bitmask_helpers_single_channel_state);
   RUN_TEST(test_bitmask_helpers_set_clear_sequence);
+  RUN_TEST(test_bitmask_helpers_active_low_semantics);
   RUN_TEST(test_parse_u32_with_base_decimal);
   RUN_TEST(test_parse_u32_with_base_hex);
   RUN_TEST(test_cli_trim_and_tokenize);

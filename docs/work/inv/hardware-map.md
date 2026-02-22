@@ -36,13 +36,15 @@ I2C address strapping:
 - `A1` strapped to GND
 - `A2` strapped to GND
 - Effective address: `0x20`
+- LCD backpack is fixed on `0x27` and is validated on 3.3V I2C bus.
 
 Interrupt lines:
 - `ITB` wired and used (to ESP32 `GPIO19` through `U3`)
-- `ITA` not connected
+- `ITA` not connected (intentionally unused on this hardware)
 
 Port mapping:
 - Relay outputs:
+  - Active polarity: active-LOW (`1` = OFF, `0` = ON)
   - `A0 -> J1 CH1`
   - `A1 -> J1 CH2`
   - `A2 -> J1 CH3`
@@ -52,6 +54,7 @@ Port mapping:
   - `A6 -> J1 CH7`
   - `A7 -> J1 CH8`
 - Button inputs:
+  - Active-LOW (`1` = released/idle, `0` = pressed)
   - `B0 -> J2 B1`
   - `B1 -> J2 B2`
   - `B2 -> J2 B3`

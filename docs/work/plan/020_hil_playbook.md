@@ -61,6 +61,13 @@ For debounce verification, press one button at a time and confirm transition log
 
 Use this connector when validating I2C scan and LCD behavior.
 
+## 3a) Confirmed hardware assumptions
+
+- Relay outputs (`MCP GPIOA`) are active-LOW: cleared bit is ON (`1` = OFF, `0` = ON).
+- MCP button inputs (`MCP GPIOB`) are internally pulled-up and active-LOW: `1` = released/idle, `0` = pressed.
+- LCD backpack is fixed at I2C address `0x27` and is 3.3V logic-compatible.
+- MCP `ITA` is intentionally unused on this hardware; `ITB` is monitored on `GPIO19`.
+
 ### Optional LCD
 
 - Optional `20x4` I2C backpack expected at `0x27` on J4 SDA/SCL.
