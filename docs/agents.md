@@ -9,6 +9,7 @@ Use the following exact commands unless the port assignment is changed intention
 
 - Flash stage firmware: `python3 -m platformio run -e luce_stage0 -t upload --upload-port /dev/cu.usbserial-0001`
 - Monitor serial console continuously: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
+- Stage4 CLI target: `python3 -m platformio run -e luce_stage4 -t upload --upload-port /dev/cu.usbserial-0001`
 
 ## Autonomous execution flow
 
@@ -17,7 +18,8 @@ For autonomous firmware iteration:
 1. Build the target env: `python3 -m platformio run -e <env>`
 2. Upload firmware: `python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001`
 3. Capture boot and runtime output on monitor port: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
-4. Paste back the first 80 lines after reset for diagnosis.
+4. For `luce_stage4`, run CLI commands (`help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`) and paste back output.
+5. Paste back the first 80 lines after reset for diagnosis.
 
 Default target during bootstrap is `luce_stage0` until a later stage env is requested.
 

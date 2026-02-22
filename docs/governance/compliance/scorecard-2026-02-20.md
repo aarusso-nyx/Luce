@@ -54,3 +54,27 @@
 ## Evidence
 - Build command: `python3 -m platformio run -e luce_stage3`
 - Build result: `SUCCESS` on 2026-02-22
+
+## STAGE4 complete
+- [x] `luce_stage4` environment added with `-DLUCE_STAGE=4`.
+- [x] Serial CLI compiled under `LUCE_HAS_CLI` gate and excludes networking dependencies.
+- [x] UART0 command parser supports required command set:
+  - `help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`.
+- [x] CLI logs parsed args and command result status codes for diagnostics and control operations.
+- [x] Stage0..Stage4 can be built via PlatformIO environment matrix to verify compile-time gates.
+
+## Evidence
+- Build command: `python3 -m platformio run -e luce_stage4`
+- Build result: `SUCCESS` on 2026-02-22
+- Build command: `python3 -m platformio run -e luce_stage0`
+- Build result: `SUCCESS` on 2026-02-22
+- Build command: `python3 -m platformio run -e luce_stage1`
+- Build result: `SUCCESS` on 2026-02-22
+- Build command: `python3 -m platformio run -e luce_stage2`
+- Build result: `SUCCESS` on 2026-02-22
+- Build command: `python3 -m platformio run -e luce_stage3`
+- Build result: `SUCCESS` on 2026-02-22
+
+## Stage4 docs
+- Added `doc/CLI.md` with required command contract.
+- Added `docs/work/diag/template_stage4_cli_session.txt` for expected CLI logs.

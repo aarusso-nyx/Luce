@@ -54,7 +54,16 @@ Acceptance criteria:
 
 ## Stage4 - Resilience And Release Readiness
 Acceptance criteria:
-- Cold boot/reboot recovers to known-safe operational state.
-- Sensor/IO fault paths degrade safely and emit diagnostics.
-- Preflight and governance evidence artifacts are current and PASS.
-- Release checklist completed with rollback path documented.
+- `luce_stage4` exists with `-DLUCE_STAGE=4`.
+- CLI compiles only in stage4 (`LUCE_HAS_CLI` compile-time gate) and does not enable networking code paths.
+- `help` command lists at least:
+  - `help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`.
+- `status` command prints reset reason, uptime, heap (free/min), and stack watermark.
+- `nvs_dump` command prints namespace/key/type/value where available.
+- `i2c_scan` prints detected I2C addresses and presence of MCP/LCD.
+- `mcp_read gpioa|gpiob` and `buttons` report MCP register values.
+- `relay_set` validates arguments and writes channel bit safely.
+- `relay_mask` accepts hex payload and writes MCP GPIOA register.
+- `lcd_print` writes text when LCD is enabled, and prints unavailable warning otherwise.
+- `reboot` command triggers clean software reset.
+- Stage4 CLI and diagnostics tasks run together (no blocking stage_main) and each command logs parsed args and result status.

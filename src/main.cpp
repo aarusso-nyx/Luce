@@ -2,6 +2,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
 
 #include "luce_build.h"
 
@@ -24,6 +27,10 @@
 
 #if LUCE_HAS_I2C
 #include "driver/i2c.h"
+#endif
+
+#if LUCE_HAS_CLI
+#include "driver/uart.h"
 #endif
 
 namespace {
@@ -389,6 +396,14 @@ struct Mcp23017State {
   uint8_t relay_mask = kRelayOffValue;
 };
 
+bool g_i2c_initialized = false;
+bool g_mcp_available = false;
+uint8_t g_relay_mask = kRelayOffValue;
+uint8_t g_button_mask = 0x00;
+#if LUCE_HAS_LCD
+bool g_lcd_present = false;
+#endif
+
 struct I2cScanResult {
   bool mcp = false;
   bool lcd = false;
@@ -442,6 +457,29 @@ class Pcf8574Hd44780 {
 
     return write_line(0, line1) && write_line(1, line2) && write_line(2, line3) &&
            write_line(3, line4);
+  }
+
+  bool write_text_line(uint8_t row, const char* text) {
+    char safe_text[21] = {0};
+    size_t text_len = 0;
+    if (text) {
+      text_len = std::strlen(text);
+      if (text_len > kLcdCols) {
+        text_len = kLcdCols;
+      }
+    }
+    for (size_t idx = 0; idx < kLcdCols; ++idx) {
+      if (idx < text_len) {
+        safe_text[idx] = text[idx];
+      } else {
+        safe_text[idx] = ' ';
+      }
+    }
+    return write_line(row, safe_text);
+  }
+
+  bool write_text(uint8_t row, const char* text) {
+    return write_text_line(row, text);
   }
 
  private:
@@ -516,6 +554,8 @@ class Pcf8574Hd44780 {
   uint8_t address_;
   bool mcp_ok_ = false;
 };
+
+Pcf8574Hd44780 g_lcd(kI2CPort, kLcdAddress);
 #endif  // LUCE_HAS_LCD
 
 esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks = pdMS_TO_TICKS(20)) {
@@ -557,6 +597,19 @@ esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value) {
   }
   return i2c_master_write_read_device(kI2CPort, kMcpAddress, &reg, sizeof(reg), value,
                                      sizeof(*value), pdMS_TO_TICKS(100));
+}
+
+void update_lcd_status() {
+#if LUCE_HAS_LCD
+  if (!g_lcd_present) {
+    return;
+  }
+  if (!g_mcp_available) {
+    g_lcd.write_status_lines(kRelayOffValue, g_button_mask);
+    return;
+  }
+  g_lcd.write_status_lines(g_relay_mask, g_button_mask);
+#endif
 }
 
 bool init_i2c() {
@@ -646,6 +699,9 @@ bool init_mcp23017(Mcp23017State& state) {
 
   state.connected = true;
   state.relay_mask = kRelayOffValue;
+  g_mcp_available = true;
+  g_relay_mask = kRelayOffValue;
+  g_button_mask = 0x00;
   ESP_LOGI(kTag, "MCP23017 configured: relays OFF, buttons pullups enabled, IOCON=0x%02X", kIoconValue);
   return true;
 }
@@ -654,10 +710,32 @@ esp_err_t set_relay_mask(Mcp23017State& state, uint8_t mask) {
   const esp_err_t err = mcp_write_reg(kGpioa, mask);
   if (err == ESP_OK) {
     state.relay_mask = mask;
+    g_relay_mask = mask;
     ESP_LOGI(kTag, "Relay mask set: 0x%02X", mask);
+    update_lcd_status();
   }
   return err;
 }
+
+#if LUCE_HAS_CLI
+esp_err_t set_relay_mask_safe(uint8_t mask) {
+  if (!g_i2c_initialized || !g_mcp_available) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  Mcp23017State state;
+  state.connected = g_mcp_available;
+  state.relay_mask = g_relay_mask;
+  return set_relay_mask(state, mask);
+}
+
+uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask) {
+  const uint8_t bit = static_cast<uint8_t>(1u << channel);
+  if (kRelayActiveHigh) {
+    return on ? static_cast<uint8_t>(current_mask | bit) : static_cast<uint8_t>(current_mask & ~bit);
+  }
+  return on ? static_cast<uint8_t>(current_mask & ~bit) : static_cast<uint8_t>(current_mask | bit);
+}
+#endif  // LUCE_HAS_CLI
 
 bool read_button_inputs(uint8_t* value) {
   return mcp_read_reg(kGpiob, value) == ESP_OK;
@@ -683,23 +761,26 @@ void configure_int_pin() {
 void run_stage2_diagnostics() {
   if (!init_i2c()) {
     ESP_LOGW(kTag, "Stage2 abort: I2C bus init failed");
+    g_i2c_initialized = false;
     return;
   }
+  g_i2c_initialized = true;
 
   const I2cScanResult scan = scan_i2c_bus();
 
 #if LUCE_HAS_LCD
-  Pcf8574Hd44780 lcd(kI2CPort, kLcdAddress);
+  g_lcd_present = false;
   bool lcd_present = false;
   if (scan.lcd) {
-    lcd_present = lcd.begin();
+    lcd_present = g_lcd.begin();
     if (!lcd_present) {
       ESP_LOGW(kTag, "LCD detected at 0x%02X but initialization failed; continuing without LCD",
                kLcdAddress);
     } else {
-      lcd.set_mcp_ok(false);
+      g_lcd.set_mcp_ok(false);
+      g_lcd_present = true;
       ESP_LOGI(kTag, "LCD initialized at 0x%02X", kLcdAddress);
-      lcd.write_status_lines(kRelayOffValue, 0x00);
+      g_lcd.write_status_lines(kRelayOffValue, 0x00);
     }
   }
 #else
@@ -709,11 +790,15 @@ void run_stage2_diagnostics() {
   Mcp23017State mcp_state;
   if (!init_mcp23017(mcp_state)) {
     ESP_LOGW(kTag, "Stage2 diagnostics degraded: MCP23017 missing or unresponsive");
-#if LUCE_HAS_LCD
+ #if LUCE_HAS_LCD
     if (lcd_present) {
-      lcd.write_status_lines(kRelayOffValue, 0x00);
+      g_lcd.write_status_lines(kRelayOffValue, 0x00);
     }
 #endif
+    g_mcp_available = false;
+    g_relay_mask = kRelayOffValue;
+    g_button_mask = 0x00;
+    update_lcd_status();
     while (true) {
       static TickType_t last_status_tick = 0;
       const TickType_t now = xTaskGetTickCount();
@@ -723,7 +808,7 @@ void run_stage2_diagnostics() {
         ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:no REL:0x%02X BTN:0x%02X",
                  (unsigned long)uptime_s, kRelayOffValue, 0x00);
 #if LUCE_HAS_LCD
-        if (lcd_present && !lcd.write_status_lines(kRelayOffValue, 0x00)) {
+      if (lcd_present && !g_lcd.write_status_lines(kRelayOffValue, 0x00)) {
           ESP_LOGW(kTag, "LCD update failed (LCD-only mode)");
         }
 #endif
@@ -734,17 +819,21 @@ void run_stage2_diagnostics() {
   }
 
   configure_int_pin();
+  g_mcp_available = mcp_state.connected;
+  g_relay_mask = mcp_state.relay_mask;
+  g_button_mask = 0x00;
 
   if (set_relay_mask(mcp_state, kRelayOffValue) != ESP_OK) {
     ESP_LOGW(kTag, "Stage2 diagnostics degraded: cannot write initial relay state");
+    g_mcp_available = false;
     return;
   }
 
 
 #if LUCE_HAS_LCD
-  lcd.set_mcp_ok(scan.mcp);
+  g_lcd.set_mcp_ok(scan.mcp);
   if (lcd_present) {
-    lcd.write_status_lines(mcp_state.relay_mask, 0x00);
+    g_lcd.write_status_lines(mcp_state.relay_mask, 0x00);
   }
 #endif
 
@@ -771,6 +860,7 @@ void run_stage2_diagnostics() {
       relay_mask = relay_mask_for_channel(channel);
       if (set_relay_mask(mcp_state, relay_mask) == ESP_OK) {
         ESP_LOGI(kTag, "Relay channel=%d sweep mask=0x%02X", static_cast<int>(channel), relay_mask);
+        g_relay_mask = relay_mask;
       }
       channel = static_cast<uint8_t>((channel + 1) % 8);
       last_relay_tick = now;
@@ -804,6 +894,7 @@ void run_stage2_diagnostics() {
           }
           if (changed && debounced_buttons != last_reported_buttons) {
             button_mask = debounced_buttons;
+            g_button_mask = debounced_buttons;
             ESP_LOGI(kTag, "Button mask change: 0x%02X", debounced_buttons);
             last_reported_buttons = debounced_buttons;
           }
@@ -829,7 +920,7 @@ void run_stage2_diagnostics() {
                (unsigned long)uptime_s, relay_mask, button_mask);
 #if LUCE_HAS_LCD
       if (lcd_present) {
-        if (!lcd.write_status_lines(relay_mask, button_mask)) {
+        if (!g_lcd.write_status_lines(relay_mask, button_mask)) {
           ESP_LOGW(kTag, "LCD update failed");
         }
       }
@@ -839,6 +930,341 @@ void run_stage2_diagnostics() {
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
+
+#if LUCE_HAS_CLI
+void cli_trim(char* line) {
+  char* write = line;
+  for (const char* read = line; *read != '\0'; ++read) {
+    if (*read == '\r' || *read == '\n') {
+      continue;
+    }
+    if (write != read) {
+      *write = *read;
+    }
+    ++write;
+  }
+  *write = '\0';
+}
+
+bool parse_u32_with_base(const char* text, int base, uint32_t* value, char* token_context = nullptr) {
+  if (!text || !*text || !value) {
+    return false;
+  }
+  if (token_context) {
+    std::strncpy(token_context, text, 31);
+    token_context[31] = '\0';
+  }
+
+  char* end = nullptr;
+  errno = 0;
+  const unsigned long parsed = std::strtoul(text, &end, base);
+  if (errno != 0 || end == text || *end != '\0') {
+    return false;
+  }
+  *value = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+void log_cli_arguments(const char* command, int argc, char* argv[]) {
+  ESP_LOGI(kTag, "CLI cmd='%s' argc=%d", command, argc);
+  for (int i = 0; i < argc; ++i) {
+    ESP_LOGI(kTag, "CLI arg[%d]='%s'", i, argv[i]);
+  }
+}
+
+void cli_print_help() {
+  ESP_LOGI(kTag, "CLI commands: help, status, nvs_dump, i2c_scan, mcp_read, relay_set, relay_mask, buttons, lcd_print, reboot");
+  ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
+  ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
+  ESP_LOGI(kTag, "  - relay_mask <hex> (8-bit register value)");
+  ESP_LOGI(kTag, "  - buttons");
+  ESP_LOGI(kTag, "  - lcd_print <text> (if LCD enabled)");
+}
+
+void cli_cmd_status() {
+  ESP_LOGI(kTag, "status: stage=%d reset=%s(%d) uptime=%llus", LUCE_STAGE,
+           reset_reason_to_string(esp_reset_reason()), static_cast<int>(esp_reset_reason()),
+           static_cast<long long>(esp_timer_get_time() / 1000000ULL));
+  ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+  ESP_LOGI(kTag, "status: task_watermark_words=%u", uxTaskGetStackHighWaterMark(nullptr));
+  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d", LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI);
+#if LUCE_HAS_I2C
+  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d relay_mask=0x%02X button_mask=0x%02X", g_i2c_initialized,
+           g_mcp_available, g_relay_mask, g_button_mask);
+#endif
+}
+
+void cli_cmd_nvs_dump() {
+#if LUCE_HAS_NVS
+  ESP_LOGI(kTag, "CLI command nvs_dump: executing");
+  dump_nvs_entries();
+  ESP_LOGI(kTag, "CLI command nvs_dump: done");
+#else
+  ESP_LOGW(kTag, "CLI command nvs_dump: unsupported (LUCE_HAS_NVS=0)");
+#endif
+}
+
+void cli_cmd_i2c_scan() {
+#if LUCE_HAS_I2C
+  if (!g_i2c_initialized && !init_i2c()) {
+    ESP_LOGW(kTag, "CLI command i2c_scan: init_i2c() failed");
+    return;
+  }
+  g_i2c_initialized = true;
+  const I2cScanResult scan = scan_i2c_bus();
+  ESP_LOGI(kTag, "CLI command i2c_scan: summary found=%d mcp=%d lcd=%d", scan.found_count, scan.mcp,
+           scan.lcd);
+#else
+  ESP_LOGW(kTag, "CLI command i2c_scan: unsupported (LUCE_HAS_I2C=0)");
+#endif
+}
+
+void cli_cmd_mcp_read(char* port) {
+#if LUCE_HAS_I2C
+  if (!g_mcp_available) {
+    ESP_LOGW(kTag, "CLI command mcp_read: MCP unavailable");
+    return;
+  }
+  uint8_t value = 0x00;
+  const uint8_t reg = (std::strcmp(port, "gpioa") == 0 || std::strcmp(port, "a") == 0) ? kGpioa
+                                                                                       : kGpiob;
+  const esp_err_t err = mcp_read_reg(reg, &value);
+  ESP_LOGI(kTag, "CLI command mcp_read %s rc=%s value=0x%02X", port, esp_err_to_name(err), value);
+#else
+  (void)port;
+  ESP_LOGW(kTag, "CLI command mcp_read: unsupported (LUCE_HAS_I2C=0)");
+#endif
+}
+
+void cli_cmd_relay_set(int channel, int on_off) {
+#if LUCE_HAS_I2C
+  const uint8_t new_mask = relay_mask_for_channel_state(channel, on_off != 0, g_relay_mask);
+  const esp_err_t err = set_relay_mask_safe(new_mask);
+  if (err == ESP_OK) {
+    g_relay_mask = new_mask;
+  }
+  ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d new_mask=0x%02X rc=%s", channel, on_off, new_mask,
+           esp_err_to_name(err));
+#else
+  (void)channel;
+  (void)on_off;
+  ESP_LOGW(kTag, "CLI command relay_set: unsupported (LUCE_HAS_I2C=0)");
+#endif
+}
+
+void cli_cmd_relay_mask(uint32_t value) {
+#if LUCE_HAS_I2C
+  const uint8_t mask = static_cast<uint8_t>(value & 0xFF);
+  const esp_err_t err = set_relay_mask_safe(mask);
+  if (err == ESP_OK) {
+    g_relay_mask = mask;
+  }
+  ESP_LOGI(kTag, "CLI command relay_mask: mask=0x%02X rc=%s", mask, esp_err_to_name(err));
+#else
+  (void)value;
+  ESP_LOGW(kTag, "CLI command relay_mask: unsupported (LUCE_HAS_I2C=0)");
+#endif
+}
+
+void cli_cmd_buttons() {
+#if LUCE_HAS_I2C
+  if (!g_mcp_available) {
+    ESP_LOGW(kTag, "CLI command buttons: MCP unavailable");
+    return;
+  }
+  uint8_t value = 0x00;
+  const esp_err_t err = mcp_read_reg(kGpiob, &value);
+  ESP_LOGI(kTag, "CLI command buttons: rc=%s gpiob=0x%02X", esp_err_to_name(err), value);
+#else
+  ESP_LOGW(kTag, "CLI command buttons: unsupported (LUCE_HAS_I2C=0)");
+#endif
+}
+
+void cli_cmd_lcd_print(char* text) {
+#if LUCE_HAS_LCD
+  if (!g_lcd_present) {
+    ESP_LOGW(kTag, "CLI command lcd_print: LCD not initialized or absent");
+    return;
+  }
+  if (!text || !*text) {
+    ESP_LOGW(kTag, "CLI command lcd_print: missing text argument");
+    return;
+  }
+  const bool ok = g_lcd.write_text(0, text);
+  ESP_LOGI(kTag, "CLI command lcd_print: rc=%s text='%s'", ok ? "OK" : "ERR", text);
+#else
+  (void)text;
+  ESP_LOGW(kTag, "CLI command lcd_print: unsupported (LUCE_HAS_LCD=0)");
+#endif
+}
+
+void cli_task(void*) {
+  uart_config_t uart_cfg{};
+  uart_cfg.baud_rate = 115200;
+  uart_cfg.data_bits = UART_DATA_8_BITS;
+  uart_cfg.parity = UART_PARITY_DISABLE;
+  uart_cfg.stop_bits = UART_STOP_BITS_1;
+  uart_cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+  uart_cfg.source_clk = UART_SCLK_APB;
+  esp_err_t err = uart_param_config(UART_NUM_0, &uart_cfg);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "CLI uart_param_config failed: %s", esp_err_to_name(err));
+  }
+  err = uart_set_pin(UART_NUM_0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
+                     UART_PIN_NO_CHANGE);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "CLI uart_set_pin failed: %s", esp_err_to_name(err));
+  }
+  err = uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0);
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(kTag, "CLI uart_driver_install failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGI(kTag, "CLI listening on UART0 at 115200. Type 'help' for commands.");
+  }
+
+  char line_buffer[128] = {0};
+  size_t line_len = 0;
+  char ch;
+  while (true) {
+    const int read = uart_read_bytes(UART_NUM_0, reinterpret_cast<uint8_t*>(&ch), 1, pdMS_TO_TICKS(200));
+    if (read <= 0) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    if (ch == '\r' || ch == '\n') {
+      if (line_len == 0) {
+        continue;
+      }
+      line_buffer[line_len] = '\0';
+
+      char command_buffer[128];
+      std::memcpy(command_buffer, line_buffer, sizeof(command_buffer));
+      cli_trim(command_buffer);
+      line_len = 0;
+
+      char* argv[8];
+      char* next_token = nullptr;
+      int argc = 0;
+      char* token = strtok_r(command_buffer, " \t", &next_token);
+      if (!token) {
+        continue;
+      }
+      while (token && argc < 8) {
+        argv[argc++] = token;
+        token = strtok_r(nullptr, " \t", &next_token);
+      }
+      log_cli_arguments(argv[0], argc, argv);
+
+      if (std::strcmp(argv[0], "help") == 0) {
+        cli_print_help();
+      } else if (std::strcmp(argv[0], "status") == 0) {
+        cli_cmd_status();
+      } else if (std::strcmp(argv[0], "nvs_dump") == 0) {
+        cli_cmd_nvs_dump();
+      } else if (std::strcmp(argv[0], "i2c_scan") == 0) {
+        cli_cmd_i2c_scan();
+      } else if (std::strcmp(argv[0], "mcp_read") == 0) {
+        if (argc != 2) {
+          ESP_LOGW(kTag, "CLI command mcp_read usage: mcp_read <gpioa|gpiob>");
+        } else if (std::strcmp(argv[1], "gpioa") == 0 || std::strcmp(argv[1], "A") == 0 ||
+                   std::strcmp(argv[1], "gpiob") == 0 || std::strcmp(argv[1], "B") == 0) {
+          cli_cmd_mcp_read(argv[1]);
+        } else {
+          ESP_LOGW(kTag, "CLI command mcp_read: invalid port '%s'", argv[1]);
+        }
+      } else if (std::strcmp(argv[0], "relay_set") == 0) {
+        if (argc != 3) {
+          ESP_LOGW(kTag, "CLI command relay_set usage: relay_set <0..7> <0|1>");
+        } else {
+          uint32_t channel = 0;
+          uint32_t value = 0;
+          char tmp1[32] = {0};
+          char tmp2[32] = {0};
+          const bool ok1 = parse_u32_with_base(argv[1], 10, &channel, tmp1);
+          const bool ok2 = parse_u32_with_base(argv[2], 10, &value, tmp2);
+          if (!ok1 || !ok2 || value > 1 || channel > 7) {
+            ESP_LOGW(kTag,
+                     "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)",
+                     tmp1, tmp2);
+          } else {
+            cli_cmd_relay_set(static_cast<int>(channel), static_cast<int>(value));
+          }
+        }
+      } else if (std::strcmp(argv[0], "relay_mask") == 0) {
+        if (argc != 2) {
+          ESP_LOGW(kTag, "CLI command relay_mask usage: relay_mask <hex>");
+        } else {
+          uint32_t value = 0;
+          char tmp[32] = {0};
+          if (!parse_u32_with_base(argv[1], 16, &value, tmp) || value > 0xFF) {
+            ESP_LOGW(kTag, "CLI command relay_mask: parse error for '%s'", tmp);
+          } else {
+            cli_cmd_relay_mask(value);
+          }
+        }
+      } else if (std::strcmp(argv[0], "buttons") == 0) {
+        cli_cmd_buttons();
+      } else if (std::strcmp(argv[0], "lcd_print") == 0) {
+        if (argc < 2) {
+          ESP_LOGW(kTag, "CLI command lcd_print usage: lcd_print <text>");
+        } else {
+          char text[128] = {0};
+          std::snprintf(text, sizeof(text), "%s", argv[1]);
+          for (int i = 2; i < argc; ++i) {
+            const std::size_t used = std::strlen(text);
+            const std::size_t next_len = std::strlen(argv[i]);
+            if (used + 1 + next_len >= sizeof(text)) {
+              ESP_LOGW(kTag, "CLI command lcd_print: truncated due to output length limit");
+              break;
+            }
+            text[used] = ' ';
+            text[used + 1] = '\0';
+            std::strncat(text, argv[i], sizeof(text) - std::strlen(text) - 1);
+          }
+          cli_cmd_lcd_print(text);
+        }
+      } else if (std::strcmp(argv[0], "reboot") == 0) {
+        ESP_LOGW(kTag, "CLI command reboot: restarting");
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
+      } else {
+        ESP_LOGW(kTag, "CLI unknown command '%s'", argv[0]);
+        cli_print_help();
+      }
+      std::memset(line_buffer, 0, sizeof(line_buffer));
+      continue;
+    }
+
+    if ((ch == '\b' || ch == 0x7F) && line_len > 0) {
+      --line_len;
+      line_buffer[line_len] = '\0';
+      continue;
+    }
+    if (line_len + 1 < sizeof(line_buffer)) {
+      line_buffer[line_len++] = ch;
+    } else {
+      ESP_LOGW(kTag, "CLI input overflow, dropping current command");
+      line_len = 0;
+      std::memset(line_buffer, 0, sizeof(line_buffer));
+    }
+  }
+}
+
+void cli_startup() {
+  if (xTaskCreate(cli_task, "cli", 4096, nullptr, 2, nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "CLI task create failed");
+  }
+}
+
+#endif  // LUCE_HAS_CLI
+
+#if LUCE_HAS_CLI
+void diagnostics_task(void*) {
+  run_stage2_diagnostics();
+}
+#endif  // LUCE_HAS_CLI
 
 void blink_alive_task(void*) {
   blink_alive();
@@ -893,8 +1319,18 @@ extern "C" void app_main(void) {
 
 #if LUCE_HAS_I2C
   xTaskCreate(blink_alive_task, "blink", 2048, nullptr, 1, nullptr);
+#if LUCE_HAS_CLI
+  if (xTaskCreate(diagnostics_task, "diag", 4096, nullptr, 1, nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "Stage4 diagnostic task create failed");
+  }
+  cli_startup();
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+#else
   run_stage2_diagnostics();
   ESP_LOGW(kTag, "Stage2 diagnostics loop exited; staying in blink-only fallback");
+#endif
 #endif
 
   blink_alive();

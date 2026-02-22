@@ -8,30 +8,35 @@ Use the repository scripts for deterministic local workflows:
 
 ```bash
 ./scripts/build.sh                 # build all stage environments
-./scripts/flash.sh nodemcu-32s     # flash a specific environment
-./scripts/monitor.sh nodemcu-32s   # serial monitor with timestamps
+./scripts/flash.sh luce_stage0     # flash a specific environment
+./scripts/monitor.sh luce_stage0   # serial monitor with timestamps
 ```
 
 You can also call PlatformIO directly:
 
 ```bash
-pio run -e nodemcu-32s
-pio run -e nodemcu-32s -t upload
-pio device monitor -e nodemcu-32s --timestamp
+pio run -e luce_stage0
+pio run -e luce_stage0 -t upload
+pio device monitor -e luce_stage0 --timestamp
 ```
 
 ## LUCE_STAGE
 
-`LUCE_STAGE` defines the intended deployment stage (`dev`, `stage`, or `prod`).
+`LUCE_STAGE` is the integer stage gate used across build targets:
 
-- In scripts, if no stage-specific PlatformIO environments are present yet, all declared environments are built.
-- If stage-specific environments exist, `LUCE_STAGE` can be used to scope commands to that stage.
-- Default stage is `dev`.
+- `0` → Stage0 (UART diagnostics only)
+- `1` → Stage1 (+NVS)
+- `2` → Stage2 (+I2C/MCP diagnostics)
+- `3` → Stage3 (+LCD)
+- `4` → Stage4 (+CLI)
 
-Example:
+In `scripts/build.sh`, `LUCE_STAGE` can be used to build matching environments.
+If no matching env exists, all declared environments are built.
 
+Ports used by bootstrap scripts:
 ```bash
-LUCE_STAGE=stage ./scripts/build.sh
+Upload:  /dev/cu.usbserial-0001
+Monitor: /dev/cu.usbserial-40110
 ```
 
 ## Documentation Locations
