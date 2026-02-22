@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 
 #if LUCE_HAS_NVS
 #include "nvs.h"
@@ -27,6 +28,13 @@
 
 #if LUCE_HAS_I2C
 #include "driver/i2c.h"
+#endif
+
+#if LUCE_HAS_WIFI
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "lwip/ip4_addr.h"
 #endif
 
 #if LUCE_HAS_CLI
@@ -52,6 +60,10 @@ void blink_alive();
 
 #ifndef LUCE_DEBUG_STAGE4_DIAG
 #define LUCE_DEBUG_STAGE4_DIAG 1
+#endif
+
+#ifndef LUCE_WIFI_AUTOSTART
+#define LUCE_WIFI_AUTOSTART 0
 #endif
 
 constexpr std::size_t kDiagTaskStackWords = 8192;
@@ -85,6 +97,67 @@ enum class McpMaskFormat : uint8_t {
   kRuntime = 0,
   kStatusCommand,
 };
+
+#if LUCE_HAS_WIFI
+enum class WifiState : uint8_t {
+  kDisabled = 0,
+  kInit,
+  kConnecting,
+  kGotIp,
+  kBackoff,
+  kStopped,
+};
+
+enum class WifiEventType : uint8_t {
+  kStart,
+  kScanDone,
+  kConnected,
+  kGotIp,
+  kDisconnected,
+  kStop,
+};
+
+struct WifiEvent {
+  WifiEventType type;
+  int32_t reason;
+};
+
+struct WifiConfig {
+  bool enabled = false;
+  char ssid[33] = {0};
+  char pass[65] = {0};
+  char hostname[33] = {0};
+  uint32_t max_retries = 6;
+  uint32_t backoff_min_ms = 250;
+  uint32_t backoff_max_ms = 5000;
+};
+
+struct WifiStatusSnapshot {
+  WifiState state = WifiState::kDisabled;
+  bool enabled = false;
+  uint32_t attempt = 0;
+  uint32_t max_retries = 0;
+  uint32_t backoff_ms = 0;
+  uint32_t next_backoff_ms = 0;
+  char ip[16] = "0.0.0.0";
+  char gw[16] = "0.0.0.0";
+  char mask[16] = "0.0.0.0";
+  int rssi = 0;
+};
+
+constexpr char kWifiConfigNamespace[] = "wifi";
+constexpr std::size_t kWifiScanResultLimit = 4;
+constexpr uint32_t kWifiQueueLength = 16;
+constexpr TickType_t kWifiNoopDelayMs = 100;
+
+void log_wifi_status();
+void log_wifi_status_snapshot(const WifiStatusSnapshot& snapshot);
+void wifi_startup();
+void wifi_task(void* arg);
+void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
+void wifi_scan_for_cli();
+void wifi_status_for_cli();
+#endif
 
 const char* reset_reason_to_string(esp_reset_reason_t reason);
 std::size_t init_path_reset_reason_line(char* out, std::size_t out_size,
@@ -290,6 +363,669 @@ void print_heap_stats() {
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag, "Task watermark (current): %u words", uxTaskGetStackHighWaterMark(nullptr));
 }
+
+#if LUCE_HAS_WIFI
+const char* wifi_state_to_string(WifiState state) {
+  switch (state) {
+    case WifiState::kDisabled:
+      return "DISABLED";
+    case WifiState::kInit:
+      return "INIT";
+    case WifiState::kConnecting:
+      return "CONNECTING";
+    case WifiState::kGotIp:
+      return "GOT_IP";
+    case WifiState::kBackoff:
+      return "BACKOFF";
+    case WifiState::kStopped:
+      return "STOPPED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+constexpr uint32_t kDefaultWifiMaxRetries = 6;
+constexpr uint32_t kDefaultWifiBackoffMinMs = 250;
+constexpr uint32_t kDefaultWifiBackoffMaxMs = 5000;
+constexpr uint32_t kDefaultWifiScanCount = 4;
+constexpr TickType_t kWifiStatusIntervalMs = 5000;
+constexpr TickType_t kWifiIdlePollMs = 250;
+constexpr int32_t kRssiInvalid = -1000;
+
+void log_wifi_status();
+void log_wifi_status_snapshot(const WifiStatusSnapshot& snapshot);
+void wifi_log_nvs_line(const char* key, bool present, const char* value, bool mask_value = false);
+void wifi_queue_send(WifiEventType type, int32_t reason);
+bool wifi_send_connect();
+void wifi_schedule_backoff();
+bool wifi_load_config(WifiConfig& config);
+bool wifi_init_wifi_stack();
+void wifi_status_for_cli();
+void wifi_scan_for_cli();
+
+static QueueHandle_t g_wifi_event_queue = nullptr;
+static TaskHandle_t g_wifi_manager_task = nullptr;
+static esp_event_handler_instance_t g_wifi_event_any_instance = nullptr;
+static esp_event_handler_instance_t g_wifi_event_ip_instance = nullptr;
+static esp_netif_t* g_wifi_netif = nullptr;
+static bool g_wifi_stack_ready = false;
+static bool g_wifi_has_ip = false;
+static int g_wifi_last_rssi = kRssiInvalid;
+static int32_t g_wifi_last_error_reason = 0;
+static uint32_t g_wifi_attempt = 0;
+static uint32_t g_wifi_backoff_ms = 0;
+static uint32_t g_wifi_next_backoff_ms = 0;
+static TickType_t g_wifi_next_connect_tick = 0;
+static uint32_t g_wifi_max_retries = kDefaultWifiMaxRetries;
+static uint32_t g_wifi_backoff_min_ms = kDefaultWifiBackoffMinMs;
+static uint32_t g_wifi_backoff_max_ms = kDefaultWifiBackoffMaxMs;
+static char g_wifi_ip[16] = "0.0.0.0";
+static char g_wifi_gw[16] = "0.0.0.0";
+static char g_wifi_mask[16] = "0.0.0.0";
+static bool g_wifi_enabled = false;
+static bool g_wifi_initialized = false;
+static bool g_wifi_configured = false;
+static WifiState g_wifi_state = WifiState::kDisabled;
+static WifiConfig g_wifi_config {};
+
+void format_ip_addr(const esp_ip4_addr_t& src, char* dst, std::size_t dst_len) {
+  if (!dst || dst_len == 0) {
+    return;
+  }
+  const char* text = ip4addr_ntoa(reinterpret_cast<const ip4_addr_t*>(&src));
+  if (!text) {
+    std::strncpy(dst, "0.0.0.0", dst_len - 1);
+    dst[dst_len - 1] = '\0';
+    return;
+  }
+  std::snprintf(dst, dst_len, "%s", text);
+}
+
+void log_wifi_lifecycle_transition(WifiState next_state, const char* reason) {
+  const char* state_label = wifi_state_to_string(next_state);
+  if (reason) {
+    ESP_LOGI(kTag, "[WIFI][LIFECYCLE] state=%s attempt=%lu reason=%s", state_label,
+             static_cast<unsigned long>(g_wifi_attempt), reason);
+  } else {
+    ESP_LOGI(kTag, "[WIFI][LIFECYCLE] state=%s attempt=%lu", state_label,
+             static_cast<unsigned long>(g_wifi_attempt));
+  }
+}
+
+void set_wifi_state(WifiState next_state, const char* reason) {
+  if (g_wifi_state == next_state) {
+    return;
+  }
+  g_wifi_state = next_state;
+  log_wifi_lifecycle_transition(next_state, reason);
+}
+
+void wifi_log_nvs_line(const char* key, bool present, const char* value, bool mask_value) {
+  if (!key) {
+    return;
+  }
+  if (mask_value) {
+    const char* masked = (value && value[0] != '\0') ? "********" : "(empty)";
+    ESP_LOGI(kTag, "[WIFI][NVS] key=%s present=%d value=%s", key, present ? 1 : 0, masked);
+    return;
+  }
+  ESP_LOGI(kTag, "[WIFI][NVS] key=%s present=%d value=%s", key, present ? 1 : 0,
+           value ? value : "");
+}
+
+void log_wifi_status_snapshot(const WifiStatusSnapshot& snapshot) {
+  ESP_LOGI(kTag, "[WIFI][STATUS] state=%s enabled=%d attempt=%lu max=%lu backoff_ms=%lu next_ms=%lu ip=%s gw=%s mask=%s rssi=%d",
+           wifi_state_to_string(snapshot.state), snapshot.enabled ? 1 : 0,
+           static_cast<unsigned long>(snapshot.attempt),
+           static_cast<unsigned long>(snapshot.max_retries),
+           static_cast<unsigned long>(snapshot.backoff_ms),
+           static_cast<unsigned long>(snapshot.next_backoff_ms), snapshot.ip, snapshot.gw, snapshot.mask,
+           snapshot.rssi);
+}
+
+void log_wifi_status() {
+  WifiStatusSnapshot snapshot;
+  snapshot.state = g_wifi_state;
+  snapshot.enabled = g_wifi_enabled;
+  snapshot.attempt = g_wifi_attempt;
+  snapshot.max_retries = g_wifi_max_retries;
+  snapshot.backoff_ms = g_wifi_backoff_ms;
+  snapshot.next_backoff_ms = g_wifi_next_backoff_ms;
+  snapshot.rssi = g_wifi_last_rssi;
+  std::strncpy(snapshot.ip, g_wifi_ip, sizeof(snapshot.ip) - 1);
+  snapshot.ip[sizeof(snapshot.ip) - 1] = '\0';
+  std::strncpy(snapshot.gw, g_wifi_gw, sizeof(snapshot.gw) - 1);
+  snapshot.gw[sizeof(snapshot.gw) - 1] = '\0';
+  std::strncpy(snapshot.mask, g_wifi_mask, sizeof(snapshot.mask) - 1);
+  snapshot.mask[sizeof(snapshot.mask) - 1] = '\0';
+  log_wifi_status_snapshot(snapshot);
+}
+
+void wifi_queue_send(WifiEventType type, int32_t reason) {
+  if (!g_wifi_event_queue) {
+    return;
+  }
+  const WifiEvent event{type, reason};
+  (void)xQueueSend(g_wifi_event_queue, &event, 0);
+}
+
+void wifi_event_handler(void*,
+                       esp_event_base_t event_base, int32_t event_id, void* event_data) {
+  if (event_base == WIFI_EVENT) {
+    if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+      const auto* event = static_cast<wifi_event_sta_disconnected_t*>(event_data);
+      if (event) {
+        wifi_queue_send(WifiEventType::kDisconnected, static_cast<int32_t>(event->reason));
+      } else {
+        wifi_queue_send(WifiEventType::kDisconnected, 0);
+      }
+      return;
+    }
+    if (event_id == WIFI_EVENT_STA_CONNECTED) {
+      wifi_queue_send(WifiEventType::kConnected, 0);
+      return;
+    }
+    if (event_id == WIFI_EVENT_STA_START) {
+      wifi_queue_send(WifiEventType::kStart, 0);
+      return;
+    }
+  }
+
+  if (event_base == IP_EVENT) {
+    if (event_id == IP_EVENT_STA_GOT_IP) {
+      const auto* event = static_cast<ip_event_got_ip_t*>(event_data);
+      if (event) {
+        g_wifi_has_ip = true;
+        format_ip_addr(event->ip_info.ip, g_wifi_ip, sizeof(g_wifi_ip));
+        format_ip_addr(event->ip_info.gw, g_wifi_gw, sizeof(g_wifi_gw));
+        format_ip_addr(event->ip_info.netmask, g_wifi_mask, sizeof(g_wifi_mask));
+      }
+      wifi_queue_send(WifiEventType::kGotIp, 0);
+      return;
+    }
+    if (event_id == IP_EVENT_STA_LOST_IP) {
+      g_wifi_has_ip = false;
+      wifi_queue_send(WifiEventType::kDisconnected, 0);
+    }
+  }
+}
+
+bool wifi_read_u32_key(nvs_handle_t handle, const char* key, uint32_t* value, bool* present) {
+  if (!handle || !value || !key || !present) {
+    return false;
+  }
+  uint32_t candidate = 0;
+  const esp_err_t err = nvs_get_u32(handle, key, &candidate);
+  if (err == ESP_OK) {
+    *value = candidate;
+    *present = true;
+    return true;
+  }
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    *present = false;
+    return false;
+  }
+  ESP_LOGW(kTag, "[WIFI][NVS] read error key=%s err=%s", key, esp_err_to_name(err));
+  *present = false;
+  return false;
+}
+
+bool wifi_read_u8_key(nvs_handle_t handle, const char* key, uint8_t* value, bool* present) {
+  if (!handle || !value || !key || !present) {
+    return false;
+  }
+  uint8_t candidate = 0;
+  const esp_err_t err = nvs_get_u8(handle, key, &candidate);
+  if (err == ESP_OK) {
+    *value = candidate;
+    *present = true;
+    return true;
+  }
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    *present = false;
+    return false;
+  }
+  ESP_LOGW(kTag, "[WIFI][NVS] read error key=%s err=%s", key, esp_err_to_name(err));
+  *present = false;
+  return false;
+}
+
+bool wifi_read_string_key(nvs_handle_t handle, const char* key, char* out, std::size_t out_size,
+                         bool* present) {
+  if (!key || !out || out_size == 0 || !present) {
+    return false;
+  }
+  *present = false;
+  out[0] = '\0';
+
+  std::size_t required = out_size;
+  const esp_err_t err = nvs_get_str(handle, key, out, &required);
+  if (err == ESP_OK) {
+    *present = true;
+    return true;
+  }
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    return false;
+  }
+  ESP_LOGW(kTag, "[WIFI][NVS] read error key=%s err=%s", key, esp_err_to_name(err));
+  return false;
+}
+
+uint32_t clamp_minmax_u32(uint32_t value, uint32_t min, uint32_t max) {
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+}
+
+bool wifi_load_config(WifiConfig& config) {
+  char tmp[24];
+  config = {};
+  std::strncpy(config.hostname, "luce-esp32", sizeof(config.hostname) - 1);
+  config.enabled = (LUCE_WIFI_AUTOSTART != 0);
+
+  nvs_handle_t handle = 0;
+  const esp_err_t init_err = nvs_open(kWifiConfigNamespace, NVS_READONLY, &handle);
+  if (init_err != ESP_OK) {
+    wifi_log_nvs_line("ssid", false, "(none)", false);
+    wifi_log_nvs_line("pass", false, "(none)", true);
+    wifi_log_nvs_line("hostname", false, "(none)", false);
+    wifi_log_nvs_line("enabled", false, "0", false);
+    wifi_log_nvs_line("max_retries", false, "0", false);
+    wifi_log_nvs_line("backoff_min_ms", false, "0", false);
+    wifi_log_nvs_line("backoff_max_ms", false, "0", false);
+    return false;
+  }
+
+  bool present_ssid = false;
+  bool present_pass = false;
+  bool present_hostname = false;
+  bool present_enabled = false;
+  bool present_retries = false;
+  bool present_backoff_min = false;
+  bool present_backoff_max = false;
+
+  wifi_read_string_key(handle, "ssid", config.ssid, sizeof(config.ssid), &present_ssid);
+  wifi_log_nvs_line("ssid", present_ssid, config.ssid, false);
+  if (!present_ssid) {
+    config.ssid[0] = '\0';
+  }
+
+  wifi_read_string_key(handle, "pass", config.pass, sizeof(config.pass), &present_pass);
+  if (!present_pass) {
+    config.pass[0] = '\0';
+  }
+  wifi_log_nvs_line("pass", present_pass, config.pass, true);
+
+  wifi_read_string_key(handle, "hostname", config.hostname, sizeof(config.hostname),
+                      &present_hostname);
+  if (!present_hostname) {
+    std::strncpy(config.hostname, "luce-esp32", sizeof(config.hostname) - 1);
+  }
+  wifi_log_nvs_line("hostname", present_hostname, config.hostname, false);
+
+  uint8_t enabled = 0;
+  if (wifi_read_u8_key(handle, "enabled", &enabled, &present_enabled) &&
+      (enabled == 0 || enabled == 1)) {
+    config.enabled = (enabled != 0);
+  } else if (present_enabled) {
+    ESP_LOGW(kTag, "[WIFI][NVS] key=enabled value invalid, using default 0");
+  }
+  wifi_log_nvs_line("enabled", present_enabled, config.enabled ? "1" : "0", false);
+
+  if (wifi_read_u32_key(handle, "max_retries", &config.max_retries, &present_retries)) {
+    config.max_retries = clamp_minmax_u32(config.max_retries, 0, 1000);
+  } else if (!present_retries) {
+    config.max_retries = kDefaultWifiMaxRetries;
+  }
+  std::snprintf(tmp, sizeof(tmp), "%lu", static_cast<unsigned long>(config.max_retries));
+  wifi_log_nvs_line("max_retries", present_retries, tmp, false);
+
+  if (wifi_read_u32_key(handle, "backoff_min_ms", &config.backoff_min_ms, &present_backoff_min)) {
+    if (config.backoff_min_ms > 60000) {
+      config.backoff_min_ms = kDefaultWifiBackoffMinMs;
+    }
+  } else {
+    config.backoff_min_ms = kDefaultWifiBackoffMinMs;
+  }
+
+  if (wifi_read_u32_key(handle, "backoff_max_ms", &config.backoff_max_ms, &present_backoff_max)) {
+    if (config.backoff_max_ms < 100 || config.backoff_max_ms > 60000) {
+      config.backoff_max_ms = kDefaultWifiBackoffMaxMs;
+    }
+  } else {
+    config.backoff_max_ms = kDefaultWifiBackoffMaxMs;
+  }
+
+  if (config.backoff_min_ms > config.backoff_max_ms) {
+    ESP_LOGW(kTag, "[WIFI][NVS] invalid pair: backoff_min_ms=%lu > backoff_max_ms=%lu; correcting",
+             static_cast<unsigned long>(config.backoff_min_ms),
+             static_cast<unsigned long>(config.backoff_max_ms));
+    config.backoff_min_ms = kDefaultWifiBackoffMinMs;
+    config.backoff_max_ms = kDefaultWifiBackoffMaxMs;
+  }
+
+  std::snprintf(tmp, sizeof(tmp), "%lu", static_cast<unsigned long>(config.backoff_min_ms));
+  wifi_log_nvs_line("backoff_min_ms", present_backoff_min, tmp, false);
+  std::snprintf(tmp, sizeof(tmp), "%lu", static_cast<unsigned long>(config.backoff_max_ms));
+  wifi_log_nvs_line("backoff_max_ms", present_backoff_max, tmp, false);
+
+  nvs_close(handle);
+  return true;
+}
+
+bool wifi_init_wifi_stack() {
+  if (g_wifi_stack_ready) {
+    return true;
+  }
+
+  g_wifi_backoff_ms = g_wifi_config.backoff_min_ms;
+  g_wifi_max_retries = g_wifi_config.max_retries;
+  g_wifi_backoff_min_ms = g_wifi_config.backoff_min_ms;
+  g_wifi_backoff_max_ms = g_wifi_config.backoff_max_ms;
+
+  const esp_err_t netif_err = esp_netif_init();
+  if (netif_err != ESP_OK && netif_err != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] esp_netif_init failed: %s", esp_err_to_name(netif_err));
+    return false;
+  }
+
+  const esp_err_t loop_err = esp_event_loop_create_default();
+  if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] esp_event_loop_create_default failed: %s",
+             esp_err_to_name(loop_err));
+    return false;
+  }
+
+  g_wifi_netif = esp_netif_create_default_wifi_sta();
+  if (!g_wifi_netif) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] esp_netif_create_default_wifi_sta returned null");
+    return false;
+  }
+
+  const wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+  const esp_err_t wifi_init_err = esp_wifi_init(&init_cfg);
+  if (wifi_init_err != ESP_OK && wifi_init_err != ESP_ERR_WIFI_INIT_STATE) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] esp_wifi_init failed: %s", esp_err_to_name(wifi_init_err));
+    return false;
+  }
+
+  if (g_wifi_event_any_instance == nullptr) {
+    const esp_err_t reg_wifi =
+        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr,
+                                          &g_wifi_event_any_instance);
+    if (reg_wifi != ESP_OK) {
+      ESP_LOGW(kTag, "[WIFI][ERROR] failed to register Wi-Fi event handler: %s",
+               esp_err_to_name(reg_wifi));
+      return false;
+    }
+  }
+
+  if (g_wifi_event_ip_instance == nullptr) {
+    const esp_err_t reg_ip = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                                 &wifi_event_handler, nullptr,
+                                                                 &g_wifi_event_ip_instance);
+    if (reg_ip != ESP_OK) {
+      ESP_LOGW(kTag, "[WIFI][ERROR] failed to register IP event handler: %s",
+               esp_err_to_name(reg_ip));
+      return false;
+    }
+  }
+
+  const esp_err_t mode_err = esp_wifi_set_mode(WIFI_MODE_STA);
+  if (mode_err != ESP_OK) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] esp_wifi_set_mode failed: %s", esp_err_to_name(mode_err));
+    return false;
+  }
+
+  g_wifi_stack_ready = true;
+  g_wifi_initialized = true;
+  ESP_LOGI(kTag, "[WIFI] stack initialized (hostname=%s)", g_wifi_config.hostname);
+  return true;
+}
+
+bool wifi_send_connect() {
+  if (!g_wifi_initialized) {
+    return false;
+  }
+  if (g_wifi_config.ssid[0] == '\0') {
+    ESP_LOGW(kTag, "[WIFI][ERROR] cannot connect: SSID is empty");
+    return false;
+  }
+
+  if (g_wifi_config.max_retries != 0 && g_wifi_attempt >= g_wifi_max_retries) {
+    set_wifi_state(WifiState::kStopped, "max_retries_exceeded");
+    return false;
+  }
+
+  wifi_config_t config;
+  std::memset(&config, 0, sizeof(config));
+  std::strncpy(reinterpret_cast<char*>(config.sta.ssid), g_wifi_config.ssid,
+               sizeof(config.sta.ssid) - 1);
+  std::strncpy(reinterpret_cast<char*>(config.sta.password), g_wifi_config.pass,
+               sizeof(config.sta.password) - 1);
+  config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+  config.sta.pmf_cfg.capable = true;
+  config.sta.pmf_cfg.required = false;
+
+  const esp_err_t cfg_err = esp_wifi_set_config(WIFI_IF_STA, &config);
+  if (cfg_err != ESP_OK) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] wifi set config failed: %s", esp_err_to_name(cfg_err));
+    return false;
+  }
+  if (g_wifi_config.hostname[0] != '\0') {
+    (void)esp_netif_set_hostname(g_wifi_netif, g_wifi_config.hostname);
+  }
+
+  const esp_err_t start_err = esp_wifi_start();
+  if (start_err != ESP_OK && start_err != ESP_ERR_WIFI_STATE) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] wifi start failed: %s", esp_err_to_name(start_err));
+    return false;
+  }
+  const esp_err_t connect_err = esp_wifi_connect();
+  if (connect_err != ESP_OK) {
+    g_wifi_last_error_reason = connect_err;
+    ESP_LOGW(kTag, "[WIFI][ERROR] wifi connect failed: %s", esp_err_to_name(connect_err));
+    return false;
+  }
+  g_wifi_attempt += 1;
+  g_wifi_next_backoff_ms = g_wifi_backoff_ms;
+  return true;
+}
+
+void wifi_schedule_backoff() {
+  if (g_wifi_backoff_ms == 0) {
+    g_wifi_backoff_ms = g_wifi_backoff_min_ms;
+  } else {
+    const uint32_t doubled = g_wifi_backoff_ms << 1;
+    if (doubled > g_wifi_backoff_ms && doubled <= g_wifi_backoff_max_ms) {
+      g_wifi_backoff_ms = doubled;
+    } else {
+      g_wifi_backoff_ms = g_wifi_backoff_max_ms;
+    }
+  }
+  if (g_wifi_backoff_ms < g_wifi_backoff_min_ms) {
+    g_wifi_backoff_ms = g_wifi_backoff_min_ms;
+  }
+  g_wifi_next_connect_tick = xTaskGetTickCount() + pdMS_TO_TICKS(g_wifi_backoff_ms);
+  ESP_LOGI(kTag, "[WIFI][BACKOFF] next_ms=%lu attempt=%lu max=%lu", 
+           static_cast<unsigned long>(g_wifi_backoff_ms),
+           static_cast<unsigned long>(g_wifi_attempt),
+           static_cast<unsigned long>(g_wifi_max_retries));
+}
+
+void wifi_status_for_cli() {
+  log_wifi_status();
+}
+
+void wifi_scan_for_cli() {
+  wifi_scan_config_t scan_cfg{};
+  scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+  scan_cfg.scan_time.active.min = 120;
+  scan_cfg.scan_time.active.max = 120;
+  scan_cfg.show_hidden = false;
+
+  const esp_err_t start_rc = esp_wifi_scan_start(&scan_cfg, true);
+  if (start_rc != ESP_OK) {
+    ESP_LOGW(kTag, "[WIFI][SCAN] start failed: %s", esp_err_to_name(start_rc));
+    return;
+  }
+
+  uint16_t ap_count = 0;
+  if (esp_wifi_scan_get_ap_num(&ap_count) != ESP_OK) {
+    ESP_LOGW(kTag, "[WIFI][SCAN] failed to query AP count");
+    return;
+  }
+  if (ap_count == 0) {
+    ESP_LOGI(kTag, "[WIFI][SCAN] count=0 networks=[]");
+    return;
+  }
+
+  uint16_t read_count = static_cast<uint16_t>(
+      ap_count < kDefaultWifiScanCount ? ap_count : kDefaultWifiScanCount);
+  wifi_ap_record_t records[16];
+  if (esp_wifi_scan_get_ap_records(&read_count, records) != ESP_OK) {
+    ESP_LOGW(kTag, "[WIFI][SCAN] failed to read AP records");
+    return;
+  }
+
+  char list[128] = "";
+  for (uint16_t idx = 0; idx < read_count; ++idx) {
+    if (idx > 0) {
+      std::strncat(list, ",", sizeof(list) - std::strlen(list) - 1);
+    }
+    char ssid[33] = "";
+    std::strncpy(ssid, reinterpret_cast<const char*>(records[idx].ssid), sizeof(ssid) - 1);
+    std::strncat(list, ssid, sizeof(list) - std::strlen(list) - 1);
+  }
+  ESP_LOGI(kTag, "[WIFI][SCAN] count=%u networks=%s", static_cast<unsigned>(ap_count), list);
+}
+
+void wifi_task(void*) {
+  if (!wifi_load_config(g_wifi_config)) {
+    g_wifi_enabled = (LUCE_WIFI_AUTOSTART != 0);
+  } else {
+    g_wifi_enabled = g_wifi_config.enabled || (LUCE_WIFI_AUTOSTART != 0);
+  }
+  g_wifi_backoff_min_ms = g_wifi_config.backoff_min_ms;
+  g_wifi_backoff_max_ms = g_wifi_config.backoff_max_ms;
+  g_wifi_max_retries = g_wifi_config.max_retries;
+
+  ESP_LOGI(kTag,
+           "[WIFI][NVS] key=ssid present=%d value=%s",
+           g_wifi_config.ssid[0] != '\0' ? 1 : 0, g_wifi_config.ssid[0] != '\0' ? g_wifi_config.ssid
+                                                                              : "(empty)");
+  ESP_LOGI(kTag, "[WIFI][NVS] key=pass present=%d value=%s",
+           g_wifi_config.pass[0] != '\0' ? 1 : 0, g_wifi_config.pass[0] != '\0' ? "********" : "(empty)");
+  ESP_LOGI(kTag, "[WIFI][NVS] config summary ssid='%s' pass=%s hostname='%s' enabled=%d max_retries=%lu backoff_min_ms=%lu backoff_max_ms=%lu",
+           g_wifi_config.ssid[0] != '\0' ? g_wifi_config.ssid : "(empty)",
+           g_wifi_config.pass[0] != '\0' ? "********" : "(empty)",
+           g_wifi_config.hostname[0] != '\0' ? g_wifi_config.hostname : "(empty)",
+           g_wifi_enabled ? 1 : 0, static_cast<unsigned long>(g_wifi_max_retries),
+           static_cast<unsigned long>(g_wifi_backoff_min_ms),
+           static_cast<unsigned long>(g_wifi_backoff_max_ms));
+
+  if (!wifi_init_wifi_stack()) {
+    set_wifi_state(WifiState::kStopped, "stack_init_failed");
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(kWifiIdlePollMs));
+    }
+  }
+
+  if (!g_wifi_enabled && !LUCE_WIFI_AUTOSTART) {
+    set_wifi_state(WifiState::kDisabled, "disabled_by_config");
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(kWifiStatusIntervalMs));
+      log_wifi_status();
+    }
+  }
+
+  g_wifi_configured = true;
+  set_wifi_state(WifiState::kInit, "config_loaded");
+  set_wifi_state(WifiState::kConnecting, "startup_connect");
+  if (!wifi_send_connect()) {
+    set_wifi_state(WifiState::kBackoff, "connect_request_failed");
+    wifi_schedule_backoff();
+  }
+
+  TickType_t last_status_tick = xTaskGetTickCount();
+  while (true) {
+    WifiEvent evt;
+    const TickType_t now = xTaskGetTickCount();
+    if (xQueueReceive(g_wifi_event_queue, &evt, pdMS_TO_TICKS(kWifiIdlePollMs)) == pdTRUE) {
+      switch (evt.type) {
+        case WifiEventType::kConnected: {
+          g_wifi_last_error_reason = 0;
+          set_wifi_state(WifiState::kConnecting, "connected");
+          break;
+        }
+        case WifiEventType::kGotIp: {
+          set_wifi_state(WifiState::kGotIp, "got_ip");
+          g_wifi_attempt = 0;
+          g_wifi_backoff_ms = g_wifi_backoff_min_ms;
+          wifi_ap_record_t rec;
+          if (esp_wifi_sta_get_ap_info(&rec) == ESP_OK) {
+            g_wifi_last_rssi = rec.rssi;
+          }
+          log_wifi_status();
+          break;
+        }
+        case WifiEventType::kDisconnected: {
+          g_wifi_has_ip = false;
+          g_wifi_last_error_reason = evt.reason;
+          g_wifi_backoff_ms = g_wifi_backoff_ms == 0 ? g_wifi_backoff_min_ms : g_wifi_backoff_ms;
+          set_wifi_state(WifiState::kBackoff, "disconnected");
+          if (g_wifi_max_retries != 0 && g_wifi_attempt >= g_wifi_max_retries) {
+            set_wifi_state(WifiState::kStopped, "max_retries_exceeded");
+          } else {
+            wifi_schedule_backoff();
+          }
+          break;
+        }
+        case WifiEventType::kStart:
+        case WifiEventType::kScanDone:
+        default:
+          break;
+      }
+    }
+
+    if (g_wifi_state == WifiState::kBackoff && now >= g_wifi_next_connect_tick) {
+      if ((g_wifi_max_retries == 0) || (g_wifi_attempt < g_wifi_max_retries)) {
+        set_wifi_state(WifiState::kConnecting, "retry_connect");
+        if (!wifi_send_connect()) {
+          wifi_schedule_backoff();
+        } else {
+          g_wifi_next_connect_tick = 0;
+        }
+      }
+    }
+
+    if ((now - last_status_tick) >= pdMS_TO_TICKS(kWifiStatusIntervalMs)) {
+      last_status_tick = now;
+      log_wifi_status();
+    }
+    vTaskDelay(pdMS_TO_TICKS(kWifiNoopDelayMs));
+  }
+}
+
+void wifi_startup() {
+  if (g_wifi_manager_task) {
+    return;
+  }
+  g_wifi_event_queue = xQueueCreate(kWifiQueueLength, sizeof(WifiEvent));
+  if (!g_wifi_event_queue) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] failed to create Wi-Fi event queue");
+    return;
+  }
+  if (xTaskCreate(wifi_task, "wifi_mgr", 6144, nullptr, 3, &g_wifi_manager_task) != pdPASS) {
+    ESP_LOGW(kTag, "[WIFI][ERROR] failed to create Wi-Fi manager task");
+    return;
+  }
+}
+#endif  // LUCE_HAS_WIFI
 
 #if LUCE_HAS_NVS
 const char* nvs_type_name(nvs_type_t type) {
@@ -1213,7 +1949,10 @@ void log_cli_arguments(const char* command, int argc, char* argv[]) {
 }
 
 void cli_print_help() {
-  ESP_LOGI(kTag, "CLI commands: help, status, nvs_dump, i2c_scan, mcp_read, relay_set, relay_mask, buttons, lcd_print, reboot");
+  ESP_LOGI(kTag,
+           "CLI commands: help, status, nvs_dump, i2c_scan, mcp_read, relay_set, relay_mask, buttons, lcd_print, reboot");
+  ESP_LOGI(kTag, "  - wifi.status (if stage5 Wi-Fi active)");
+  ESP_LOGI(kTag, "  - wifi.scan (if stage5 Wi-Fi active)");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
   ESP_LOGI(kTag, "  - relay_mask <hex> (8-bit register value)");
@@ -1324,6 +2063,22 @@ void cli_cmd_lcd_print(char* text) {
 #else
   (void)text;
   ESP_LOGW(kTag, "CLI command lcd_print: unsupported (LUCE_HAS_LCD=0)");
+#endif
+}
+
+void cli_cmd_wifi_status() {
+#if LUCE_HAS_WIFI
+  wifi_status_for_cli();
+#else
+  ESP_LOGW(kTag, "CLI command wifi.status: unsupported (LUCE_HAS_WIFI=0)");
+#endif
+}
+
+void cli_cmd_wifi_scan() {
+#if LUCE_HAS_WIFI
+  wifi_scan_for_cli();
+#else
+  ESP_LOGW(kTag, "CLI command wifi.scan: unsupported (LUCE_HAS_WIFI=0)");
 #endif
 }
 
@@ -1457,6 +2212,10 @@ void cli_task(void*) {
           }
           cli_cmd_lcd_print(text);
         }
+      } else if (std::strcmp(argv[0], "wifi.status") == 0) {
+        cli_cmd_wifi_status();
+      } else if (std::strcmp(argv[0], "wifi.scan") == 0) {
+        cli_cmd_wifi_scan();
       } else if (std::strcmp(argv[0], "reboot") == 0) {
         ESP_LOGW(kTag, "CLI command reboot: restarting");
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -1566,6 +2325,9 @@ extern "C" void app_main(void) {
   cli_startup();
 #else
   ESP_LOGW(kTag, "CLI startup disabled by LUCE_STAGE4_CLI=%d", LUCE_STAGE4_CLI);
+#endif
+#if LUCE_HAS_WIFI
+  wifi_startup();
 #endif
   for (;;) {
     log_stage4_watermarks("stage4_main_wait");
