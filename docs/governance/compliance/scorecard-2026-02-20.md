@@ -24,6 +24,12 @@
 - evidence: docs/work/diag/evidence/20260222_180112/90_summary.md
 - notes: stage6 SNTP client is present under LUCE_STAGE=6 with non-blocking startup and CLI `time.status`.
 
+## Stage7 Evidence
+
+- status: PASS
+- evidence: docs/work/diag/evidence/20260222_183903/90_summary.md
+- notes: stage7 adds optional mDNS advertisement with `mdns/status` CLI; runtime boot and CLI evidence are captured with `mdns` disabled by default and safe no-crash behavior.
+
 ## Blockers
 
 - none

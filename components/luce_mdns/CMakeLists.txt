@@ -1,0 +1,10 @@
+idf_component_register(
+  SRCS
+    "${IDF_PATH}/components/lwip/lwip/src/apps/mdns/mdns_domain.c"
+    "${IDF_PATH}/components/lwip/lwip/src/apps/mdns/mdns_out.c"
+    "${IDF_PATH}/components/lwip/lwip/src/apps/mdns/mdns.c"
+  INCLUDE_DIRS
+    "${IDF_PATH}/components/lwip/lwip/src/include"
+  PRIV_REQUIRES
+    lwip
+)

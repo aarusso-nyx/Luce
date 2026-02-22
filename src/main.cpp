@@ -14,6 +14,7 @@
 #include "esp_chip_info.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_partition.h"
 #include "esp_private/esp_clk.h"
 #include "esp_timer.h"
@@ -36,10 +37,15 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/netif.h"
 #endif
 
 #if LUCE_HAS_NTP
 #include "esp_sntp.h"
+#endif
+
+#if LUCE_HAS_MDNS
+#include "lwip/apps/mdns.h"
 #endif
 
 #if LUCE_HAS_CLI
@@ -165,6 +171,28 @@ void wifi_status_for_cli();
 bool wifi_has_ip();
 #endif
 
+#if LUCE_HAS_MDNS
+enum class MdnsState : uint8_t {
+  kDisabled = 0,
+  kDisabledByConfig,
+  kInit,
+  kStarted,
+  kFailed,
+};
+
+struct MdnsConfig {
+  bool enabled = false;
+  char hostname[33] = {0};
+  char instance[33] = "Luce Stage";
+};
+
+void mdns_log_status();
+void mdns_startup();
+void mdns_handle_wifi_got_ip();
+void mdns_handle_wifi_lost_ip();
+bool mdns_load_config();
+#endif
+
 #if LUCE_HAS_NTP
 enum class NtpState : uint8_t {
   kDisabled = 0,
@@ -262,8 +290,8 @@ void log_status_health_lines() {
   ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag, "status: task_watermark_words=%u", uxTaskGetStackHighWaterMark(nullptr));
-  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d", LUCE_HAS_I2C,
-           LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP);
+  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d mdns=%d", LUCE_HAS_I2C,
+           LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS);
 #if LUCE_HAS_I2C
   ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d %s", g_i2c_initialized, g_mcp_available, mask_line);
 #endif
@@ -572,11 +600,17 @@ void wifi_event_handler(void*,
         format_ip_addr(event->ip_info.gw, g_wifi_gw, sizeof(g_wifi_gw));
         format_ip_addr(event->ip_info.netmask, g_wifi_mask, sizeof(g_wifi_mask));
       }
+  #if LUCE_HAS_MDNS
+      mdns_handle_wifi_got_ip();
+  #endif
       wifi_queue_send(WifiEventType::kGotIp, 0);
       return;
     }
     if (event_id == IP_EVENT_STA_LOST_IP) {
       g_wifi_has_ip = false;
+  #if LUCE_HAS_MDNS
+      mdns_handle_wifi_lost_ip();
+  #endif
       wifi_queue_send(WifiEventType::kDisconnected, 0);
     }
   }
@@ -1062,6 +1096,355 @@ void wifi_startup() {
   }
 }
 #endif  // LUCE_HAS_WIFI
+
+#if LUCE_HAS_MDNS
+constexpr char kMdnsConfigNamespace[] = "mdns";
+constexpr char kNetConfigNamespace[] = "net";
+constexpr char kMdnsDefaultHostnamePrefix[] = "luce-";
+constexpr char kMdnsDefaultInstance[] = "Luce Stage";
+constexpr char kMdnsServiceType[] = "_luce";
+constexpr char kMdnsServiceProto[] = "_tcp";
+constexpr uint16_t kMdnsServicePort = 80;
+constexpr uint16_t kMdnsTxtValueSize = 64;
+constexpr uint16_t kMdnsTxtBuildValueSize = 40;
+
+MdnsConfig g_mdns_config {};
+
+struct MdnsRuntime {
+  MdnsState state = MdnsState::kDisabledByConfig;
+  char hostname[33] = {0};
+  char instance[33] = {0};
+  char txt_fw[kMdnsTxtValueSize] = {0};
+  char txt_stage[kMdnsTxtValueSize] = {0};
+  char txt_device_id[kMdnsTxtValueSize] = {0};
+  char txt_build[kMdnsTxtBuildValueSize] = {0};
+  int service_slot = -1;
+  int last_errno = 0;
+  bool started = false;
+  bool initialized = false;
+};
+
+MdnsRuntime g_mdns_runtime {};
+
+void fill_mdns_default_hostname() {
+  uint8_t mac[6] = {0};
+  const esp_err_t mac_err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  if (mac_err == ESP_OK) {
+    std::snprintf(g_mdns_runtime.hostname, sizeof(g_mdns_runtime.hostname), "%s%02X%02X", 
+                  kMdnsDefaultHostnamePrefix, mac[4], mac[5]);
+    return;
+  }
+  std::snprintf(g_mdns_runtime.hostname, sizeof(g_mdns_runtime.hostname), "%slocal", kMdnsDefaultHostnamePrefix);
+}
+
+const char* mdns_state_to_string(MdnsState state) {
+  switch (state) {
+    case MdnsState::kDisabled:
+      return "DISABLED";
+    case MdnsState::kDisabledByConfig:
+      return "DISABLED_BY_CONFIG";
+    case MdnsState::kInit:
+      return "INIT";
+    case MdnsState::kStarted:
+      return "STARTED";
+    case MdnsState::kFailed:
+      return "FAILED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void mdns_set_state(MdnsState next_state, const char* reason) {
+  if (g_mdns_runtime.state == next_state) {
+    return;
+  }
+  g_mdns_runtime.state = next_state;
+  ESP_LOGI(kTag, "[mDNS] state=%s reason=%s", mdns_state_to_string(next_state),
+           reason ? reason : "(none)");
+}
+
+void mdns_add_txt_item(mdns_service* service, const char* key, const char* value) {
+  if (!service || !key || !value) {
+    return;
+  }
+  char item[128] = {0};
+  const int32_t len = std::snprintf(item, sizeof(item), "%s=%s", key, value);
+  if (len <= 0) {
+    return;
+  }
+  (void)mdns_resp_add_service_txtitem(service, item, static_cast<uint8_t>(len));
+}
+
+void mdns_build_txt(mdns_service* service, void* userdata) {
+  (void)userdata;
+  if (!service) {
+    return;
+  }
+  mdns_add_txt_item(service, "fw", g_mdns_runtime.txt_fw);
+  mdns_add_txt_item(service, "stage", g_mdns_runtime.txt_stage);
+  mdns_add_txt_item(service, "device", g_mdns_runtime.txt_device_id);
+  mdns_add_txt_item(service, "build", g_mdns_runtime.txt_build);
+}
+
+bool mdns_read_bool_key(nvs_handle_t handle, const char* key, bool* value, bool* present) {
+  if (!handle || !key || !value || !present) {
+    return false;
+  }
+  uint8_t flag = 0;
+  const esp_err_t err = nvs_get_u8(handle, key, &flag);
+  if (err == ESP_OK) {
+    *value = (flag != 0);
+    *present = true;
+    return true;
+  }
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    *present = false;
+    return false;
+  }
+  ESP_LOGW(kTag, "[mDNS][NVS] read error key=%s err=%s", key, esp_err_to_name(err));
+  *present = false;
+  return false;
+}
+
+bool mdns_read_string_key(nvs_handle_t handle, const char* key, char* value, std::size_t value_len,
+                         bool* present) {
+  if (!handle || !key || !value || value_len == 0 || !present) {
+    return false;
+  }
+  size_t required = 0;
+  const esp_err_t err = nvs_get_str(handle, key, nullptr, &required);
+  if (err != ESP_OK) {
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+      *present = false;
+      return false;
+    }
+    ESP_LOGW(kTag, "[mDNS][NVS] read error key=%s err=%s", key, esp_err_to_name(err));
+    *present = false;
+    return false;
+  }
+  if (required > value_len) {
+    required = value_len;
+  }
+  if (nvs_get_str(handle, key, value, &required) != ESP_OK) {
+    *present = false;
+    return false;
+  }
+  if (required == 0) {
+    *present = false;
+    return false;
+  }
+  *present = true;
+  return true;
+}
+
+bool mdns_load_config() {
+  bool enabled_present = false;
+  bool has_hostname = false;
+  bool has_instance = false;
+
+  g_mdns_config.enabled = false;
+  g_mdns_config.hostname[0] = '\0';
+  g_mdns_config.instance[0] = '\0';
+  g_mdns_runtime.initialized = false;
+  std::memset(g_mdns_runtime.txt_fw, 0, sizeof(g_mdns_runtime.txt_fw));
+  std::memset(g_mdns_runtime.txt_stage, 0, sizeof(g_mdns_runtime.txt_stage));
+  std::memset(g_mdns_runtime.txt_device_id, 0, sizeof(g_mdns_runtime.txt_device_id));
+  std::memset(g_mdns_runtime.txt_build, 0, sizeof(g_mdns_runtime.txt_build));
+  g_mdns_runtime.txt_fw[sizeof(g_mdns_runtime.txt_fw) - 1] = '\0';
+  g_mdns_runtime.txt_stage[sizeof(g_mdns_runtime.txt_stage) - 1] = '\0';
+  g_mdns_runtime.txt_device_id[sizeof(g_mdns_runtime.txt_device_id) - 1] = '\0';
+  g_mdns_runtime.txt_build[sizeof(g_mdns_runtime.txt_build) - 1] = '\0';
+
+  nvs_handle_t mdns_handle = 0;
+  nvs_handle_t net_handle = 0;
+  bool loaded = false;
+
+  if (nvs_open(kMdnsConfigNamespace, NVS_READONLY, &mdns_handle) == ESP_OK) {
+    mdns_read_bool_key(mdns_handle, "enabled", &g_mdns_config.enabled, &enabled_present);
+    if (mdns_read_string_key(mdns_handle, "instance", g_mdns_config.instance,
+                             sizeof(g_mdns_config.instance), &has_instance)) {
+      g_mdns_config.instance[sizeof(g_mdns_config.instance) - 1] = '\0';
+    } else {
+      std::snprintf(g_mdns_config.instance, sizeof(g_mdns_config.instance), "%s", kMdnsDefaultInstance);
+    }
+    nvs_close(mdns_handle);
+    loaded = true;
+  } else {
+    std::snprintf(g_mdns_config.instance, sizeof(g_mdns_config.instance), "%s", kMdnsDefaultInstance);
+  }
+
+  if (nvs_open(kNetConfigNamespace, NVS_READONLY, &net_handle) == ESP_OK) {
+    has_hostname = false;
+    if (!mdns_read_string_key(net_handle, "hostname", g_mdns_config.hostname,
+                             sizeof(g_mdns_config.hostname), &has_hostname)) {
+      fill_mdns_default_hostname();
+    }
+    nvs_close(net_handle);
+    loaded = loaded || (has_hostname || has_instance || enabled_present);
+  } else {
+    fill_mdns_default_hostname();
+  }
+
+  if (!loaded) {
+    if (g_mdns_config.hostname[0] == '\0') {
+      fill_mdns_default_hostname();
+    }
+    if (g_mdns_config.instance[0] == '\0') {
+      std::snprintf(g_mdns_config.instance, sizeof(g_mdns_config.instance), "%s", kMdnsDefaultInstance);
+    }
+  }
+
+  if (!has_hostname) {
+    ESP_LOGI(kTag, "[mDNS][NVS] key=hostname present=0 value=%s", g_mdns_config.hostname);
+  } else {
+    ESP_LOGI(kTag, "[mDNS][NVS] key=hostname present=1 value=%s", g_mdns_config.hostname);
+  }
+  ESP_LOGI(kTag, "[mDNS][NVS] key=instance present=%d value=%s",
+           has_instance || (g_mdns_config.instance[0] != '\0'), g_mdns_config.instance);
+  ESP_LOGI(kTag, "[mDNS][NVS] key=enabled present=%d value=%d", enabled_present,
+           g_mdns_config.enabled ? 1 : 0);
+
+  g_mdns_runtime.initialized = true;
+  g_mdns_runtime.hostname[0] = '\0';
+  g_mdns_runtime.instance[0] = '\0';
+  std::strncpy(g_mdns_runtime.hostname, g_mdns_config.hostname, sizeof(g_mdns_runtime.hostname) - 1);
+  std::strncpy(g_mdns_runtime.instance, g_mdns_config.instance, sizeof(g_mdns_runtime.instance) - 1);
+  std::snprintf(g_mdns_runtime.txt_fw, sizeof(g_mdns_runtime.txt_fw), "%s", LUCE_PROJECT_VERSION);
+  std::snprintf(g_mdns_runtime.txt_stage, sizeof(g_mdns_runtime.txt_stage), "stage%d", LUCE_STAGE);
+  std::snprintf(g_mdns_runtime.txt_device_id, sizeof(g_mdns_runtime.txt_device_id), "%s", g_mdns_runtime.hostname);
+  std::snprintf(g_mdns_runtime.txt_build, sizeof(g_mdns_runtime.txt_build), "%s %s",
+                __DATE__, __TIME__);
+
+  ESP_LOGI(kTag, "[mDNS] enabled=%d hostname=%s", g_mdns_config.enabled ? 1 : 0,
+           g_mdns_runtime.hostname[0] != '\0' ? g_mdns_runtime.hostname : "(empty)");
+  ESP_LOGI(kTag, "[mDNS] startup config loaded (instance=%s)", g_mdns_runtime.instance);
+
+  if (!g_mdns_config.enabled) {
+    mdns_set_state(MdnsState::kDisabledByConfig, "enabled=0");
+    return false;
+  }
+
+  mdns_set_state(MdnsState::kDisabled, "config loaded");
+  return true;
+}
+
+void mdns_stop_service() {
+  if (!g_mdns_runtime.started) {
+    return;
+  }
+  netif* netif = netif_default;
+  if (!netif) {
+    g_mdns_runtime.started = false;
+    g_mdns_runtime.state = MdnsState::kDisabled;
+    return;
+  }
+
+  if (g_mdns_runtime.service_slot >= 0) {
+    (void)mdns_resp_del_service(netif, static_cast<uint8_t>(g_mdns_runtime.service_slot));
+    g_mdns_runtime.service_slot = -1;
+  }
+  (void)mdns_resp_remove_netif(netif);
+  g_mdns_runtime.started = false;
+  mdns_set_state(MdnsState::kDisabled, "stopped");
+}
+
+void mdns_start_service() {
+  if (!g_mdns_config.enabled) {
+    return;
+  }
+
+  if (g_mdns_runtime.started) {
+    return;
+  }
+
+  if (!wifi_has_ip()) {
+    mdns_set_state(MdnsState::kInit, "waiting for ip");
+    return;
+  }
+
+  if (!g_mdns_config.hostname[0]) {
+    mdns_set_state(MdnsState::kFailed, "missing hostname");
+    return;
+  }
+
+  netif* netif = netif_default;
+  if (!netif) {
+    mdns_set_state(MdnsState::kFailed, "netif not initialized");
+    return;
+  }
+
+  if (!g_mdns_runtime.initialized) {
+    (void)mdns_load_config();
+  }
+
+  if (!g_mdns_config.enabled) {
+    mdns_set_state(MdnsState::kDisabledByConfig, "disabled by config");
+    return;
+  }
+
+  mdns_resp_init();
+  const err_t netif_err = mdns_resp_add_netif(netif, g_mdns_runtime.hostname);
+  if (netif_err != ERR_OK) {
+    g_mdns_runtime.last_errno = netif_err;
+    mdns_set_state(MdnsState::kFailed, "add netif failed");
+    ESP_LOGW(kTag, "[mDNS] FAILED err=%d", netif_err);
+    return;
+  }
+
+  g_mdns_runtime.service_slot = mdns_resp_add_service(netif, g_mdns_runtime.instance,
+                                                     kMdnsServiceType, DNSSD_PROTO_TCP,
+                                                     kMdnsServicePort, mdns_build_txt,
+                                                     nullptr);
+  if (g_mdns_runtime.service_slot < 0) {
+    const int slot_err = g_mdns_runtime.service_slot;
+    g_mdns_runtime.last_errno = slot_err;
+    (void)mdns_resp_remove_netif(netif);
+    mdns_set_state(MdnsState::kFailed, "service registration failed");
+    ESP_LOGW(kTag, "[mDNS] FAILED err=%d", slot_err);
+    return;
+  }
+
+  g_mdns_runtime.started = true;
+  mdns_set_state(MdnsState::kStarted, "advertising");
+  ESP_LOGI(kTag, "[mDNS] started");
+  ESP_LOGI(kTag, "[mDNS] service=instance=%s service=%s.%s port=%u",
+           g_mdns_runtime.instance, kMdnsServiceType, kMdnsServiceProto,
+           static_cast<unsigned>(kMdnsServicePort));
+}
+
+void mdns_handle_wifi_got_ip() {
+  if (!g_mdns_config.enabled) {
+    return;
+  }
+  mdns_start_service();
+}
+
+void mdns_handle_wifi_lost_ip() {
+  mdns_stop_service();
+}
+
+void mdns_startup() {
+  if (!mdns_load_config()) {
+    return;
+  }
+  if (g_mdns_config.enabled) {
+    mdns_set_state(MdnsState::kInit, "ready");
+  } else {
+    g_mdns_runtime.started = false;
+  }
+}
+
+void mdns_log_status() {
+  const char* state = mdns_state_to_string(g_mdns_runtime.state);
+  char services[128] = "(none)";
+  if (g_mdns_runtime.started && g_mdns_runtime.service_slot >= 0) {
+    std::snprintf(services, sizeof(services), "%s.%s", kMdnsServiceType, kMdnsServiceProto);
+  }
+  ESP_LOGI(kTag, "CLI command mdns.status: state=%s enabled=%d hostname=%s services=%s", state,
+           g_mdns_config.enabled ? 1 : 0,
+           g_mdns_runtime.hostname[0] != '\0' ? g_mdns_runtime.hostname : "(empty)", services);
+}
+#endif  // LUCE_HAS_MDNS
 
 #if LUCE_HAS_NTP
 constexpr char kNtpConfigNamespace[] = "ntp";
@@ -2291,6 +2674,7 @@ void cli_print_help() {
   ESP_LOGI(kTag, "  - wifi.status (if stage5 Wi-Fi active)");
   ESP_LOGI(kTag, "  - wifi.scan (if stage5 Wi-Fi active)");
   ESP_LOGI(kTag, "  - time.status (if stage6 NTP active)");
+  ESP_LOGI(kTag, "  - mdns.status (if stage7 mDNS active)");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
   ESP_LOGI(kTag, "  - relay_mask <hex> (8-bit register value)");
@@ -2445,6 +2829,16 @@ void cli_cmd_time_status() {
 }
 #endif
 
+#if LUCE_HAS_MDNS
+void cli_cmd_mdns_status() {
+  mdns_log_status();
+}
+#else
+void cli_cmd_mdns_status() {
+  ESP_LOGW(kTag, "CLI command mdns.status: unsupported (LUCE_HAS_MDNS=0)");
+}
+#endif
+
 void cli_task(void*) {
   uart_config_t uart_cfg{};
   uart_cfg.baud_rate = 115200;
@@ -2581,6 +2975,8 @@ void cli_task(void*) {
         cli_cmd_wifi_scan();
       } else if (std::strcmp(argv[0], "time.status") == 0) {
         cli_cmd_time_status();
+      } else if (std::strcmp(argv[0], "mdns.status") == 0) {
+        cli_cmd_mdns_status();
       } else if (std::strcmp(argv[0], "reboot") == 0) {
         ESP_LOGW(kTag, "CLI command reboot: restarting");
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -2669,8 +3065,9 @@ extern "C" void app_main(void) {
   print_app_info();
   print_partition_summary();
 
-  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d",
-           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP);
+  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d",
+           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP,
+           LUCE_HAS_MDNS);
 
 #if LUCE_HAS_NVS
   update_boot_state_record();
@@ -2693,6 +3090,9 @@ extern "C" void app_main(void) {
 #endif
 #if LUCE_HAS_WIFI
   wifi_startup();
+#if LUCE_HAS_MDNS
+  mdns_startup();
+#endif
 #if LUCE_HAS_NTP
   ntp_startup();
 #endif
