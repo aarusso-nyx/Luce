@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Relay Controller</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <header x-data class="bg-primary text-white py-2">
+    <h1>Relay Controller</h1>
+    <div class="header-right">
+      <div id="version" class="version">v--</div>
+      <div id="day-status" class="status">--</div>
+      <div id="clock" class="clock">--:--:--</div>
+      <div id="uptime" class="uptime text-white ms-3">Uptime: --</div>
+    </div>
+  </header>
+  <main>
+    <section id="relays-section">
+      <h2>Relay Control</h2>
+      <div id="relays" class="grid"></div>
+      <!-- Light sensor controls -->
+      <div id="sensor-panel" class="sensor-panel">
+        <h3>Light Sensor</h3>
+        <label for="threshold-slider">Threshold: <span id="threshold-value">--</span></label>
+        <input type="range" id="threshold-slider" min="0" max="4095" />
+        <div>Current value: <span id="sensor-value">--</span></div>
+        <div>Voltage: <span id="voltage-value">--</span></div>
+        <div>Temperature: <span id="temperature-value">--</span> °C</div>
+        <div>Humidity: <span id="humidity-value">--</span> %</div>
+      </div>
+    </section>
+    <section id="config-section">
+      <h2>Configuration</h2>
+      <form id="config-form">
+        <div class="form-row">
+          <label for="name">Device Name</label>
+          <input type="text" id="name" placeholder="Loading..." />
+        </div>
+        <div class="form-row two-col">
+          <div class="col">
+            <label for="ssid">WiFi SSID</label>
+            <input type="text" id="ssid" placeholder="Loading..." />
+          </div>
+          <div class="col">
+            <label for="pass">WiFi Password</label>
+            <input type="password" id="pass" placeholder="********" />
+          </div>
+        </div>
+        <div class="form-row mqtt-row">
+          <label for="mqtt-select">MQTT Broker</label>
+          <select id="mqtt-select">
+            <option value="">Disabled</option>
+            <option value="mDNS">mDNS</option>
+            <option value="custom">Custom</option>
+          </select>
+          <input type="text" id="mqtt" placeholder="Broker URI..." style="display:none;" />
+        </div>
+        <div class="form-row">
+          <label class="form-label">Log Options</label>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="cfg-logTimestamp">
+            <label class="form-check-label" for="cfg-logTimestamp">Include Timestamp</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="cfg-logTaskName">
+            <label class="form-check-label" for="cfg-logTaskName">Include Task Name</label>
+          </div>
+        </div>
+        <div class="form-row buttons">
+          <button type="submit">Save</button>
+          <button type="button" id="restart">Restart</button>
+        </div>
+      </form>
+    </section>
+    <!-- Diagnostics -->
+    <section id="diag-section">
+      <h2>Diagnostics</h2>
+      <div class="diag-buttons">
+        <button id="diag-boot">Boot</button>
+        <button id="diag-runtime">Runtime</button>
+        <button id="diag-minimal">Minimal</button>
+      </div>
+      <pre id="diag-output" class="diag-output"></pre>
+    </section>
+    <!-- Logs -->
+    <section id="logs-section">
+      <h2>Logs</h2>
+      <div id="logs-controls">
+        <label for="logs-limit">Last </label>
+        <input type="number" id="logs-limit" value="200" min="10" max="1000" step="10" />
+        <label> entries</label>
+        <button id="logs-refresh">Refresh</button>
+      </div>
+      <pre id="logs" class="logs"></pre>
+    </section>
+    <!-- Dashboard: sensor trends -->
+    <section id="dashboard-section">
+      <h2>Dashboard</h2>
+      <div class="charts-grid">
+        <div class="chart-container"><canvas id="chart-light"></canvas></div>
+        <div class="chart-container"><canvas id="chart-voltage"></canvas></div>
+        <div class="chart-container"><canvas id="chart-temperature"></canvas></div>
+        <div class="chart-container"><canvas id="chart-humidity"></canvas></div>
+      </div>
+    </section>
+  </main>
+  <script src="script.js"></script>
+</body>
+</html>
