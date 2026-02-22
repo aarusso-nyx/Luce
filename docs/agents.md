@@ -16,14 +16,14 @@ For autonomous firmware iteration:
 
 1. Build the target env: `python3 -m platformio run -e <env>`
 2. Upload firmware: `python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001`
-3. Capture boot and runtime output on mirrored console: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
+3. Capture boot and runtime output on monitor port: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
 4. Paste back the first 80 lines after reset for diagnosis.
 
 Default target during bootstrap is `luce_stage0` until a later stage env is requested.
 
 ### Monitor behavior note
 
-On this host, `python3 -m platformio device monitor -p /dev/cu.usbserial-40110` can fail with:
+On this host, monitor command using `/dev/cu.usbserial-40110` can fail with:
 
 `termios.error: (19, 'Operation not supported by device')`
 
