@@ -29,3 +29,9 @@ sdkconfig.luce_*
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+docs/work/inv/*
+docs/work/diag/*
+docs/work/plan/*
+!docs/work/inv/.gitkeep
+!docs/work/diag/.gitkeep
+!docs/work/plan/.gitkeep
