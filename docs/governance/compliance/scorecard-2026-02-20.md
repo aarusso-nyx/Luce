@@ -30,6 +30,18 @@
 - evidence: docs/work/diag/evidence/20260222_183903/90_summary.md
 - notes: stage7 adds optional mDNS advertisement with `mdns/status` CLI; runtime boot and CLI evidence are captured with `mdns` disabled by default and safe no-crash behavior.
 
+## Stage8 Evidence
+
+- status: PASS_WITH_LIMITATIONS
+- evidence: docs/work/diag/evidence/20260222_191336/90_summary.md
+- notes: stage8 adds read-only TCP line CLI on port 2323 with compile-time `LUCE_STAGE=8`, `[CLI_NET]` startup/auth/session logging, and disabled-by-default evidence. full stage8 network e2e transcript is UNAVAILABLE in this run due no network credentials in onboard NVS.
+
+## Stage9 Evidence
+
+- status: PASS
+- evidence: docs/work/diag/20260222_195556/90_summary.md
+- notes: stage9 adds MQTT publish-only telemetry (`luce_stage9`) with `mqtt.status`, bounded reconnects, and non-blocking runtime behavior in this evidence run.
+
 ## Blockers
 
 - none

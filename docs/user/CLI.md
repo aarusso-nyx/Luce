@@ -37,6 +37,17 @@ The serial CLI on UART0 (`LUCE_STAGE=4+`) remains the primary deterministic inte
 - `time.status` *(stage6+)*
   - Prints SNTP sync state, last successful sync Unix time, sync age, UTC string.
   - Prints "time not synced" with an explicit reason when no valid time is available.
+- `mqtt.status` *(stage9+)*
+  - Prints state machine fields, enable flag, connection state, counts, URI, last publish info.
+  - Example fields:
+    - `state=... enabled=0|1 connected=0|1`
+    - `connect_count`, `publish_count`, `last_topic`, `last_rc`, `last_payload`, `last_latency_ms`
+- `mqtt.pubtest` *(stage9+)*
+  - Sends a single telemetry test publish and prints `publish rc=<code>`.
+
+### Stage9 behavior
+- `mqtt.status` and `mqtt.pubtest` are unavailable unless firmware is built with `LUCE_STAGE=9`.
+- Stage9 publishes telemetry only (no topic subscriptions or control actions).
 
 ### Stage6 additions
 - `time.status` reads `[NTP]` state and validates bounded retry behavior without blocking boot.

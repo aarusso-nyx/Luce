@@ -48,6 +48,14 @@
 #include "lwip/apps/mdns.h"
 #endif
 
+#if LUCE_HAS_TCP_CLI
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
+#endif
+#if LUCE_HAS_MQTT
+#include "mqtt_client.h"
+#endif
+
 #if LUCE_HAS_CLI
 #include "driver/uart.h"
 #endif
@@ -80,9 +88,19 @@ void blink_alive();
 constexpr std::size_t kDiagTaskStackWords = 8192;
 constexpr std::size_t kCliTaskStackWords = 6144;
 constexpr std::size_t kBlinkTaskStackWords = 2048;
+constexpr std::size_t kMqttTaskStackWords = 6144;
+#if LUCE_HAS_MQTT
+constexpr uint32_t kMqttMinRetryBackoffMs = 1000;
+#endif
 
 TaskHandle_t g_diag_task = nullptr;
 TaskHandle_t g_cli_task = nullptr;
+#if LUCE_HAS_TCP_CLI
+TaskHandle_t g_cli_net_task = nullptr;
+#endif
+#if LUCE_HAS_MQTT
+TaskHandle_t g_mqtt_task = nullptr;
+#endif
 
 extern bool g_i2c_initialized;
 extern bool g_mcp_available;
@@ -191,6 +209,71 @@ void mdns_startup();
 void mdns_handle_wifi_got_ip();
 void mdns_handle_wifi_lost_ip();
 bool mdns_load_config();
+#endif
+
+#if LUCE_HAS_MQTT
+enum class MqttState : uint8_t {
+  kDisabled = 0,
+  kInitialized,
+  kConnecting,
+  kConnected,
+  kBackoff,
+  kFailed,
+};
+
+struct MqttConfig {
+  bool enabled = false;
+  char uri[128] = "mqtt://localhost:1883";
+  char client_id[33] = {0};
+  char base_topic[64] = "luce/stage9";
+  char username[33] = {0};
+  char password[65] = {0};
+  bool tls_enabled = false;
+  char ca_pem_source[16] = "embedded";
+  char ca_pem[1536] = {0};
+  uint32_t qos = 0;
+  uint32_t keepalive_s = 120;
+};
+
+struct MqttRuntime {
+  esp_mqtt_client_handle_t client = nullptr;
+  MqttState state = MqttState::kDisabled;
+  bool connected = false;
+  TickType_t next_retry_tick = 0;
+  TickType_t last_connect_tick = 0;
+  TickType_t last_disconnect_tick = 0;
+  uint32_t retry_backoff_ms = kMqttMinRetryBackoffMs;
+  uint32_t reconnects = 0;
+  uint32_t publish_count = 0;
+  uint32_t last_publish_ms = 0;
+  time_t last_pub_unix = 0;
+  int last_pub_rc = 0;
+  uint32_t last_pub_payload_size = 0;
+  uint32_t last_publish_latency_ms = 0;
+  bool last_connected = false;
+  bool last_disconnected = false;
+  char last_reason[64] = "uninitialized";
+  char last_state[16] = "DISABLED";
+  char last_topic[96] = "(none)";
+  uint32_t connect_count = 0;
+  uint32_t publish_backoff_failures = 0;
+  char effective_uri[128] = {0};
+  char last_will_topic[128] = {0};
+};
+
+void mqtt_set_defaults(MqttConfig& config);
+void mqtt_startup();
+void mqtt_task(void* arg);
+bool mqtt_load_config(MqttConfig& config);
+bool mqtt_load_dev_ca_pem(char* out, std::size_t out_size);
+void mqtt_event_handler(void* handler_args, esp_event_base_t base, int32_t event_id,
+                       void* event_data);
+void mqtt_handle_wifi_got_ip();
+void mqtt_handle_wifi_lost_ip();
+void mqtt_log_status_line();
+int mqtt_publish_payload(const char* topic, const char* payload, int payload_len, uint8_t qos = 0);
+int mqtt_publish_status(bool include_time);
+int mqtt_publish_test_payload();
 #endif
 
 #if LUCE_HAS_NTP
@@ -592,7 +675,7 @@ void wifi_event_handler(void*,
   }
 
   if (event_base == IP_EVENT) {
-    if (event_id == IP_EVENT_STA_GOT_IP) {
+  if (event_id == IP_EVENT_STA_GOT_IP) {
       const auto* event = static_cast<ip_event_got_ip_t*>(event_data);
       if (event) {
         g_wifi_has_ip = true;
@@ -603,6 +686,9 @@ void wifi_event_handler(void*,
   #if LUCE_HAS_MDNS
       mdns_handle_wifi_got_ip();
   #endif
+  #if LUCE_HAS_MQTT
+      mqtt_handle_wifi_got_ip();
+  #endif
       wifi_queue_send(WifiEventType::kGotIp, 0);
       return;
     }
@@ -610,6 +696,9 @@ void wifi_event_handler(void*,
       g_wifi_has_ip = false;
   #if LUCE_HAS_MDNS
       mdns_handle_wifi_lost_ip();
+  #endif
+  #if LUCE_HAS_MQTT
+      mqtt_handle_wifi_lost_ip();
   #endif
       wifi_queue_send(WifiEventType::kDisconnected, 0);
     }
@@ -1445,6 +1534,1128 @@ void mdns_log_status() {
            g_mdns_runtime.hostname[0] != '\0' ? g_mdns_runtime.hostname : "(empty)", services);
 }
 #endif  // LUCE_HAS_MDNS
+
+#if LUCE_HAS_MQTT
+constexpr char kMqttConfigNamespace[] = "mqtt";
+constexpr uint32_t kMqttDefaultKeepaliveS = 120;
+constexpr uint32_t kMqttMinKeepaliveS = 30;
+constexpr uint32_t kMqttMaxKeepaliveS = 7200;
+constexpr uint8_t kMqttMinQos = 0;
+constexpr uint8_t kMqttMaxQos = 1;
+constexpr uint32_t kMqttMaxRetryBackoffMs = 60000;
+constexpr uint16_t kMqttMaxReconnectCycles = 9999;
+constexpr TickType_t kMqttLoopDelayMs = 250;
+constexpr TickType_t kMqttLogIntervalMs = 10000;
+constexpr TickType_t kMqttPublishIntervalMs = 30000;
+constexpr std::size_t kMqttPayloadBuffer = 256;
+constexpr char kMqttDefaultUri[] = "mqtt://localhost:1883";
+constexpr char kMqttDefaultBaseTopic[] = "luce/stage9";
+constexpr char kMqttDefaultClientId[] = "";
+constexpr char kMqttDefaultCaEmbedded[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBhTCCASugAwIBAgIUNkY8M9QY8fXw1h5n6q3m4k8Yz9EwCgYIKoZIzj0EAwIwFjEUMBIGA1UEAwwLZXhhbXBsZS5sb2NhbDAeFw0yNTAxMDEwMDAwMDBaFw0zNTAxMDEwMDAwMDBaMBYxFDASBgNVBAMMC2V4YW1wbGUubG9jYWwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATQ7b4fYQ3fXQ7JqXQ9Y8kW6n2r4Q0Y8Wm8Nf7rL3u9x3W2nJx1NqJjW1g5kYhQp3M+u9b2x3iQ3X8f4V2P9rO2QZQ9o0cwRDAOBgNVHQ8BAf8EBAMCAqQwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiBrv5J7b2aG8z3fW2X5uPzqD3h8qLkQYp+zv6k8Q7xJg4AIgG8q7vT9Y6R8m5JX6Y0rj5uQF9Q6J7f1oN+uKJm5Qy5I=\n"
+    "-----END CERTIFICATE-----\n";
+
+MqttConfig g_mqtt_config {};
+MqttRuntime g_mqtt_runtime {};
+
+const char* mqtt_state_name(MqttState state) {
+  switch (state) {
+    case MqttState::kDisabled:
+      return "DISABLED";
+    case MqttState::kInitialized:
+      return "INITIALIZED";
+    case MqttState::kConnecting:
+      return "CONNECTING";
+    case MqttState::kConnected:
+      return "CONNECTED";
+    case MqttState::kBackoff:
+      return "BACKOFF";
+    case MqttState::kFailed:
+      return "FAILED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void mqtt_set_defaults(MqttConfig& config) {
+  config = {};
+  config.enabled = false;
+  std::snprintf(config.uri, sizeof(config.uri), "%s", kMqttDefaultUri);
+  std::snprintf(config.base_topic, sizeof(config.base_topic), "%s", kMqttDefaultBaseTopic);
+  std::snprintf(config.ca_pem_source, sizeof(config.ca_pem_source), "embedded");
+  config.tls_enabled = false;
+  config.qos = kMqttMinQos;
+  config.keepalive_s = kMqttDefaultKeepaliveS;
+}
+
+void mqtt_copy_truncated(char* dst, std::size_t dst_size, const char* src) {
+  if (!dst || dst_size == 0) {
+    return;
+  }
+  if (!src) {
+    dst[0] = '\0';
+    return;
+  }
+  const std::size_t copy_len = std::min<std::size_t>(std::strlen(src), dst_size - 1);
+  std::memcpy(dst, src, copy_len);
+  dst[copy_len] = '\0';
+}
+
+uint32_t mqtt_clamp_u32_u(uint32_t value, uint32_t min_value, uint32_t max_value, uint32_t fallback) {
+  if (value < min_value || value > max_value) {
+    return fallback;
+  }
+  return value;
+}
+
+void mqtt_set_state(MqttState state, const char* reason) {
+  if (!reason) {
+    reason = "unknown";
+  }
+  if (g_mqtt_runtime.state == state) {
+    std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "%s", reason);
+    if (g_mqtt_runtime.last_state[0] != '\0' && std::strcmp(g_mqtt_runtime.last_state, mqtt_state_name(state)) == 0) {
+      return;
+    }
+    std::snprintf(g_mqtt_runtime.last_state, sizeof(g_mqtt_runtime.last_state), "%s", mqtt_state_name(state));
+    ESP_LOGI(kTag, "[MQTT][LIFECYCLE] state=%s reason=%s", mqtt_state_name(state), reason);
+    return;
+  }
+  g_mqtt_runtime.state = state;
+  std::snprintf(g_mqtt_runtime.last_state, sizeof(g_mqtt_runtime.last_state), "%s", mqtt_state_name(state));
+  std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "%s", reason);
+  ESP_LOGI(kTag, "[MQTT][LIFECYCLE] state=%s reason=%s", mqtt_state_name(state), reason);
+}
+
+bool mqtt_load_dev_ca_pem(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return false;
+  }
+  const std::size_t len = std::strlen(kMqttDefaultCaEmbedded);
+  if (len + 1 >= out_size) {
+    ESP_LOGW(kTag, "[MQTT] embedded CA truncated");
+    return false;
+  }
+  std::snprintf(out, out_size, "%s", kMqttDefaultCaEmbedded);
+  return true;
+}
+
+bool mqtt_build_topic(char* out, std::size_t out_size, const char* suffix) {
+  if (!out || out_size == 0) {
+    return false;
+  }
+  const char* topic_base = (g_mqtt_config.base_topic[0] != '\0') ? g_mqtt_config.base_topic
+                                                               : kMqttDefaultBaseTopic;
+  if (!suffix || suffix[0] == '\0') {
+    std::snprintf(out, out_size, "%s", topic_base);
+    return true;
+  }
+  std::snprintf(out, out_size, "%s/%s", topic_base, suffix);
+  return true;
+}
+
+bool mqtt_load_config(MqttConfig& config) {
+  mqtt_set_defaults(config);
+  nvs_handle_t handle = 0;
+  const esp_err_t open_err = nvs_open(kMqttConfigNamespace, NVS_READONLY, &handle);
+  if (open_err != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][NVS] namespace missing, using defaults (enabled=0): %s",
+             esp_err_to_name(open_err));
+    return false;
+  }
+
+  bool present = false;
+  uint8_t enabled = 0;
+  if (wifi_read_u8_key(handle, "enabled", &enabled, &present) &&
+      (enabled == 0 || enabled == 1)) {
+    config.enabled = (enabled == 1);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=enabled present=%d value=%d", present ? 1 : 0,
+           config.enabled ? 1 : 0);
+
+  bool string_present = false;
+  char tmp[1536] = {0};
+  if (wifi_read_string_key(handle, "uri", tmp, sizeof(tmp), &string_present) && string_present &&
+      tmp[0] != '\0') {
+    mqtt_copy_truncated(config.uri, sizeof(config.uri), tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=uri present=%d value=%s", string_present ? 1 : 0, config.uri);
+
+  if (wifi_read_string_key(handle, "client_id", tmp, sizeof(tmp), &string_present) && string_present &&
+      tmp[0] != '\0') {
+    mqtt_copy_truncated(config.client_id, sizeof(config.client_id), tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=client_id present=%d value=%s", string_present ? 1 : 0,
+           config.client_id[0] != '\0' ? config.client_id : kMqttDefaultClientId);
+
+  if (wifi_read_string_key(handle, "base_topic", tmp, sizeof(tmp), &string_present) && string_present &&
+      tmp[0] != '\0') {
+    mqtt_copy_truncated(config.base_topic, sizeof(config.base_topic), tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=base_topic present=%d value=%s", string_present ? 1 : 0,
+           config.base_topic[0] != '\0' ? config.base_topic : kMqttDefaultBaseTopic);
+
+  if (wifi_read_string_key(handle, "username", tmp, sizeof(tmp), &string_present) && string_present) {
+    mqtt_copy_truncated(config.username, sizeof(config.username), tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=username present=%d value=%s", string_present ? 1 : 0,
+           config.username[0] != '\0' ? "(set)" : "(none)");
+
+  if (wifi_read_string_key(handle, "password", tmp, sizeof(tmp), &string_present) && string_present) {
+    mqtt_copy_truncated(config.password, sizeof(config.password), tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=password present=%d value=%s", string_present ? 1 : 0,
+           config.password[0] != '\0' ? "(set)" : "(none)");
+
+  uint8_t tls_enabled = 0;
+  if (wifi_read_u8_key(handle, "tls_enabled", &tls_enabled, &present) &&
+      (tls_enabled == 0 || tls_enabled == 1)) {
+    config.tls_enabled = (tls_enabled == 1);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=tls_enabled present=%d value=%d", present ? 1 : 0,
+           config.tls_enabled ? 1 : 0);
+
+  if (wifi_read_string_key(handle, "ca_pem_source", tmp, sizeof(tmp), &string_present) &&
+      string_present) {
+    mqtt_copy_truncated(config.ca_pem_source, sizeof(config.ca_pem_source), tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=ca_pem_source present=%d value=%s", string_present ? 1 : 0,
+           config.ca_pem_source[0] != '\0' ? config.ca_pem_source : "embedded");
+
+  if (wifi_read_string_key(handle, "ca_pem", tmp, sizeof(tmp), &string_present) &&
+      string_present && tmp[0] != '\0' && std::strncmp(config.ca_pem_source, "embedded", 8) != 0) {
+    mqtt_copy_truncated(config.ca_pem, sizeof(config.ca_pem), tmp);
+  }
+
+  uint32_t qos = config.qos;
+  if (wifi_read_u32_key(handle, "qos", &qos, &present)) {
+    config.qos = mqtt_clamp_u32_u(qos, kMqttMinQos, kMqttMaxQos, kMqttMinQos);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=qos present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.qos));
+
+  uint32_t keepalive = config.keepalive_s;
+  if (wifi_read_u32_key(handle, "keepalive_s", &keepalive, &present)) {
+    config.keepalive_s = mqtt_clamp_u32_u(keepalive, kMqttMinKeepaliveS, kMqttMaxKeepaliveS,
+                                          kMqttDefaultKeepaliveS);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=keepalive_s present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.keepalive_s));
+
+  if (std::strncmp(config.ca_pem_source, "embedded", 8) == 0 && config.ca_pem[0] == '\0') {
+    (void)mqtt_load_dev_ca_pem(config.ca_pem, sizeof(config.ca_pem));
+  } else if (!config.tls_enabled) {
+    config.ca_pem[0] = '\0';
+  }
+
+  nvs_close(handle);
+  return true;
+}
+
+void mqtt_handle_wifi_got_ip() {
+  if (!g_mqtt_config.enabled) {
+    return;
+  }
+  g_mqtt_runtime.retry_backoff_ms = kMqttMinRetryBackoffMs;
+  g_mqtt_runtime.next_retry_tick = 0;
+  if (g_mqtt_runtime.state == MqttState::kBackoff || g_mqtt_runtime.state == MqttState::kFailed) {
+    mqtt_set_state(MqttState::kInitialized, "got ip");
+  }
+}
+
+void mqtt_handle_wifi_lost_ip() {
+  if (g_mqtt_runtime.client) {
+    (void)esp_mqtt_client_stop(g_mqtt_runtime.client);
+    (void)esp_mqtt_client_destroy(g_mqtt_runtime.client);
+    g_mqtt_runtime.client = nullptr;
+  }
+  g_mqtt_runtime.connected = false;
+  g_mqtt_runtime.state = MqttState::kBackoff;
+  g_mqtt_runtime.next_retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+  g_mqtt_runtime.retry_backoff_ms = kMqttMinRetryBackoffMs;
+  std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "wifi lost");
+  ESP_LOGW(kTag, "[MQTT] wifi lost");
+}
+
+void mqtt_log_status_line() {
+  char published_utc[64] = "n/a";
+  if (g_mqtt_runtime.last_pub_unix > 0) {
+    const time_t published = g_mqtt_runtime.last_pub_unix;
+    const std::tm* published_tm = std::gmtime(&published);
+    if (published_tm) {
+      std::snprintf(published_utc, sizeof(published_utc), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                    published_tm->tm_year + 1900, published_tm->tm_mon + 1, published_tm->tm_mday,
+                    published_tm->tm_hour, published_tm->tm_min, published_tm->tm_sec);
+    }
+  }
+  const time_t now = time(nullptr);
+  const uint64_t last_publish_age_s = (g_mqtt_runtime.last_pub_unix > 0 && now >= g_mqtt_runtime.last_pub_unix)
+                                        ? static_cast<uint64_t>(now - g_mqtt_runtime.last_pub_unix)
+                                        : 0ULL;
+  const char* uri = g_mqtt_runtime.effective_uri[0] != '\0' ? g_mqtt_runtime.effective_uri : "(unset)";
+  ESP_LOGI(kTag,
+           "CLI command mqtt.status: state=%s enabled=%d connected=%d reason=%s "
+           "connect_count=%lu publish_count=%lu last_topic=%s last_rc=%d last_payload=%u "
+           "last_latency_ms=%lu last_pub_age_s=%llu last_pub_unix=%lld utc=%s uri=%s tls=%d qos=%u keepalive_s=%lu",
+           g_mqtt_runtime.last_state, g_mqtt_config.enabled ? 1 : 0, g_mqtt_runtime.connected ? 1 : 0,
+           g_mqtt_runtime.last_reason, static_cast<unsigned long>(g_mqtt_runtime.connect_count),
+           static_cast<unsigned long>(g_mqtt_runtime.publish_count), g_mqtt_runtime.last_topic,
+           g_mqtt_runtime.last_pub_rc, static_cast<unsigned long>(g_mqtt_runtime.last_pub_payload_size),
+           static_cast<unsigned long>(g_mqtt_runtime.last_publish_latency_ms), static_cast<unsigned long long>(last_publish_age_s),
+           static_cast<long long>(g_mqtt_runtime.last_pub_unix), published_utc, uri,
+           g_mqtt_config.tls_enabled ? 1 : 0, g_mqtt_config.qos,
+           static_cast<unsigned long>(g_mqtt_config.keepalive_s));
+}
+
+void mqtt_event_handler(void*,
+                       esp_event_base_t,
+                       int32_t event_id,
+                       void* event_data) {
+  const auto* event = static_cast<esp_mqtt_event_handle_t>(event_data);
+  switch (event_id) {
+    case MQTT_EVENT_CONNECTED: {
+      g_mqtt_runtime.connected = true;
+      g_mqtt_runtime.last_connected = true;
+      g_mqtt_runtime.last_disconnected = false;
+      g_mqtt_runtime.last_connect_tick = xTaskGetTickCount();
+      g_mqtt_runtime.connect_count += 1;
+      g_mqtt_runtime.reconnects = 0;
+      g_mqtt_runtime.retry_backoff_ms = kMqttMinRetryBackoffMs;
+      g_mqtt_runtime.next_retry_tick = 0;
+      mqtt_set_state(MqttState::kConnected, "connected");
+      ESP_LOGI(kTag, "[MQTT] connected client_id=%s", g_mqtt_config.client_id[0] != '\0'
+                                                      ? g_mqtt_config.client_id
+                                                      : "auto");
+      (void)mqtt_publish_status(true);
+      break;
+    }
+    case MQTT_EVENT_DISCONNECTED: {
+      g_mqtt_runtime.connected = false;
+      g_mqtt_runtime.last_connected = false;
+      g_mqtt_runtime.last_disconnected = true;
+      g_mqtt_runtime.last_disconnect_tick = xTaskGetTickCount();
+      mqtt_set_state(MqttState::kBackoff, "disconnected");
+      const int reason_code = event && event->error_handle && event->error_handle->error_type
+                                 ? event->error_handle->error_type
+                                 : 0;
+      if (g_mqtt_runtime.retry_backoff_ms < kMqttMaxRetryBackoffMs) {
+        g_mqtt_runtime.retry_backoff_ms *= 2;
+      }
+      if (g_mqtt_runtime.retry_backoff_ms > kMqttMaxRetryBackoffMs) {
+        g_mqtt_runtime.retry_backoff_ms = kMqttMaxRetryBackoffMs;
+      }
+      g_mqtt_runtime.next_retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+      ESP_LOGW(kTag, "[MQTT] disconnected reason=%d reconnect_ms=%lu", reason_code,
+               static_cast<unsigned long>(g_mqtt_runtime.retry_backoff_ms));
+      break;
+    }
+    case MQTT_EVENT_PUBLISHED: {
+      ESP_LOGI(kTag, "[MQTT] publish acked msg_id=%d", event ? event->msg_id : -1);
+      break;
+    }
+    case MQTT_EVENT_ERROR: {
+      int source = 0;
+      int code = 0;
+      if (event && event->error_handle) {
+        source = event->error_handle->error_type;
+        code = event->error_handle->connect_return_code;
+      }
+      g_mqtt_runtime.state = MqttState::kFailed;
+      std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "mqtt error=%d code=%d",
+                    source, code);
+      ESP_LOGW(kTag, "[MQTT] event error source=%d code=%d", source, code);
+      mqtt_set_state(MqttState::kFailed, g_mqtt_runtime.last_reason);
+      g_mqtt_runtime.reconnects += 1;
+      if (g_mqtt_runtime.reconnects >= kMqttMaxReconnectCycles) {
+        g_mqtt_runtime.reconnects = kMqttMaxReconnectCycles;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+bool mqtt_build_client_config(esp_mqtt_client_config_t& out_cfg) {
+  out_cfg = {};
+  out_cfg.network.reconnect_timeout_ms = kMqttMaxRetryBackoffMs;
+  out_cfg.network.disable_auto_reconnect = true;
+  out_cfg.session.keepalive = static_cast<int>(g_mqtt_config.keepalive_s);
+  out_cfg.task.stack_size = static_cast<int>(kMqttTaskStackWords);
+  out_cfg.task.priority = 2;
+
+  mqtt_copy_truncated(g_mqtt_runtime.effective_uri, sizeof(g_mqtt_runtime.effective_uri), g_mqtt_config.uri);
+  if (!std::strstr(g_mqtt_runtime.effective_uri, "://")) {
+    if (g_mqtt_config.tls_enabled) {
+      const char prefix[] = "mqtts://";
+      const std::size_t prefix_len = sizeof(prefix) - 1;
+      const std::size_t copy_len = std::min<std::size_t>(
+          std::strlen(g_mqtt_config.uri), sizeof(g_mqtt_runtime.effective_uri) - prefix_len - 1);
+      std::memcpy(g_mqtt_runtime.effective_uri, prefix, prefix_len);
+      std::memcpy(g_mqtt_runtime.effective_uri + prefix_len, g_mqtt_config.uri, copy_len);
+      g_mqtt_runtime.effective_uri[prefix_len + copy_len] = '\0';
+    } else {
+      const char prefix[] = "mqtt://";
+      const std::size_t prefix_len = sizeof(prefix) - 1;
+      const std::size_t copy_len = std::min<std::size_t>(
+          std::strlen(g_mqtt_config.uri), sizeof(g_mqtt_runtime.effective_uri) - prefix_len - 1);
+      std::memcpy(g_mqtt_runtime.effective_uri, prefix, prefix_len);
+      std::memcpy(g_mqtt_runtime.effective_uri + prefix_len, g_mqtt_config.uri, copy_len);
+      g_mqtt_runtime.effective_uri[prefix_len + copy_len] = '\0';
+    }
+  }
+  out_cfg.broker.address.uri = g_mqtt_runtime.effective_uri;
+
+  if (g_mqtt_config.client_id[0] != '\0') {
+    out_cfg.credentials.client_id = g_mqtt_config.client_id;
+  }
+  if (g_mqtt_config.username[0] != '\0') {
+    out_cfg.credentials.username = g_mqtt_config.username;
+  }
+  if (g_mqtt_config.password[0] != '\0') {
+    out_cfg.credentials.authentication.password = g_mqtt_config.password;
+  }
+
+  if (g_mqtt_config.tls_enabled) {
+    if (std::strncmp(g_mqtt_config.ca_pem_source, "embedded", 8) == 0) {
+      if (g_mqtt_config.ca_pem[0] == '\0') {
+        (void)mqtt_load_dev_ca_pem(g_mqtt_config.ca_pem, sizeof(g_mqtt_config.ca_pem));
+      }
+      if (g_mqtt_config.ca_pem[0] != '\0') {
+        out_cfg.broker.verification.certificate = g_mqtt_config.ca_pem;
+        out_cfg.broker.verification.certificate_len = std::strlen(g_mqtt_config.ca_pem);
+      } else {
+        ESP_LOGW(kTag, "[MQTT] TLS requested but certificate unavailable; verify may fail");
+      }
+    } else {
+      ESP_LOGW(kTag, "[MQTT] TLS enabled with unsupported source=%s", g_mqtt_config.ca_pem_source);
+    }
+  }
+
+  char lwt_topic[128] = {0};
+  if (mqtt_build_topic(lwt_topic, sizeof(lwt_topic), "lwt")) {
+    std::snprintf(g_mqtt_runtime.last_will_topic, sizeof(g_mqtt_runtime.last_will_topic), "%s", lwt_topic);
+    out_cfg.session.last_will.topic = g_mqtt_runtime.last_will_topic;
+  }
+  out_cfg.session.last_will.msg = "offline";
+  out_cfg.session.last_will.msg_len = 7;
+  out_cfg.session.last_will.qos = 0;
+  out_cfg.session.last_will.retain = 0;
+  return true;
+}
+
+int mqtt_publish_payload(const char* topic, const char* payload, int payload_len, uint8_t qos) {
+  if (!g_mqtt_runtime.client || !topic || !payload || !g_mqtt_runtime.connected) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (qos > kMqttMaxQos) {
+    qos = kMqttMaxQos;
+  }
+  const TickType_t start = xTaskGetTickCount();
+  const int rc = esp_mqtt_client_publish(g_mqtt_runtime.client, topic, payload, payload_len, qos, 0);
+  const uint32_t latency_ms = pdTICKS_TO_MS(xTaskGetTickCount() - start);
+  g_mqtt_runtime.last_publish_latency_ms = latency_ms;
+  std::snprintf(g_mqtt_runtime.last_topic, sizeof(g_mqtt_runtime.last_topic), "%s", topic);
+  g_mqtt_runtime.last_pub_rc = rc;
+  g_mqtt_runtime.last_pub_payload_size = payload_len < 0 ? 0U : static_cast<uint32_t>(payload_len);
+  g_mqtt_runtime.publish_count += 1;
+  g_mqtt_runtime.last_pub_unix = time(nullptr);
+
+  if (rc >= 0) {
+    g_mqtt_runtime.publish_backoff_failures = 0;
+    g_mqtt_runtime.last_reason[0] = '\0';
+    std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "publish rc=%d", rc);
+    ESP_LOGI(kTag, "[MQTT] publish rc=%d topic=%s size=%d latency_ms=%lu", rc, topic, payload_len,
+             static_cast<unsigned long>(latency_ms));
+  } else {
+    g_mqtt_runtime.publish_backoff_failures += 1;
+    std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason),
+                 "publish failed rc=%d", rc);
+    ESP_LOGW(kTag, "[MQTT] publish failed rc=%d topic=%s size=%d", rc, topic, payload_len);
+  }
+  return rc;
+}
+
+int mqtt_publish_status(bool include_time) {
+  char topic[128] = {0};
+  if (!mqtt_build_topic(topic, sizeof(topic), "telemetry/state")) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  char payload[kMqttPayloadBuffer] = {0};
+  char utc_now[64] = "n/a";
+  if (include_time) {
+    const time_t now = time(nullptr);
+    const std::tm* utc_tm = std::gmtime(&now);
+    if (utc_tm) {
+      std::snprintf(utc_now, sizeof(utc_now), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                    utc_tm->tm_year + 1900, utc_tm->tm_mon + 1, utc_tm->tm_mday,
+                    utc_tm->tm_hour, utc_tm->tm_min, utc_tm->tm_sec);
+    }
+  }
+  char relay_buf[16] = {0};
+  char button_buf[16] = {0};
+  format_mcp_mask_line(relay_buf, sizeof(relay_buf), g_relay_mask, g_button_mask,
+                       McpMaskFormat::kStatusCommand);
+  const uint64_t age_s = (g_mqtt_runtime.last_pub_unix > 0 && time(nullptr) >= g_mqtt_runtime.last_pub_unix)
+                            ? static_cast<uint64_t>(time(nullptr) - g_mqtt_runtime.last_pub_unix)
+                            : 0ULL;
+  std::snprintf(payload, sizeof(payload),
+               "{\"fw\":\"%s\",\"stage\":%d,\"ip\":\"%s\",\"relay\":\"%s\",\"buttons\":\"%s\","
+               "\"wifi_rssi\":%d,\"ntp_unix\":%lld,\"ntp_age_s\":%llu,\"utc\":\"%s\",\"connected\":%s}",
+               LUCE_PROJECT_VERSION, LUCE_STAGE, g_wifi_ip, relay_buf, button_buf, g_wifi_last_rssi,
+               static_cast<long long>(g_mqtt_runtime.last_pub_unix), static_cast<unsigned long long>(age_s),
+               utc_now, g_mqtt_runtime.connected ? "true" : "false");
+  return mqtt_publish_payload(topic, payload, static_cast<int>(std::strlen(payload)),
+                             static_cast<uint8_t>(g_mqtt_config.qos));
+}
+
+int mqtt_publish_test_payload() {
+  char topic[128] = {0};
+  if (!mqtt_build_topic(topic, sizeof(topic), "telemetry/pubtest")) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  const char payload[] = "{\"event\":\"mqtt_pubtest\",\"source\":\"serial_cli\"}";
+  return mqtt_publish_payload(topic, payload, static_cast<int>(sizeof(payload) - 1),
+                             static_cast<uint8_t>(g_mqtt_config.qos));
+}
+
+void mqtt_task(void*) {
+  if (!mqtt_load_config(g_mqtt_config)) {
+    mqtt_set_defaults(g_mqtt_config);
+  }
+  if (!g_mqtt_config.enabled) {
+    mqtt_set_state(MqttState::kDisabled, "disabled-by-config");
+    g_mqtt_runtime.effective_uri[0] = '\0';
+  } else {
+    mqtt_set_state(MqttState::kInitialized, "loaded");
+  }
+  g_mqtt_runtime.client = nullptr;
+  g_mqtt_runtime.last_reason[0] = '\0';
+  g_mqtt_runtime.connect_count = 0;
+  g_mqtt_runtime.publish_count = 0;
+  g_mqtt_runtime.retry_backoff_ms = kMqttMinRetryBackoffMs;
+  g_mqtt_runtime.next_retry_tick = 0;
+
+  TickType_t last_status_tick = xTaskGetTickCount();
+  TickType_t last_publish_tick = xTaskGetTickCount();
+
+  while (true) {
+    const TickType_t now = xTaskGetTickCount();
+
+    if (!g_mqtt_config.enabled) {
+      if (g_mqtt_runtime.client) {
+        (void)esp_mqtt_client_stop(g_mqtt_runtime.client);
+        (void)esp_mqtt_client_destroy(g_mqtt_runtime.client);
+        g_mqtt_runtime.client = nullptr;
+      }
+      g_mqtt_runtime.connected = false;
+      mqtt_set_state(MqttState::kDisabled, "disabled-by-config");
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+
+    if (!wifi_has_ip()) {
+      if (g_mqtt_runtime.connected || g_mqtt_runtime.client) {
+        mqtt_handle_wifi_lost_ip();
+      } else {
+        mqtt_set_state(MqttState::kBackoff, "no-ip");
+      }
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    if (!g_mqtt_runtime.client) {
+      if (g_mqtt_runtime.state != MqttState::kConnecting && g_mqtt_runtime.state != MqttState::kFailed) {
+        mqtt_set_state(MqttState::kInitialized, "creating-client");
+      }
+      esp_mqtt_client_config_t cfg {};
+      if (!mqtt_build_client_config(cfg)) {
+        mqtt_set_state(MqttState::kFailed, "bad config");
+      } else {
+        g_mqtt_runtime.client = esp_mqtt_client_init(&cfg);
+        if (g_mqtt_runtime.client) {
+          const esp_err_t ev = esp_mqtt_client_register_event(g_mqtt_runtime.client, MQTT_EVENT_ANY,
+                                                             &mqtt_event_handler, nullptr);
+          if (ev != ESP_OK) {
+            ESP_LOGW(kTag, "[MQTT] register event failed: %s", esp_err_to_name(ev));
+          }
+          mqtt_set_state(MqttState::kConnecting, "start");
+          const esp_err_t start_rc = esp_mqtt_client_start(g_mqtt_runtime.client);
+          if (start_rc != ESP_OK) {
+            ESP_LOGW(kTag, "[MQTT] start failed: %s", esp_err_to_name(start_rc));
+            (void)esp_mqtt_client_destroy(g_mqtt_runtime.client);
+            g_mqtt_runtime.client = nullptr;
+            mqtt_set_state(MqttState::kFailed, "start failed");
+            g_mqtt_runtime.reconnects += 1;
+            g_mqtt_runtime.next_retry_tick = now + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+            g_mqtt_runtime.retry_backoff_ms =
+                std::min(g_mqtt_runtime.retry_backoff_ms * 2, kMqttMaxRetryBackoffMs);
+          } else {
+            g_mqtt_runtime.state = MqttState::kConnecting;
+          }
+        } else {
+          mqtt_set_state(MqttState::kFailed, "client alloc failed");
+          g_mqtt_runtime.next_retry_tick = now + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+        }
+      }
+    } else if (!g_mqtt_runtime.connected) {
+      if (g_mqtt_runtime.state != MqttState::kConnecting &&
+          g_mqtt_runtime.state != MqttState::kBackoff) {
+        mqtt_set_state(MqttState::kConnecting, "reconnect");
+      }
+      if (now >= g_mqtt_runtime.next_retry_tick &&
+          (g_mqtt_runtime.state == MqttState::kBackoff || g_mqtt_runtime.state == MqttState::kFailed)) {
+        const esp_err_t rc = esp_mqtt_client_reconnect(g_mqtt_runtime.client);
+        if (rc != ESP_OK) {
+          mqtt_set_state(MqttState::kFailed, "reconnect failed");
+          g_mqtt_runtime.reconnects += 1;
+          if (g_mqtt_runtime.reconnects >= kMqttMaxReconnectCycles) {
+            g_mqtt_runtime.reconnects = kMqttMaxReconnectCycles;
+          }
+          g_mqtt_runtime.retry_backoff_ms = std::min(g_mqtt_runtime.retry_backoff_ms * 2, kMqttMaxRetryBackoffMs);
+          g_mqtt_runtime.next_retry_tick = now + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+          ESP_LOGW(kTag, "[MQTT] reconnect rc=%s retry_ms=%lu", esp_err_to_name(rc),
+                   static_cast<unsigned long>(g_mqtt_runtime.retry_backoff_ms));
+        } else {
+          g_mqtt_runtime.state = MqttState::kConnecting;
+          g_mqtt_runtime.next_retry_tick = 0;
+        }
+      }
+    } else if ((now - last_publish_tick) >= pdMS_TO_TICKS(kMqttPublishIntervalMs)) {
+      const int rc = mqtt_publish_status(true);
+      if (rc != ESP_OK) {
+        g_mqtt_runtime.last_reason[0] = '\0';
+        std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "publish rc=%d", rc);
+      }
+      last_publish_tick = now;
+    }
+
+    if ((now - last_status_tick) >= pdMS_TO_TICKS(kMqttLogIntervalMs)) {
+      last_status_tick = now;
+      mqtt_log_status_line();
+    }
+    vTaskDelay(pdMS_TO_TICKS(kMqttLoopDelayMs));
+  }
+}
+
+void mqtt_startup() {
+  if (xTaskCreate(mqtt_task, "mqtt", kMqttTaskStackWords, nullptr, 2, &g_mqtt_task) != pdPASS) {
+    ESP_LOGW(kTag, "[MQTT] startup: task create failed");
+  }
+}
+#endif
+
+// CLI helpers.
+void cli_cmd_mqtt_status() {
+#if LUCE_HAS_MQTT
+  mqtt_log_status_line();
+#else
+  ESP_LOGW(kTag, "CLI command mqtt.status: unsupported (LUCE_HAS_MQTT=0)");
+#endif
+}
+
+void cli_cmd_mqtt_pubtest() {
+#if LUCE_HAS_MQTT
+  if (!g_mqtt_config.enabled) {
+    ESP_LOGW(kTag, "CLI command mqtt.pubtest: mqtt disabled");
+    return;
+  }
+  if (!g_mqtt_runtime.connected) {
+    ESP_LOGW(kTag, "CLI command mqtt.pubtest: not connected");
+    return;
+  }
+  const int rc = mqtt_publish_test_payload();
+  if (rc < 0) {
+    ESP_LOGW(kTag, "CLI command mqtt.pubtest: publish rc=%d", rc);
+  } else {
+    ESP_LOGI(kTag, "CLI command mqtt.pubtest: publish rc=%d", rc);
+  }
+#else
+  ESP_LOGW(kTag, "CLI command mqtt.pubtest: unsupported (LUCE_HAS_MQTT=0)");
+#endif
+}
+#if 0
+    std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "%s", reason);
+    return;
+  }
+  g_mqtt_runtime.state = state;
+  std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "%s", reason);
+  std::snprintf(g_mqtt_runtime.last_state, sizeof(g_mqtt_runtime.last_state), "%s", mqtt_state_name(state));
+  ESP_LOGI(kTag, "[MQTT][LIFECYCLE] state=%s reason=%s", mqtt_state_name(state), reason);
+}
+
+bool mqtt_load_dev_ca_pem(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return false;
+  }
+  const std::size_t len = std::strlen(kMqttDefaultCaEmbedded);
+  if (len + 1 >= out_size) {
+    ESP_LOGW(kTag, "[MQTT] embedded CA truncated");
+    return false;
+  }
+  std::snprintf(out, out_size, "%s", kMqttDefaultCaEmbedded);
+  return true;
+}
+
+bool mqtt_build_topic(char* out, std::size_t out_size, const char* suffix) {
+  if (!out || out_size == 0) {
+    return false;
+  }
+  if (!suffix || suffix[0] == '\0') {
+    std::snprintf(out, out_size, "%s", g_mqtt_config.base_topic[0] != '\0' ? g_mqtt_config.base_topic
+                                                                         : kMqttDefaultBaseTopic);
+    return true;
+  }
+  std::snprintf(out, out_size, "%s/%s", g_mqtt_config.base_topic[0] != '\0' ? g_mqtt_config.base_topic
+                                                                             : kMqttDefaultBaseTopic,
+                suffix);
+  return true;
+}
+
+bool mqtt_load_config(MqttConfig& config) {
+  mqtt_set_defaults(config);
+  nvs_handle_t handle = 0;
+  const esp_err_t open_err = nvs_open(kMqttConfigNamespace, NVS_READONLY, &handle);
+  if (open_err != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][NVS] namespace missing, using defaults (enabled=0): %s",
+             esp_err_to_name(open_err));
+    return false;
+  }
+
+  bool present = false;
+  uint8_t enabled = 0;
+  if (wifi_read_u8_key(handle, "enabled", &enabled, &present) && (enabled == 0 || enabled == 1)) {
+    config.enabled = (enabled != 0);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=enabled present=%d value=%d", present ? 1 : 0,
+           config.enabled ? 1 : 0);
+
+  bool string_present = false;
+  char tmp[1536] = {0};
+  if (wifi_read_string_key(handle, "uri", tmp, sizeof(tmp), &string_present) && string_present) {
+    std::snprintf(config.uri, sizeof(config.uri), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=uri present=%d value=%s", string_present ? 1 : 0, config.uri);
+
+  if (wifi_read_string_key(handle, "client_id", tmp, sizeof(tmp), &string_present) && string_present) {
+    std::snprintf(config.client_id, sizeof(config.client_id), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=client_id present=%d value=%s", string_present ? 1 : 0,
+           config.client_id[0] != '\0' ? config.client_id : "(auto)");
+
+  if (wifi_read_string_key(handle, "base_topic", tmp, sizeof(tmp), &string_present) && string_present &&
+      tmp[0] != '\0') {
+    std::snprintf(config.base_topic, sizeof(config.base_topic), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=base_topic present=%d value=%s", string_present ? 1 : 0,
+           config.base_topic[0] != '\0' ? config.base_topic : kMqttDefaultBaseTopic);
+
+  if (wifi_read_string_key(handle, "username", tmp, sizeof(tmp), &string_present) && string_present) {
+    std::snprintf(config.username, sizeof(config.username), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=username present=%d value=%s", string_present ? 1 : 0,
+           config.username[0] != '\0' ? "(set)" : "(none)");
+
+  if (wifi_read_string_key(handle, "password", tmp, sizeof(tmp), &string_present) && string_present) {
+    std::snprintf(config.password, sizeof(config.password), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=password present=%d value=%s", string_present ? 1 : 0,
+           config.password[0] != '\0' ? "(set)" : "(none)");
+
+  uint8_t tls_enabled = 0;
+  if (wifi_read_u8_key(handle, "tls_enabled", &tls_enabled, &present) && (tls_enabled == 0 || tls_enabled == 1)) {
+    config.tls_enabled = (tls_enabled == 1);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=tls_enabled present=%d value=%d", present ? 1 : 0,
+           config.tls_enabled ? 1 : 0);
+
+  if (wifi_read_string_key(handle, "ca_pem_source", tmp, sizeof(tmp), &string_present) && string_present) {
+    std::snprintf(config.ca_pem_source, sizeof(config.ca_pem_source), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=ca_pem_source present=%d value=%s", string_present ? 1 : 0,
+           config.ca_pem_source);
+
+  if (wifi_read_string_key(handle, "ca_pem", tmp, sizeof(tmp), &string_present) && string_present &&
+      tmp[0] != '\0' && std::strncmp(config.ca_pem_source, "embedded", 8) != 0) {
+    std::snprintf(config.ca_pem, sizeof(config.ca_pem), "%s", tmp);
+  }
+  if (wifi_read_u32_key(handle, "qos", &config.qos, &present)) {
+    config.qos = mqtt_clamp_u32_u(config.qos, kMqttMinQos, kMqttMaxQos, kMqttMinQos);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=qos present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.qos));
+
+  uint32_t keepalive = config.keepalive_s;
+  if (wifi_read_u32_key(handle, "keepalive_s", &keepalive, &present)) {
+    config.keepalive_s = mqtt_clamp_u32_u(keepalive, kMqttMinKeepaliveS, kMqttMaxKeepaliveS,
+                                          kMqttDefaultKeepaliveS);
+  }
+  ESP_LOGI(kTag, "[MQTT][NVS] key=keepalive_s present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.keepalive_s));
+
+  if (std::strncmp(config.ca_pem_source, "embedded", 8) == 0) {
+    if (!mqtt_load_dev_ca_pem(config.ca_pem, sizeof(config.ca_pem))) {
+      ESP_LOGW(kTag, "[MQTT] embedded CA unavailable; TLS may fail without cert");
+    }
+  }
+
+  nvs_close(handle);
+  return true;
+}
+
+void mqtt_handle_wifi_got_ip() {
+  if (!g_mqtt_config.enabled) {
+    return;
+  }
+  g_mqtt_runtime.next_retry_tick = 0;
+  g_mqtt_runtime.retry_backoff_ms = kMqttMinRetryBackoffMs;
+}
+
+void mqtt_handle_wifi_lost_ip() {
+  if (g_mqtt_runtime.client) {
+    (void)esp_mqtt_client_stop(g_mqtt_runtime.client);
+    (void)esp_mqtt_client_disconnect(g_mqtt_runtime.client);
+    g_mqtt_runtime.connected = false;
+    g_mqtt_runtime.last_connected = false;
+    mqtt_set_state(MqttState::kBackoff, "wifi lost");
+    g_mqtt_runtime.next_retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+  }
+}
+
+void mqtt_log_status_line() {
+  char time_text[64] = "n/a";
+  if (g_mqtt_runtime.last_pub_unix > 0) {
+    const time_t published = g_mqtt_runtime.last_pub_unix;
+    const std::tm tm_info = *std::gmtime(&published);
+    std::snprintf(time_text, sizeof(time_text), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday, tm_info.tm_hour,
+                  tm_info.tm_min, tm_info.tm_sec);
+  }
+  ESP_LOGI(kTag,
+           "CLI command mqtt.status: state=%s enabled=%d connected=%d reason=%s connect_count=%lu "
+           "publish_count=%lu last_topic=%s last_payload=%d last_latency_ms=%u last_unix=%lld utc=%s "
+           "uri=%s",
+           mqtt_state_name(g_mqtt_runtime.state), g_mqtt_config.enabled ? 1 : 0,
+           g_mqtt_runtime.connected ? 1 : 0, g_mqtt_runtime.last_reason,
+           static_cast<unsigned long>(g_mqtt_runtime.connect_count),
+           static_cast<unsigned long>(g_mqtt_runtime.publish_count), g_mqtt_runtime.last_topic,
+           g_mqtt_runtime.last_pub_payload, static_cast<unsigned>(0),
+           static_cast<long long>(g_mqtt_runtime.last_pub_unix), time_text,
+           g_mqtt_runtime.effective_uri[0] != '\0' ? g_mqtt_runtime.effective_uri : "(unset)");
+}
+
+void mqtt_event_handler(void*,
+                       esp_event_base_t,
+                       int32_t event_id,
+                       void* event_data) {
+  const auto* event = static_cast<esp_mqtt_event_handle_t>(event_data);
+  switch (event_id) {
+    case MQTT_EVENT_CONNECTED: {
+      g_mqtt_runtime.connected = true;
+      g_mqtt_runtime.last_connected = true;
+      g_mqtt_runtime.last_connect_tick = xTaskGetTickCount();
+      g_mqtt_runtime.connect_count += 1;
+      g_mqtt_runtime.reconnects = 0;
+      g_mqtt_runtime.retry_backoff_ms = kMqttMinRetryBackoffMs;
+      g_mqtt_runtime.next_retry_tick = 0;
+      mqtt_set_state(MqttState::kConnected, "connected");
+      const TickType_t now = xTaskGetTickCount();
+      const uint32_t latency_ms = static_cast<uint32_t>(now > g_mqtt_runtime.last_connect_tick ? 0 : 0);
+      ESP_LOGI(kTag, "[MQTT] connected rc=%d client_id=%s latency_ms=%lu", event ? event->msg_id : 0,
+               g_mqtt_config.client_id[0] != '\0' ? g_mqtt_config.client_id : "(auto)",
+               static_cast<unsigned long>(latency_ms));
+      mqtt_publish_payload("/status", "online", 6, static_cast<uint8_t>(kMqttMinQos));
+      break;
+    }
+    case MQTT_EVENT_DISCONNECTED: {
+      g_mqtt_runtime.connected = false;
+      g_mqtt_runtime.last_disconnected = true;
+      g_mqtt_runtime.last_disconnect_tick = xTaskGetTickCount();
+      mqtt_set_state(MqttState::kBackoff, "disconnected");
+      if (g_mqtt_runtime.retry_backoff_ms < kMqttMaxRetryBackoffMs) {
+        g_mqtt_runtime.retry_backoff_ms = g_mqtt_runtime.retry_backoff_ms * 2;
+        if (g_mqtt_runtime.retry_backoff_ms == 0 ||
+            g_mqtt_runtime.retry_backoff_ms > kMqttMaxRetryBackoffMs) {
+          g_mqtt_runtime.retry_backoff_ms = kMqttMaxRetryBackoffMs;
+        }
+      }
+      g_mqtt_runtime.next_retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+      const int reason_code = event ? event->error_handle && event->error_handle->error_type ? event->error_handle->error_type : 0 : 0;
+      ESP_LOGW(kTag, "[MQTT] disconnected reason=%d reconnect_ms=%lu", reason_code,
+               static_cast<unsigned long>(g_mqtt_runtime.retry_backoff_ms));
+      break;
+    }
+    case MQTT_EVENT_PUBLISHED: {
+      const int msg_id = event ? event->msg_id : -1;
+      ESP_LOGI(kTag, "[MQTT] publish acked msg_id=%d", msg_id);
+      break;
+    }
+    case MQTT_EVENT_ERROR: {
+      int source = 0;
+      int code = 0;
+      if (event && event->error_handle) {
+        source = event->error_handle->error_type;
+        code = event->error_handle->connect_return_code;
+      }
+      g_mqtt_runtime.state = MqttState::kFailed;
+      std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "mqtt error=%d code=%d",
+                    source, code);
+      ESP_LOGW(kTag, "[MQTT] event error source=%d code=%d", source, code);
+      mqtt_set_state(MqttState::kFailed, g_mqtt_runtime.last_reason);
+      g_mqtt_runtime.reconnects += 1;
+      if (g_mqtt_runtime.reconnects >= kMqttMaxReconnectCycles) {
+        g_mqtt_runtime.reconnects = kMqttMaxReconnectCycles;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+bool mqtt_build_client_config(esp_mqtt_client_config_t& out_cfg) {
+  out_cfg = {};
+  out_cfg.network.reconnect_timeout_ms = kMqttMaxRetryBackoffMs;
+  out_cfg.network.disable_auto_reconnect = true;
+  out_cfg.session.keepalive = static_cast<int>(g_mqtt_config.keepalive_s);
+  out_cfg.task.stack_size = static_cast<int>(kMqttTaskStackWords);
+  out_cfg.task.priority = 2;
+
+  std::strncpy(g_mqtt_runtime.effective_uri, g_mqtt_config.uri,
+               sizeof(g_mqtt_runtime.effective_uri) - 1);
+  g_mqtt_runtime.effective_uri[sizeof(g_mqtt_runtime.effective_uri) - 1] = '\0';
+  if (g_mqtt_config.tls_enabled && std::strstr(g_mqtt_runtime.effective_uri, "mqtt") == nullptr) {
+    std::snprintf(g_mqtt_runtime.effective_uri, sizeof(g_mqtt_runtime.effective_uri), "mqtts://%s",
+                 g_mqtt_config.uri);
+  } else if (g_mqtt_config.tls_enabled && std::strstr(g_mqtt_runtime.effective_uri, "mqtts://") == nullptr &&
+             std::strstr(g_mqtt_runtime.effective_uri, "mqtt://") == nullptr &&
+             std::strstr(g_mqtt_runtime.effective_uri, "ssl://") == nullptr &&
+             std::strstr(g_mqtt_runtime.effective_uri, "tcp://") == nullptr &&
+             std::strstr(g_mqtt_runtime.effective_uri, "ws://") == nullptr &&
+             std::strstr(g_mqtt_runtime.effective_uri, "wss://") == nullptr) {
+    std::snprintf(g_mqtt_runtime.effective_uri, sizeof(g_mqtt_runtime.effective_uri), "mqtts://%s",
+                 g_mqtt_config.uri);
+  }
+  out_cfg.broker.address.uri = g_mqtt_runtime.effective_uri;
+
+  if (g_mqtt_config.client_id[0] != '\0') {
+    out_cfg.credentials.client_id = g_mqtt_config.client_id;
+  }
+  if (g_mqtt_config.username[0] != '\0') {
+    out_cfg.credentials.username = g_mqtt_config.username;
+  }
+  if (g_mqtt_config.password[0] != '\0') {
+    out_cfg.credentials.authentication.password = g_mqtt_config.password;
+  }
+
+  if (g_mqtt_config.tls_enabled) {
+    if (std::strncmp(g_mqtt_config.ca_pem_source, "embedded", 8) == 0) {
+      if (g_mqtt_config.ca_pem[0] != '\0') {
+        out_cfg.broker.verification.certificate = g_mqtt_config.ca_pem;
+        out_cfg.broker.verification.certificate_len = std::strlen(g_mqtt_config.ca_pem);
+      } else {
+        ESP_LOGW(kTag, "[MQTT] TLS requested but no embedded cert available");
+      }
+    } else if (std::strncmp(g_mqtt_config.ca_pem_source, "nvs", 3) == 0) {
+      ESP_LOGW(kTag, "[MQTT] TLS cert source=nvs not implemented");
+    } else if (std::strncmp(g_mqtt_config.ca_pem_source, "partition", 9) == 0) {
+      ESP_LOGW(kTag, "[MQTT] TLS cert source=partition not implemented");
+    } else {
+      ESP_LOGW(kTag, "[MQTT] TLS cert source invalid=%s defaulting embedded", g_mqtt_config.ca_pem_source);
+      if (g_mqtt_config.ca_pem[0] != '\0') {
+        out_cfg.broker.verification.certificate = g_mqtt_config.ca_pem;
+        out_cfg.broker.verification.certificate_len = std::strlen(g_mqtt_config.ca_pem);
+      }
+    }
+  }
+
+  char lwt_topic[128] = {0};
+  if (mqtt_build_topic(lwt_topic, sizeof(lwt_topic), "lwt")) {
+    out_cfg.session.last_will.topic = lwt_topic;
+  }
+  out_cfg.session.last_will.msg = "offline";
+  out_cfg.session.last_will.msg_len = 7;
+  out_cfg.session.last_will.qos = 0;
+  out_cfg.session.last_will.retain = 0;
+  return true;
+}
+
+int mqtt_publish_payload(const char* topic, const char* payload, int payload_len, uint8_t qos) {
+  if (!g_mqtt_runtime.client || !topic || !payload) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (qos > kMqttMaxQos) {
+    qos = kMqttMaxQos;
+  }
+  const TickType_t start = xTaskGetTickCount();
+  const int rc = esp_mqtt_client_publish(g_mqtt_runtime.client, topic, payload, payload_len, qos, 0);
+  const uint32_t latency_ms = pdTICKS_TO_MS(xTaskGetTickCount() - start);
+  std::snprintf(g_mqtt_runtime.last_topic, sizeof(g_mqtt_runtime.last_topic), "%s", topic);
+  g_mqtt_runtime.last_pub_rc = rc;
+  g_mqtt_runtime.last_payload_size = payload_len;
+  g_mqtt_runtime.last_publish_ms = latency_ms;
+  g_mqtt_runtime.last_pub_rc = rc;
+  g_mqtt_runtime.publish_count += 1;
+  g_mqtt_runtime.last_pub_unix = time(nullptr);
+
+  if (rc == ESP_OK) {
+    g_mqtt_runtime.last_has_time = true;
+    g_mqtt_runtime.publish_backoff_failures = 0;
+    ESP_LOGI(kTag, "[MQTT] publish rc=%d topic=%s size=%d latency_ms=%lu", rc, topic, payload_len,
+             static_cast<unsigned long>(latency_ms));
+  } else {
+    g_mqtt_runtime.publish_backoff_failures += 1;
+    g_mqtt_runtime.last_has_time = false;
+    ESP_LOGW(kTag, "[MQTT] publish failed rc=%d topic=%s size=%d", rc, topic, payload_len);
+  }
+  return rc;
+}
+
+int mqtt_publish_status(bool include_time) {
+  char topic[128] = {0};
+  if (!mqtt_build_topic(topic, sizeof(topic), "telemetry/state")) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  char payload[kMqttPayloadBuffer] = {0};
+  char utc_now[64] = {0};
+  char fw[LUCE_PROJECT_VERSION?0:1];
+
+  if (include_time && g_ntp_runtime.last_sync_unix > 0) {
+    ntp_format_utc(utc_now, sizeof(utc_now), time(nullptr));
+  } else {
+    std::snprintf(utc_now, sizeof(utc_now), "n/a");
+  }
+
+  char relay_buf[16] = {0};
+  char button_buf[16] = {0};
+  format_mcp_mask_line(relay_buf, sizeof(relay_buf), g_relay_mask, g_button_mask,
+                       McpMaskFormat::kStatusCommand);
+  std::snprintf(payload, sizeof(payload),
+               "{\"fw\":\"%s\",\"stage\":%d,\"ip\":\"%s\",\"relay\":\"%s\",\"buttons\":\"%s\",\"wifi\":%d,"
+               "\"utc\":\"%s\",\"connected\":%s}",
+               LUCE_PROJECT_VERSION, LUCE_STAGE, g_wifi_ip, relay_buf, button_buf, g_wifi_last_rssi,
+               utc_now, g_mqtt_runtime.connected ? "true" : "false");
+  return mqtt_publish_payload(topic, payload, static_cast<int>(std::strlen(payload)),
+                             static_cast<uint8_t>(g_mqtt_config.qos));
+}
+
+void mqtt_task(void*) {
+  if (!mqtt_load_config(g_mqtt_config)) {
+    mqtt_set_defaults(g_mqtt_config);
+  }
+
+  std::strncpy(g_mqtt_runtime.effective_uri, g_mqtt_config.uri, sizeof(g_mqtt_runtime.effective_uri) - 1);
+
+  if (!g_mqtt_config.enabled) {
+    mqtt_set_state(MqttState::kDisabled, "disabled-by-config");
+    mqtt_log_status_line();
+  } else {
+    mqtt_set_state(MqttState::kInitialized, "loaded");
+  }
+
+  TickType_t last_status_tick = xTaskGetTickCount();
+  TickType_t last_publish_tick = xTaskGetTickCount();
+
+  while (true) {
+    const TickType_t now = xTaskGetTickCount();
+
+    if (!g_mqtt_config.enabled) {
+      if (g_mqtt_runtime.client) {
+        (void)esp_mqtt_client_stop(g_mqtt_runtime.client);
+        (void)esp_mqtt_client_destroy(g_mqtt_runtime.client);
+        g_mqtt_runtime.client = nullptr;
+      }
+      g_mqtt_runtime.connected = false;
+      mqtt_set_state(MqttState::kDisabled, "disabled-by-config");
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      continue;
+    }
+
+    if (!wifi_has_ip()) {
+      if (g_mqtt_runtime.connected || g_mqtt_runtime.client) {
+        mqtt_handle_wifi_lost_ip();
+      } else {
+        mqtt_set_state(MqttState::kBackoff, "no-ip");
+      }
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    if (!g_mqtt_runtime.client) {
+      esp_mqtt_client_config_t cfg {};
+      if (mqtt_build_client_config(cfg)) {
+        g_mqtt_runtime.client = esp_mqtt_client_init(&cfg);
+        if (g_mqtt_runtime.client) {
+          const esp_err_t ev = esp_mqtt_client_register_event(g_mqtt_runtime.client, ESP_EVENT_ANY_ID,
+                                                             &mqtt_event_handler, nullptr);
+          if (ev != ESP_OK) {
+            ESP_LOGW(kTag, "[MQTT] register event failed: %s", esp_err_to_name(ev));
+          }
+          mqtt_set_state(MqttState::kConnecting, "start");
+          const esp_err_t start_rc = esp_mqtt_client_start(g_mqtt_runtime.client);
+          if (start_rc != ESP_OK) {
+            ESP_LOGW(kTag, "[MQTT] start failed: %s", esp_err_to_name(start_rc));
+            (void)esp_mqtt_client_destroy(g_mqtt_runtime.client);
+            g_mqtt_runtime.client = nullptr;
+            mqtt_set_state(MqttState::kFailed, "start failed");
+            g_mqtt_runtime.reconnects += 1;
+            g_mqtt_runtime.next_retry_tick = now + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+            g_mqtt_runtime.retry_backoff_ms = std::min(g_mqtt_runtime.retry_backoff_ms * 2, kMqttMaxRetryBackoffMs);
+          } else {
+            g_mqtt_runtime.state = MqttState::kConnecting;
+          }
+        } else {
+          mqtt_set_state(MqttState::kFailed, "client alloc failed");
+          g_mqtt_runtime.next_retry_tick = now + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+        }
+      }
+    } else if (!g_mqtt_runtime.connected) {
+      if (g_mqtt_runtime.state != MqttState::kConnecting && g_mqtt_runtime.state != MqttState::kBackoff) {
+        mqtt_set_state(MqttState::kConnecting, "reconnect");
+      }
+      if (now >= g_mqtt_runtime.next_retry_tick &&
+          (g_mqtt_runtime.state == MqttState::kBackoff || g_mqtt_runtime.state == MqttState::kFailed)) {
+        const esp_err_t rc = esp_mqtt_client_reconnect(g_mqtt_runtime.client);
+        if (rc != ESP_OK) {
+          mqtt_set_state(MqttState::kFailed, "reconnect failed");
+          g_mqtt_runtime.reconnects += 1;
+          if (g_mqtt_runtime.retry_backoff_ms < kMqttMaxRetryBackoffMs) {
+            g_mqtt_runtime.retry_backoff_ms = std::min(g_mqtt_runtime.retry_backoff_ms * 2, kMqttMaxRetryBackoffMs);
+          }
+          g_mqtt_runtime.next_retry_tick = now + pdMS_TO_TICKS(g_mqtt_runtime.retry_backoff_ms);
+          ESP_LOGW(kTag, "[MQTT] reconnect rc=%s retry_ms=%lu", esp_err_to_name(rc),
+                   static_cast<unsigned long>(g_mqtt_runtime.retry_backoff_ms));
+        } else {
+          g_mqtt_runtime.state = MqttState::kConnecting;
+          g_mqtt_runtime.next_retry_tick = 0;
+        }
+      }
+    } else if (g_mqtt_runtime.connected &&
+               (now - last_publish_tick) >= pdMS_TO_TICKS(kMqttPublishIntervalMs)) {
+      const int rc = mqtt_publish_status(true);
+      if (rc != ESP_OK) {
+        g_mqtt_runtime.last_reason[0] = 0;
+        std::snprintf(g_mqtt_runtime.last_reason, sizeof(g_mqtt_runtime.last_reason), "publish rc=%d", rc);
+      }
+      last_publish_tick = now;
+    }
+
+    if ((now - last_status_tick) >= pdMS_TO_TICKS(kMqttLogIntervalMs)) {
+      last_status_tick = now;
+      mqtt_log_status_line();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(kMqttLoopDelayMs));
+  }
+}
+
+void mqtt_startup() {
+  if (xTaskCreate(mqtt_task, "mqtt", kMqttTaskStackWords, nullptr, 2, &g_mqtt_task) != pdPASS) {
+    ESP_LOGW(kTag, "[MQTT] startup: task create failed");
+  }
+}
+#endif  // Disable duplicate MQTT block
 
 #if LUCE_HAS_NTP
 constexpr char kNtpConfigNamespace[] = "ntp";
@@ -2628,6 +3839,38 @@ void run_stage2_diagnostics() {
 }
 
 #if LUCE_HAS_CLI
+namespace {
+constexpr char kCliNetNamespace[] = "cli_net";
+constexpr uint16_t kCliNetDefaultPort = 2323;
+constexpr uint32_t kCliNetDefaultIdleTimeoutS = 120;
+constexpr uint32_t kCliNetDefaultMaxAuthFails = 3;
+
+constexpr uint16_t kCliNetMaxLine = 256;
+constexpr uint16_t kCliNetMaxArgs = 8;
+constexpr uint16_t kCliNetResponseBuffer = 256;
+
+struct CliNetConfig {
+  bool enabled = false;
+  uint16_t port = kCliNetDefaultPort;
+  char token[33] = {0};
+  uint32_t idle_timeout_s = kCliNetDefaultIdleTimeoutS;
+};
+
+struct CliNetRuntime {
+  bool initialized = false;
+  bool session_open = false;
+  bool session_authed = false;
+  uint16_t active_port = kCliNetDefaultPort;
+  int active_fd = -1;
+  TickType_t last_activity_tick = 0;
+  char active_ip[48] = "";
+  uint32_t auth_failures = 0;
+};
+
+CliNetConfig g_cli_net_config {};
+CliNetRuntime g_cli_net_runtime {};
+}
+
 void cli_trim(char* line) {
   char* write = line;
   for (const char* read = line; *read != '\0'; ++read) {
@@ -2661,6 +3904,17 @@ bool parse_u32_with_base(const char* text, int base, uint32_t* value, char* toke
   return true;
 }
 
+std::size_t tokenize_cli_line(char* line, char* argv[], std::size_t max_args) {
+  std::size_t argc = 0;
+  char* next_token = nullptr;
+  char* token = strtok_r(line, " \t", &next_token);
+  while (token && argc < max_args) {
+    argv[argc++] = token;
+    token = strtok_r(nullptr, " \t", &next_token);
+  }
+  return argc;
+}
+
 void log_cli_arguments(const char* command, int argc, char* argv[]) {
   ESP_LOGI(kTag, "CLI cmd='%s' argc=%d", command, argc);
   for (int i = 0; i < argc; ++i) {
@@ -2675,6 +3929,9 @@ void cli_print_help() {
   ESP_LOGI(kTag, "  - wifi.scan (if stage5 Wi-Fi active)");
   ESP_LOGI(kTag, "  - time.status (if stage6 NTP active)");
   ESP_LOGI(kTag, "  - mdns.status (if stage7 mDNS active)");
+  ESP_LOGI(kTag, "  - mqtt.status (if stage9 MQTT active)");
+  ESP_LOGI(kTag, "  - mqtt.pubtest (if stage9 MQTT active)");
+  ESP_LOGI(kTag, "  - cli_net.status");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
   ESP_LOGI(kTag, "  - relay_mask <hex> (8-bit register value)");
@@ -2839,6 +4096,414 @@ void cli_cmd_mdns_status() {
 }
 #endif
 
+void cli_cmd_cli_net_status() {
+#if LUCE_HAS_TCP_CLI
+  ESP_LOGI(kTag,
+           "CLI command cli_net.status: enabled=%d running=%d session=%d authed=%d port=%u ip=%s",
+           g_cli_net_config.enabled ? 1 : 0, g_cli_net_runtime.initialized ? 1 : 0,
+           g_cli_net_runtime.session_open ? 1 : 0, g_cli_net_runtime.session_authed ? 1 : 0,
+           g_cli_net_runtime.active_port,
+           g_cli_net_runtime.session_open && g_cli_net_runtime.active_ip[0] != '\0' ? g_cli_net_runtime.active_ip
+                                                                             : "(none)");
+#else
+  ESP_LOGW(kTag, "CLI command cli_net.status: unsupported (LUCE_HAS_TCP_CLI=0)");
+#endif
+}
+
+bool cli_net_is_readonly_allowed(const char* cmd) {
+  if (!cmd) {
+    return false;
+  }
+  return std::strcmp(cmd, "help") == 0 || std::strcmp(cmd, "status") == 0 ||
+         std::strcmp(cmd, "wifi.status") == 0 || std::strcmp(cmd, "time.status") == 0 ||
+         std::strcmp(cmd, "mdns.status") == 0 || std::strcmp(cmd, "i2c_scan") == 0 ||
+         std::strcmp(cmd, "mcp_read") == 0 || std::strcmp(cmd, "buttons") == 0 ||
+         std::strcmp(cmd, "sensors") == 0 || std::strcmp(cmd, "cli_net.status") == 0;
+}
+
+int execute_cli_command(int argc, char* argv[], bool read_only, const char* source_ip) {
+  if (argc <= 0 || !argv || !argv[0]) {
+    return 1;
+  }
+
+  if (read_only && !cli_net_is_readonly_allowed(argv[0])) {
+    ESP_LOGW(kTag, "[CLI_NET] cmd ip=%s cmd=\"%s\" rc=2 denied", source_ip ? source_ip : "local", argv[0]);
+    return 2;
+  }
+
+  int rc = 0;
+  if (source_ip) {
+    ESP_LOGI(kTag, "[CLI_NET] cmd ip=%s cmd=\"%s\"", source_ip, argv[0]);
+  }
+
+  if (std::strcmp(argv[0], "help") == 0) {
+    cli_print_help();
+  } else if (std::strcmp(argv[0], "status") == 0) {
+    cli_cmd_status();
+  } else if (std::strcmp(argv[0], "nvs_dump") == 0) {
+    cli_cmd_nvs_dump();
+  } else if (std::strcmp(argv[0], "i2c_scan") == 0) {
+    cli_cmd_i2c_scan();
+  } else if (std::strcmp(argv[0], "mcp_read") == 0) {
+    if (argc != 2) {
+      ESP_LOGW(kTag, "CLI command mcp_read usage: mcp_read <gpioa|gpiob>");
+      rc = 1;
+    } else if (std::strcmp(argv[1], "gpioa") == 0 || std::strcmp(argv[1], "A") == 0 ||
+               std::strcmp(argv[1], "gpiob") == 0 || std::strcmp(argv[1], "B") == 0) {
+      cli_cmd_mcp_read(argv[1]);
+    } else {
+      ESP_LOGW(kTag, "CLI command mcp_read: invalid port '%s'", argv[1]);
+      rc = 1;
+    }
+  } else if (std::strcmp(argv[0], "relay_set") == 0) {
+    if (argc != 3) {
+      ESP_LOGW(kTag, "CLI command relay_set usage: relay_set <0..7> <0|1>");
+      rc = 1;
+    } else {
+      uint32_t channel = 0;
+      uint32_t value = 0;
+      char tmp1[32] = {0};
+      char tmp2[32] = {0};
+      const bool ok1 = parse_u32_with_base(argv[1], 10, &channel, tmp1);
+      const bool ok2 = parse_u32_with_base(argv[2], 10, &value, tmp2);
+      if (!ok1 || !ok2 || value > 1 || channel > 7) {
+        ESP_LOGW(kTag,
+                 "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)", tmp1, tmp2);
+        rc = 1;
+      } else {
+        cli_cmd_relay_set(static_cast<int>(channel), static_cast<int>(value));
+      }
+    }
+  } else if (std::strcmp(argv[0], "relay_mask") == 0) {
+    if (argc != 2) {
+      ESP_LOGW(kTag, "CLI command relay_mask usage: relay_mask <hex>");
+      rc = 1;
+    } else {
+      uint32_t value = 0;
+      char tmp[32] = {0};
+      if (!parse_u32_with_base(argv[1], 16, &value, tmp) || value > 0xFF) {
+        ESP_LOGW(kTag, "CLI command relay_mask: parse error for '%s'", tmp);
+        rc = 1;
+      } else {
+        cli_cmd_relay_mask(value);
+      }
+    }
+  } else if (std::strcmp(argv[0], "buttons") == 0) {
+    cli_cmd_buttons();
+  } else if (std::strcmp(argv[0], "lcd_print") == 0) {
+    if (argc < 2) {
+      ESP_LOGW(kTag, "CLI command lcd_print usage: lcd_print <text>");
+      rc = 1;
+    } else {
+      char text[128] = {0};
+      std::snprintf(text, sizeof(text), "%s", argv[1]);
+      for (int i = 2; i < argc; ++i) {
+        const std::size_t used = std::strlen(text);
+        const std::size_t next_len = std::strlen(argv[i]);
+        if (used + 1 + next_len >= sizeof(text)) {
+          ESP_LOGW(kTag, "CLI command lcd_print: truncated due to output length limit");
+          break;
+        }
+        text[used] = ' ';
+        text[used + 1] = '\0';
+        std::strncat(text, argv[i], sizeof(text) - std::strlen(text) - 1);
+      }
+      cli_cmd_lcd_print(text);
+    }
+  } else if (std::strcmp(argv[0], "wifi.status") == 0) {
+    cli_cmd_wifi_status();
+  } else if (std::strcmp(argv[0], "wifi.scan") == 0) {
+    cli_cmd_wifi_scan();
+  } else if (std::strcmp(argv[0], "time.status") == 0) {
+    cli_cmd_time_status();
+  } else if (std::strcmp(argv[0], "mdns.status") == 0) {
+    cli_cmd_mdns_status();
+  } else if (std::strcmp(argv[0], "mqtt.status") == 0) {
+    cli_cmd_mqtt_status();
+  } else if (std::strcmp(argv[0], "mqtt.pubtest") == 0) {
+    cli_cmd_mqtt_pubtest();
+  } else if (std::strcmp(argv[0], "cli_net.status") == 0) {
+    cli_cmd_cli_net_status();
+  } else if (std::strcmp(argv[0], "reboot") == 0) {
+    ESP_LOGW(kTag, "CLI command reboot: restarting");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+  } else if (std::strcmp(argv[0], "sensors") == 0) {
+    ESP_LOGI(kTag, "CLI command sensors: unsupported in this firmware revision");
+    rc = 1;
+  } else {
+    ESP_LOGW(kTag, "CLI unknown command '%s'", argv[0]);
+    cli_print_help();
+    rc = 1;
+  }
+
+  if (source_ip) {
+    ESP_LOGI(kTag, "[CLI_NET] cmd ip=%s cmd=\"%s\" rc=%d", source_ip, argv[0], rc);
+  }
+  return rc;
+}
+
+#if LUCE_HAS_TCP_CLI
+bool cli_net_load_config(CliNetConfig& config) {
+  config = {};
+  config.enabled = false;
+  config.port = kCliNetDefaultPort;
+  config.idle_timeout_s = kCliNetDefaultIdleTimeoutS;
+  std::snprintf(config.token, sizeof(config.token), "%s", "luce-cli");
+
+  nvs_handle_t handle = 0;
+  if (nvs_open(kCliNetNamespace, NVS_READONLY, &handle) != ESP_OK) {
+    ESP_LOGI(kTag, "[CLI_NET] key=enabled present=0 value=0");
+    ESP_LOGI(kTag, "[CLI_NET] key=port present=0 value=%u", config.port);
+    ESP_LOGI(kTag, "[CLI_NET] key=idle_timeout_s present=0 value=%lu",
+             static_cast<unsigned long>(config.idle_timeout_s));
+    return false;
+  }
+
+  bool present = false;
+  uint8_t enabled = 0;
+  if (wifi_read_u8_key(handle, "enabled", &enabled, &present)) {
+    if (enabled == 0 || enabled == 1) {
+      config.enabled = (enabled != 0);
+    }
+  }
+  ESP_LOGI(kTag, "[CLI_NET] key=enabled present=%d value=%d", present ? 1 : 0,
+           config.enabled ? 1 : 0);
+
+  uint32_t port = config.port;
+  if (wifi_read_u32_key(handle, "port", &port, &present) && port > 0 && port <= 65535) {
+    config.port = static_cast<uint16_t>(port);
+  }
+  ESP_LOGI(kTag, "[CLI_NET] key=port present=%d value=%u", present ? 1 : 0,
+           static_cast<unsigned>(config.port));
+
+  if (wifi_read_u32_key(handle, "idle_timeout_s", &config.idle_timeout_s, &present)) {
+    if (config.idle_timeout_s == 0 || config.idle_timeout_s > 7200) {
+      config.idle_timeout_s = kCliNetDefaultIdleTimeoutS;
+    }
+  }
+  ESP_LOGI(kTag, "[CLI_NET] key=idle_timeout_s present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.idle_timeout_s));
+
+  bool token_present = false;
+  if (wifi_read_string_key(handle, "token", config.token, sizeof(config.token), &token_present) && token_present) {
+    if (config.token[0] == '\0') {
+      std::snprintf(config.token, sizeof(config.token), "%s", "luce-cli");
+    }
+  }
+  ESP_LOGI(kTag, "[CLI_NET] key=token present=%d value=%s", token_present ? 1 : 0,
+           token_present ? "(set)" : "(default)");
+
+  nvs_close(handle);
+  return config.enabled;
+}
+
+bool cli_net_send_line(int socket, const char* text) {
+  if (socket < 0 || !text) {
+    return false;
+  }
+  std::size_t len = std::strlen(text);
+  if (len == 0) {
+    return true;
+  }
+  return send(socket, text, len, 0) >= 0;
+}
+
+void cli_net_handle_session(int socket, const char* ip_text, const CliNetConfig& config) {
+  char line[kCliNetMaxLine] = {0};
+  std::size_t line_len = 0;
+
+  bool authed = false;
+  uint32_t failed_auth = 0;
+  TickType_t last_activity = xTaskGetTickCount();
+
+  g_cli_net_runtime.session_open = true;
+  g_cli_net_runtime.session_authed = false;
+  g_cli_net_runtime.active_ip[0] = '\0';
+  if (ip_text) {
+    std::snprintf(g_cli_net_runtime.active_ip, sizeof(g_cli_net_runtime.active_ip), "%s", ip_text);
+  }
+
+  cli_net_send_line(socket, "Welcome to LUCE CLI (TCP). AUTH <token> required\r\n");
+  if (config.idle_timeout_s > 0) {
+    char timeout_msg[96] = {0};
+    std::snprintf(timeout_msg, sizeof(timeout_msg), "Idle timeout: %lu seconds\r\n",
+                 static_cast<unsigned long>(config.idle_timeout_s));
+    cli_net_send_line(socket, timeout_msg);
+  }
+
+  while (true) {
+    if ((xTaskGetTickCount() - last_activity) >= pdMS_TO_TICKS(config.idle_timeout_s * 1000U)) {
+      cli_net_send_line(socket, "session timeout\r\n");
+      ESP_LOGW(kTag, "[CLI_NET] session timeout ip=%s", g_cli_net_runtime.active_ip);
+      break;
+    }
+
+    char rx_byte;
+    const int got = recv(socket, &rx_byte, 1, 0);
+    if (got <= 0) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    last_activity = xTaskGetTickCount();
+    g_cli_net_runtime.last_activity_tick = last_activity;
+
+    if (rx_byte == '\r') {
+      continue;
+    }
+    if (rx_byte == '\n') {
+      if (line_len == 0) {
+        continue;
+      }
+      line[line_len] = '\0';
+
+      char command_line[kCliNetMaxLine];
+      std::memcpy(command_line, line, sizeof(command_line));
+      line_len = 0;
+      cli_trim(command_line);
+
+      char* argv[kCliNetMaxArgs] = {nullptr};
+      const std::size_t argc = tokenize_cli_line(command_line, argv, kCliNetMaxArgs);
+      if (argc == 0) {
+        continue;
+      }
+
+      log_cli_arguments(argv[0], static_cast<int>(argc), argv);
+      if (!authed) {
+        if (std::strcmp(argv[0], "AUTH") == 0 && argc == 2 &&
+            std::strcmp(argv[1], config.token) == 0) {
+          authed = true;
+          g_cli_net_runtime.session_authed = true;
+          failed_auth = 0;
+          ESP_LOGW(kTag, "[CLI_NET] auth ok ip=%s", g_cli_net_runtime.active_ip);
+          cli_net_send_line(socket, "auth ok\r\n");
+          cli_net_send_line(socket,
+                           "Type help/status/wifi.status/time.status/mdns.status/i2c_scan/mcp_read/buttons/cli_net.status\r\n");
+          cli_net_send_line(socket, "+OK\r\n");
+          continue;
+        }
+        ++failed_auth;
+        g_cli_net_runtime.auth_failures = failed_auth;
+        ESP_LOGW(kTag, "[CLI_NET] auth fail ip=%s", g_cli_net_runtime.active_ip);
+        cli_net_send_line(socket, "auth fail\r\n");
+        if (failed_auth >= kCliNetDefaultMaxAuthFails) {
+          cli_net_send_line(socket, "session aborted\r\n");
+          break;
+        }
+        continue;
+      }
+
+      const int rc = execute_cli_command(static_cast<int>(argc), argv, true, g_cli_net_runtime.active_ip);
+      char response[kCliNetResponseBuffer] = {0};
+      std::snprintf(response, sizeof(response), "cmd=%s rc=%d\r\n", argv[0], rc);
+      cli_net_send_line(socket, response);
+      if (std::strcmp(argv[0], "reboot") == 0 && rc == 0) {
+        cli_net_send_line(socket, "rebooting\r\n");
+      }
+      continue;
+    }
+
+    if (line_len < sizeof(line) - 1) {
+      line[line_len++] = rx_byte;
+    } else {
+      line_len = 0;
+      std::memset(line, 0, sizeof(line));
+      cli_net_send_line(socket, "line too long\r\n");
+    }
+  }
+
+  g_cli_net_runtime.session_open = false;
+  g_cli_net_runtime.session_authed = false;
+  g_cli_net_runtime.active_fd = -1;
+  g_cli_net_runtime.active_ip[0] = '\0';
+}
+
+void cli_net_task(void*) {
+  CliNetConfig config;
+  const bool enabled = cli_net_load_config(config);
+  g_cli_net_runtime.initialized = true;
+  g_cli_net_runtime.active_port = config.port;
+  g_cli_net_config = config;
+
+  if (!enabled) {
+    ESP_LOGI(kTag, "[CLI_NET] enabled=%d", 0);
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
+
+  if (config.idle_timeout_s == 0) {
+    config.idle_timeout_s = kCliNetDefaultIdleTimeoutS;
+  }
+
+  const int listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+  if (listen_fd < 0) {
+    ESP_LOGW(kTag, "[CLI_NET] failed to create listener: %s", strerror(errno));
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
+
+  int yes = 1;
+  setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+  sockaddr_in bind_addr{};
+  bind_addr.sin_family = AF_INET;
+  bind_addr.sin_port = htons(config.port);
+  bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  const int bind_rc = bind(listen_fd, reinterpret_cast<const sockaddr*>(&bind_addr), sizeof(bind_addr));
+  if (bind_rc != 0) {
+    ESP_LOGW(kTag, "[CLI_NET] bind failed: port=%u rc=%d (%s)", config.port, bind_rc, strerror(errno));
+    close(listen_fd);
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
+
+  if (listen(listen_fd, 1) != 0) {
+    ESP_LOGW(kTag, "[CLI_NET] listen failed: %s", strerror(errno));
+    close(listen_fd);
+    for (;;) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+  }
+
+  ESP_LOGI(kTag, "[CLI_NET] enabled=%d port=%u", 1, config.port);
+  log_heap_integrity("cli_net_task");
+
+  while (true) {
+    sockaddr_in client_addr{};
+    socklen_t addr_len = sizeof(client_addr);
+    const int client_fd = accept(listen_fd, reinterpret_cast<sockaddr*>(&client_addr), &addr_len);
+    if (client_fd < 0) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+
+    const char* remote = inet_ntoa(client_addr.sin_addr);
+    std::strncpy(g_cli_net_runtime.active_ip, remote ? remote : "unknown",
+                 sizeof(g_cli_net_runtime.active_ip) - 1);
+    g_cli_net_runtime.active_fd = client_fd;
+    ESP_LOGI(kTag, "[CLI_NET] conn ip=%s", g_cli_net_runtime.active_ip);
+
+    g_cli_net_runtime.auth_failures = 0;
+    cli_net_handle_session(client_fd, g_cli_net_runtime.active_ip, config);
+
+    g_cli_net_runtime.active_fd = -1;
+    close(client_fd);
+    ESP_LOGI(kTag, "[CLI_NET] conn closed ip=%s", g_cli_net_runtime.active_ip);
+  }
+}
+
+void cli_net_startup() {
+  if (xTaskCreate(cli_net_task, "cli_net", 4096, nullptr, 2, &g_cli_net_task) != pdPASS) {
+    ESP_LOGW(kTag, "[CLI_NET] startup: task create failed");
+  }
+}
+#endif  // LUCE_HAS_TCP_CLI
+
 void cli_task(void*) {
   uart_config_t uart_cfg{};
   uart_cfg.baud_rate = 115200;
@@ -2886,105 +4551,17 @@ void cli_task(void*) {
       cli_trim(command_buffer);
       line_len = 0;
 
-      char* argv[8] = {nullptr};
-      char* next_token = nullptr;
-      int argc = 0;
-      char* token = strtok_r(command_buffer, " \t", &next_token);
-      if (!token) {
+      char* argv[kCliNetMaxArgs] = {nullptr};
+      const std::size_t argc = tokenize_cli_line(command_buffer, argv, kCliNetMaxArgs);
+      if (argc == 0) {
         continue;
       }
-      while (token && argc < 8) {
-        argv[argc++] = token;
-        token = strtok_r(nullptr, " \t", &next_token);
-      }
-      log_cli_arguments(argv[0], argc, argv);
+
+      log_cli_arguments(argv[0], static_cast<int>(argc), argv);
       log_heap_integrity("cli_pre_cmd");
       log_stage4_watermarks("cli_pre_cmd");
-
-      if (std::strcmp(argv[0], "help") == 0) {
-        cli_print_help();
-      } else if (std::strcmp(argv[0], "status") == 0) {
-        cli_cmd_status();
-      } else if (std::strcmp(argv[0], "nvs_dump") == 0) {
-        cli_cmd_nvs_dump();
-      } else if (std::strcmp(argv[0], "i2c_scan") == 0) {
-        cli_cmd_i2c_scan();
-      } else if (std::strcmp(argv[0], "mcp_read") == 0) {
-        if (argc != 2) {
-          ESP_LOGW(kTag, "CLI command mcp_read usage: mcp_read <gpioa|gpiob>");
-        } else if (std::strcmp(argv[1], "gpioa") == 0 || std::strcmp(argv[1], "A") == 0 ||
-                   std::strcmp(argv[1], "gpiob") == 0 || std::strcmp(argv[1], "B") == 0) {
-          cli_cmd_mcp_read(argv[1]);
-        } else {
-          ESP_LOGW(kTag, "CLI command mcp_read: invalid port '%s'", argv[1]);
-        }
-      } else if (std::strcmp(argv[0], "relay_set") == 0) {
-        if (argc != 3) {
-          ESP_LOGW(kTag, "CLI command relay_set usage: relay_set <0..7> <0|1>");
-        } else {
-          uint32_t channel = 0;
-          uint32_t value = 0;
-          char tmp1[32] = {0};
-          char tmp2[32] = {0};
-          const bool ok1 = parse_u32_with_base(argv[1], 10, &channel, tmp1);
-          const bool ok2 = parse_u32_with_base(argv[2], 10, &value, tmp2);
-          if (!ok1 || !ok2 || value > 1 || channel > 7) {
-            ESP_LOGW(kTag,
-                     "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)",
-                     tmp1, tmp2);
-          } else {
-            cli_cmd_relay_set(static_cast<int>(channel), static_cast<int>(value));
-          }
-        }
-      } else if (std::strcmp(argv[0], "relay_mask") == 0) {
-        if (argc != 2) {
-          ESP_LOGW(kTag, "CLI command relay_mask usage: relay_mask <hex>");
-        } else {
-          uint32_t value = 0;
-          char tmp[32] = {0};
-          if (!parse_u32_with_base(argv[1], 16, &value, tmp) || value > 0xFF) {
-            ESP_LOGW(kTag, "CLI command relay_mask: parse error for '%s'", tmp);
-          } else {
-            cli_cmd_relay_mask(value);
-          }
-        }
-      } else if (std::strcmp(argv[0], "buttons") == 0) {
-        cli_cmd_buttons();
-      } else if (std::strcmp(argv[0], "lcd_print") == 0) {
-        if (argc < 2) {
-          ESP_LOGW(kTag, "CLI command lcd_print usage: lcd_print <text>");
-        } else {
-          char text[128] = {0};
-          std::snprintf(text, sizeof(text), "%s", argv[1]);
-          for (int i = 2; i < argc; ++i) {
-            const std::size_t used = std::strlen(text);
-            const std::size_t next_len = std::strlen(argv[i]);
-            if (used + 1 + next_len >= sizeof(text)) {
-              ESP_LOGW(kTag, "CLI command lcd_print: truncated due to output length limit");
-              break;
-            }
-            text[used] = ' ';
-            text[used + 1] = '\0';
-            std::strncat(text, argv[i], sizeof(text) - std::strlen(text) - 1);
-          }
-          cli_cmd_lcd_print(text);
-        }
-      } else if (std::strcmp(argv[0], "wifi.status") == 0) {
-        cli_cmd_wifi_status();
-      } else if (std::strcmp(argv[0], "wifi.scan") == 0) {
-        cli_cmd_wifi_scan();
-      } else if (std::strcmp(argv[0], "time.status") == 0) {
-        cli_cmd_time_status();
-      } else if (std::strcmp(argv[0], "mdns.status") == 0) {
-        cli_cmd_mdns_status();
-      } else if (std::strcmp(argv[0], "reboot") == 0) {
-        ESP_LOGW(kTag, "CLI command reboot: restarting");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_restart();
-      } else {
-        ESP_LOGW(kTag, "CLI unknown command '%s'", argv[0]);
-        cli_print_help();
-      }
+      const int rc = execute_cli_command(static_cast<int>(argc), argv, false, nullptr);
+      (void)rc;
       std::memset(line_buffer, 0, sizeof(line_buffer));
       log_heap_integrity("cli_post_cmd");
       log_stage4_watermarks("cli_post_cmd");
@@ -3017,6 +4594,12 @@ void cli_startup() {
   ESP_LOGW(kTag, "CLI task creation disabled by LUCE_STAGE4_CLI=%d", LUCE_STAGE4_CLI);
 #endif
 }
+
+#if LUCE_HAS_TCP_CLI
+void tcp_cli_startup() {
+  cli_net_startup();
+}
+#endif
 
 #endif  // LUCE_HAS_CLI
 
@@ -3065,9 +4648,9 @@ extern "C" void app_main(void) {
   print_app_info();
   print_partition_summary();
 
-  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d",
+  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d MQTT=%d",
            LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP,
-           LUCE_HAS_MDNS);
+           LUCE_HAS_MDNS, LUCE_HAS_MQTT);
 
 #if LUCE_HAS_NVS
   update_boot_state_record();
@@ -3093,8 +4676,14 @@ extern "C" void app_main(void) {
 #if LUCE_HAS_MDNS
   mdns_startup();
 #endif
+#if LUCE_HAS_MQTT
+  mqtt_startup();
+#endif
 #if LUCE_HAS_NTP
   ntp_startup();
+#endif
+#if LUCE_HAS_TCP_CLI
+  tcp_cli_startup();
 #endif
 #endif
   for (;;) {
