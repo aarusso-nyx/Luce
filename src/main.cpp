@@ -58,12 +58,37 @@ constexpr std::size_t kDiagTaskStackWords = 8192;
 constexpr std::size_t kCliTaskStackWords = 6144;
 constexpr std::size_t kBlinkTaskStackWords = 2048;
 
-#if LUCE_HAS_I2C
 TaskHandle_t g_diag_task = nullptr;
-#endif
-#if LUCE_HAS_CLI
 TaskHandle_t g_cli_task = nullptr;
+
+extern bool g_i2c_initialized;
+extern bool g_mcp_available;
+extern uint8_t g_relay_mask;
+extern uint8_t g_button_mask;
+#if LUCE_HAS_LCD
+extern bool g_lcd_present;
 #endif
+
+enum class InitPathStatus : uint8_t {
+  kUnknown = 0,
+  kSuccess,
+  kFailure,
+};
+
+struct InitPathResult {
+  bool ok;
+  esp_err_t error;
+  InitPathStatus status;
+};
+
+enum class McpMaskFormat : uint8_t {
+  kRuntime = 0,
+  kStatusCommand,
+};
+
+const char* reset_reason_to_string(esp_reset_reason_t reason);
+std::size_t init_path_reset_reason_line(char* out, std::size_t out_size,
+                                       esp_reset_reason_t reason);
 
 void log_heap_integrity(const char* context) {
 #if LUCE_DEBUG_STAGE4_DIAG
@@ -77,13 +102,97 @@ void log_heap_integrity(const char* context) {
 #endif
 }
 
+std::size_t format_mcp_mask_line(char* out, std::size_t out_size, uint8_t relay_mask,
+                                uint8_t button_mask, McpMaskFormat format = McpMaskFormat::kRuntime) {
+  switch (format) {
+    case McpMaskFormat::kStatusCommand:
+      return std::snprintf(out, out_size, "relay_mask=0x%02X button_mask=0x%02X", relay_mask,
+                           button_mask);
+    case McpMaskFormat::kRuntime:
+    default:
+      return std::snprintf(out, out_size, "REL:0x%02X BTN:0x%02X", relay_mask, button_mask);
+  }
+}
+
+const char* init_status_name(InitPathStatus status) {
+  switch (status) {
+    case InitPathStatus::kSuccess:
+      return "success";
+    case InitPathStatus::kFailure:
+      return "failure";
+    case InitPathStatus::kUnknown:
+    default:
+      return "unknown";
+  }
+}
+
+InitPathResult init_result_success() {
+  return InitPathResult{true, ESP_OK, InitPathStatus::kSuccess};
+}
+
+InitPathResult init_result_failure(esp_err_t error) {
+  return InitPathResult{false, error, InitPathStatus::kFailure};
+}
+
+void log_startup_banner() {
+  char reason_line[48];
+  init_path_reset_reason_line(reason_line, sizeof(reason_line), esp_reset_reason());
+
+  ESP_LOGI(kTag, "LUCE STAGE%d", LUCE_STAGE);
+  ESP_LOGI(kTag, "Build timestamp: %s %s", __DATE__, __TIME__);
+  ESP_LOGI(kTag, "Project version: %s", LUCE_PROJECT_VERSION);
+  ESP_LOGI(kTag, "Git SHA: %s", LUCE_GIT_SHA);
+  ESP_LOGI(kTag, "Reset reason: %s", reason_line);
+}
+
+void log_status_health_lines() {
+  char reason_line[48];
+  char mask_line[48];
+  init_path_reset_reason_line(reason_line, sizeof(reason_line), esp_reset_reason());
+  format_mcp_mask_line(mask_line, sizeof(mask_line), g_relay_mask, g_button_mask,
+                       McpMaskFormat::kStatusCommand);
+
+  ESP_LOGI(kTag, "status: stage=%d reset=%s uptime=%llus", LUCE_STAGE, reason_line,
+           static_cast<long long>(esp_timer_get_time() / 1000000ULL));
+  ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+  ESP_LOGI(kTag, "status: task_watermark_words=%u", uxTaskGetStackHighWaterMark(nullptr));
+  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d", LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI);
+#if LUCE_HAS_I2C
+  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d %s", g_i2c_initialized, g_mcp_available, mask_line);
+#endif
+}
+
+std::size_t init_path_reset_reason_line(char* out, std::size_t out_size, esp_reset_reason_t reason) {
+  return std::snprintf(out, out_size, "%s (%d)", reset_reason_to_string(reason),
+                       static_cast<int>(reason));
+}
+
+void log_runtime_status_line(uint64_t uptime_s, bool i2c_ok, bool mcp_ok, uint8_t relay_mask,
+                            uint8_t button_mask) {
+  char mask_line[32];
+  format_mcp_mask_line(mask_line, sizeof(mask_line), relay_mask, button_mask);
+  ESP_LOGI(kTag, "LUCE S3 %lus | I2C:%s MCP:%s %s", uptime_s, i2c_ok ? "ok" : "no",
+           mcp_ok ? "ok" : "no", mask_line);
+}
+
 void log_stage4_watermarks(const char* context) {
 #if LUCE_DEBUG_STAGE4_DIAG
   if (!context) {
     context = "unknown";
   }
-  const UBaseType_t cli = g_cli_task ? uxTaskGetStackHighWaterMark(g_cli_task) : 0;
-  const UBaseType_t diag = g_diag_task ? uxTaskGetStackHighWaterMark(g_diag_task) : 0;
+  UBaseType_t cli = 0;
+  UBaseType_t diag = 0;
+#if LUCE_HAS_CLI
+  if (g_cli_task) {
+    cli = uxTaskGetStackHighWaterMark(g_cli_task);
+  }
+#endif
+#if LUCE_HAS_I2C
+  if (g_diag_task) {
+    diag = uxTaskGetStackHighWaterMark(g_diag_task);
+  }
+#endif
   const UBaseType_t now = uxTaskGetStackHighWaterMark(nullptr);
   ESP_LOGI(kTag, "Stack watermark (%s): cli=%u diag=%u current=%u", context, cli, diag, now);
 #else
@@ -466,6 +575,8 @@ struct I2cScanResult {
   int found_count = 0;
 };
 
+I2cScanResult scan_i2c_bus();
+
 constexpr uint8_t kLcdAddress = 0x27;
 
 #if LUCE_HAS_LCD
@@ -671,6 +782,9 @@ void update_lcd_status() {
 }
 
 bool init_i2c() {
+  // Contract:
+  // - ok=true only after successful i2c_param_config() and driver install.
+  // - on failure, g_i2c_initialized must remain false and caller may retry.
   i2c_config_t config;
   std::memset(&config, 0, sizeof(config));
   config.mode = I2C_MODE_MASTER;
@@ -694,6 +808,59 @@ bool init_i2c() {
 
   ESP_LOGI(kTag, "I2C init: port=%d SCL=%d SDA=%d", kI2CPort, kI2CSclPin, kI2CSdaPin);
   return true;
+}
+
+InitPathResult init_i2c_contract() {
+  const bool ok = init_i2c();
+  return ok ? init_result_success() : init_result_failure(ESP_FAIL);
+}
+
+InitPathResult run_i2c_scan_flow(I2cScanResult& scan, const char* context, bool attach_lcd) {
+  scan = I2cScanResult{};
+  InitPathResult contract = init_i2c_contract();
+  if (!contract.ok) {
+    if (context) {
+      ESP_LOGW(kTag, "%s: init_i2c() failed (%s)", context, init_status_name(contract.status));
+    }
+    return contract;
+  }
+  g_i2c_initialized = true;
+
+  scan = scan_i2c_bus();
+  if (context) {
+    ESP_LOGI(kTag, "%s: summary found=%d mcp=%d lcd=%d", context, scan.found_count, scan.mcp,
+             scan.lcd);
+  }
+#if LUCE_HAS_LCD
+  if (attach_lcd) {
+    g_lcd_present = false;
+  }
+#endif
+  if (!attach_lcd) {
+    return init_result_success();
+  }
+
+#if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
+  if (scan.lcd) {
+    const bool lcd_present = g_lcd.begin();
+    if (!lcd_present) {
+      ESP_LOGW(kTag, "LCD detected at 0x%02X but initialization failed; continuing without LCD",
+               kLcdAddress);
+    } else {
+      g_lcd.set_mcp_ok(false);
+      g_lcd_present = true;
+      ESP_LOGI(kTag, "LCD initialized at 0x%02X", kLcdAddress);
+      g_lcd.write_status_lines(kRelayOffValue, 0x00);
+    }
+  }
+#else
+  (void)attach_lcd;
+#endif
+#else
+  (void)attach_lcd;
+#endif
+  return init_result_success();
 }
 
 I2cScanResult scan_i2c_bus() {
@@ -730,6 +897,9 @@ I2cScanResult scan_i2c_bus() {
 }
 
 bool init_mcp23017(Mcp23017State& state) {
+  // Contract:
+  // - ok=true only when MCP presence probe and all setup writes succeed.
+  // - on failure, caller must treat relay/button state as unavailable.
   ESP_LOGI(kTag, "MCP23017 init: start");
   state = {};
   if (i2c_probe_device(kMcpAddress, pdMS_TO_TICKS(100)) != ESP_OK) {
@@ -818,34 +988,26 @@ void configure_int_pin() {
 
 void run_stage2_diagnostics() {
   log_heap_integrity("run_stage2_diagnostics_enter");
-  if (!init_i2c()) {
+  I2cScanResult scan{};
+  const InitPathResult scan_result = run_i2c_scan_flow(scan, nullptr, true);
+  if (!scan_result.ok) {
     ESP_LOGW(kTag, "Stage2 abort: I2C bus init failed");
-    g_i2c_initialized = false;
     return;
   }
   g_i2c_initialized = true;
-
-  const I2cScanResult scan = scan_i2c_bus();
   bool lcd_present = false;
 
 #if LUCE_HAS_LCD
 #if LUCE_STAGE4_LCD
-  g_lcd_present = false;
-  if (scan.lcd) {
-    lcd_present = g_lcd.begin();
-    if (!lcd_present) {
-      ESP_LOGW(kTag, "LCD detected at 0x%02X but initialization failed; continuing without LCD",
-               kLcdAddress);
-    } else {
-      g_lcd.set_mcp_ok(false);
-      g_lcd_present = true;
-      ESP_LOGI(kTag, "LCD initialized at 0x%02X", kLcdAddress);
-      g_lcd.write_status_lines(kRelayOffValue, 0x00);
-    }
-  }
+  g_lcd_present = scan_result.ok && g_lcd_present;
+  lcd_present = g_lcd_present;
+#else
+  (void)scan;
+  (void)lcd_present;
 #endif
 #else
   (void)scan;
+  (void)lcd_present;
 #endif
 
   Mcp23017State mcp_state;
@@ -868,8 +1030,7 @@ void run_stage2_diagnostics() {
       if ((now - last_status_tick) >= pdMS_TO_TICKS(2000)) {
         last_status_tick = now;
         const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
-        ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:no REL:0x%02X BTN:0x%02X",
-                 (unsigned long)uptime_s, kRelayOffValue, 0x00);
+        log_runtime_status_line(uptime_s, true, false, kRelayOffValue, 0x00);
 #if LUCE_HAS_LCD
 #if LUCE_STAGE4_LCD
       if (lcd_present && !g_lcd.write_status_lines(kRelayOffValue, 0x00)) {
@@ -985,8 +1146,7 @@ void run_stage2_diagnostics() {
     if ((now - last_status_tick) >= pdMS_TO_TICKS(2000)) {
       last_status_tick = now;
       const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
-      ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:ok REL:0x%02X BTN:0x%02X",
-               (unsigned long)uptime_s, relay_mask, button_mask);
+      log_runtime_status_line(uptime_s, true, true, relay_mask, button_mask);
 #if LUCE_HAS_LCD
 #if LUCE_STAGE4_LCD
       if (lcd_present) {
@@ -1057,17 +1217,7 @@ void cli_print_help() {
 }
 
 void cli_cmd_status() {
-  ESP_LOGI(kTag, "status: stage=%d reset=%s(%d) uptime=%llus", LUCE_STAGE,
-           reset_reason_to_string(esp_reset_reason()), static_cast<int>(esp_reset_reason()),
-           static_cast<long long>(esp_timer_get_time() / 1000000ULL));
-  ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
-           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
-  ESP_LOGI(kTag, "status: task_watermark_words=%u", uxTaskGetStackHighWaterMark(nullptr));
-  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d", LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI);
-#if LUCE_HAS_I2C
-  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d relay_mask=0x%02X button_mask=0x%02X", g_i2c_initialized,
-           g_mcp_available, g_relay_mask, g_button_mask);
-#endif
+  log_status_health_lines();
 }
 
 void cli_cmd_nvs_dump() {
@@ -1082,14 +1232,12 @@ void cli_cmd_nvs_dump() {
 
 void cli_cmd_i2c_scan() {
 #if LUCE_HAS_I2C
-  if (!g_i2c_initialized && !init_i2c()) {
-    ESP_LOGW(kTag, "CLI command i2c_scan: init_i2c() failed");
-    return;
+  I2cScanResult scan{};
+  const InitPathResult scan_result = run_i2c_scan_flow(scan, "CLI command i2c_scan", false);
+  g_i2c_initialized = scan_result.ok;
+  if (!scan_result.ok) {
+    ESP_LOGW(kTag, "CLI command i2c_scan: summary unavailable (scan not initialized)");
   }
-  g_i2c_initialized = true;
-  const I2cScanResult scan = scan_i2c_bus();
-  ESP_LOGI(kTag, "CLI command i2c_scan: summary found=%d mcp=%d lcd=%d", scan.found_count, scan.mcp,
-           scan.lcd);
 #else
   ESP_LOGW(kTag, "CLI command i2c_scan: unsupported (LUCE_HAS_I2C=0)");
 #endif
@@ -1385,12 +1533,7 @@ void blink_alive() {
 }  // namespace
 
 extern "C" void app_main(void) {
-  ESP_LOGI(kTag, "LUCE STAGE%d", LUCE_STAGE);
-  ESP_LOGI(kTag, "Build timestamp: %s %s", __DATE__, __TIME__);
-  ESP_LOGI(kTag, "Project version: %s", LUCE_PROJECT_VERSION);
-  ESP_LOGI(kTag, "Git SHA: %s", LUCE_GIT_SHA);
-  ESP_LOGI(kTag, "Reset reason: %s (%d)", reset_reason_to_string(esp_reset_reason()),
-           static_cast<int>(esp_reset_reason()));
+  log_startup_banner();
 
   print_chip_info();
   print_heap_stats();
