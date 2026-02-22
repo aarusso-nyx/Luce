@@ -10,3 +10,32 @@ Use the following exact commands unless the port assignment is changed intention
 - Flash stage firmware: `python3 -m platformio run -e luce_stage0 -t upload --upload-port /dev/cu.usbserial-0001`
 - Monitor serial console continuously: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
 
+## Autonomous execution flow
+
+For autonomous firmware iteration:
+
+1. Build the target env: `python3 -m platformio run -e <env>`
+2. Upload firmware: `python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001`
+3. Capture boot and runtime output on mirrored console: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
+4. Paste back the first 80 lines after reset for diagnosis.
+
+Default target during bootstrap is `luce_stage0` until a later stage env is requested.
+
+### Monitor behavior note
+
+On this host, `python3 -m platformio device monitor -p /dev/cu.usbserial-40110` can fail with:
+
+`termios.error: (19, 'Operation not supported by device')`
+
+Fallback direct-reader when that happens:
+
+```bash
+python3 - <<'PY'
+import sys, serial
+with serial.Serial('/dev/cu.usbserial-40110', 115200, timeout=0.2) as ser:
+    for _ in range(80):
+        line = ser.readline()
+        if line:
+            sys.stdout.write(line.decode('utf-8', errors='replace'))
+PY
+```
