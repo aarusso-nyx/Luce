@@ -78,7 +78,9 @@ done
 log_dir="${project_root}/docs/work/diag"
 mkdir -p "${log_dir}"
 timestamp="$(date +%Y%m%d_%H%M%S)"
-log_file="${log_dir}/${timestamp}_${env}_${tag}.txt"
+boot_dir="${log_dir}/${timestamp}/boot"
+mkdir -p "${boot_dir}"
+log_file="${boot_dir}/${env}_${tag}.txt"
 
 {
   echo "# LUCE log capture"
@@ -93,24 +95,18 @@ log_file="${log_dir}/${timestamp}_${env}_${tag}.txt"
 } > "${log_file}"
 
 upload_cmd=( "${pio_cmd[@]}" run -e "${env}" -t upload --upload-port "${upload_port}" )
-monitor_cmd=( "${pio_cmd[@]}" device monitor -e "${env}" --timestamp --port "${monitor_port}" )
+capture_cmd=( python3 "${project_root}/scripts/capture_serial.py" --port "${monitor_port}" --baud 115200 --seconds "${duration}" --output "${log_file}" )
 
 echo "==> ${upload_cmd[*]}" | tee -a "${log_file}"
 "${upload_cmd[@]}" 2>&1 | tee -a "${log_file}"
 
-echo "==> ${monitor_cmd[*]} (timed out after ${duration}s)" | tee -a "${log_file}"
-set +e
-timeout "${duration}s" "${monitor_cmd[@]}" 2>&1 | tee -a "${log_file}"
-monitor_exit="${PIPESTATUS[0]}"
-set -e
+echo "==> ${capture_cmd[*]} (timed out after ${duration}s)" | tee -a "${log_file}"
+"${capture_cmd[@]}" >> "${log_file}" 2>&1
+monitor_exit="$?"
 
-if [ "${monitor_exit}" -ne 0 ] && [ "${monitor_exit}" -ne 124 ]; then
+if [ "${monitor_exit}" -ne 0 ]; then
   echo "error: monitor command failed with exit code ${monitor_exit}" | tee -a "${log_file}" >&2
   exit "${monitor_exit}"
-fi
-
-if [ "${monitor_exit}" -eq 124 ]; then
-  echo "INFO: monitor timed out after ${duration}s (intentional)" | tee -a "${log_file}"
 fi
 
 echo "Saved capture: ${log_file}" | tee -a "${log_file}"
