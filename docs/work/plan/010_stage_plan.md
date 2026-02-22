@@ -1,20 +1,30 @@
-# Stage Plan 010 (Skeleton)
+# Stage Plan 010
 
 Date: 2026-02-22
-Status: Draft skeleton
+Status: Active
+
+## Run Procedure
+
+- Use `./scripts/collect_logs.sh <env> <tag> <duration_seconds>`.
+- Store logs under `docs/work/diag/<date>_<env>_<tag>.txt`.
+- Use `LUCE_STAGE` to validate expected compiled feature set per env.
 
 ## Stage0 - Hardware Bring-Up
 Acceptance criteria:
-- Board powers reliably on expected supply rails.
-- UART console accessible and stable.
-- I2C bus initializes on GPIO23/GPIO22 without lockups.
-- MCP23017 detected at address `0x20`.
-- DHT and LDR channels produce plausible raw readings.
+- Power-on is stable on USB power.
+- UART boot log is visible and includes:
+  - `LUCE STAGE0`
+  - build timestamp
+  - reset reason
+- Console shows chip/clock/heap diagnostics.
+- LEDs 25/26/27 execute the alive sequence.
+- No dependency symbols for NVS/I2C/LCD/CLI in `luce_stage0` build.
+- Stage0 run for 30 seconds with no watchdog-reset due to task starvation.
 
 ## Stage1 - I/O Baseline
 Acceptance criteria:
 - Stage1 firmware builds with `luce_stage1` and reports `LUCE STAGE1`.
-- `esp_nvs` is initialized and no stage1 build includes I2C/LCD/CLI symbols.
+- `esp_nvs` is initialized and no Stage1 image includes I2C/LCD/CLI symbols.
 - Boot state record is persisted every boot:
   - `boot_count` increments on each restart.
   - `last_reset_reason` is updated with current `esp_reset_reason`.
@@ -23,7 +33,7 @@ Acceptance criteria:
 - Device and app diagnostics are present:
   - partition table dump
 - Reset/reflash acceptance check:
-  - NVS erase + rebuild + flash shows reset history changes exactly as expected.
+  - `python3 -m platformio run -e luce_stage1 -t erase` (or erase tool equivalent), rebuild, flash, then confirm `boot_count` changes on next boot.
 
 ## Stage2 - Control Semantics
 Acceptance criteria:
@@ -38,6 +48,7 @@ Acceptance criteria:
 - MCP INT line (`GPIO19`) is configured as input and its level is logged on change.
 - If MCP is absent, firmware stays alive and reports clear graceful-degrade messages.
 - Stage2 build gates prevent I2C path from compiling in Stage0/Stage1.
+- `luce_stage2` run shows one-time relay safety initialization (`all relays OFF` at startup message).
 
 ## Stage3 - Interface Integration
 Acceptance criteria:
@@ -51,6 +62,7 @@ Acceptance criteria:
 - Identical status is mirrored to console output.
 - Missing LCD does not prevent running; diagnostics continue with warnings.
 - Stage2 I2C/MCP sweep path remains functional under `luce_stage3`.
+- A CLI unavailable check must still hold: `LUCE_HAS_CLI=0` in Stage3.
 
 ## Stage4 - Resilience And Release Readiness
 Acceptance criteria:
@@ -67,3 +79,4 @@ Acceptance criteria:
 - `lcd_print` writes text when LCD is enabled, and prints unavailable warning otherwise.
 - `reboot` command triggers clean software reset.
 - Stage4 CLI and diagnostics tasks run together (no blocking stage_main) and each command logs parsed args and result status.
+- `nvs_dump`, `i2c_scan`, and control commands are optional-by-gate (`LUCE_HAS_NVS`, `LUCE_HAS_I2C`) with explicit warnings when disabled.
