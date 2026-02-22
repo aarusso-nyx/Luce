@@ -99,7 +99,7 @@ void test_bitmask_helpers_active_low_semantics() {
   current = relay_mask_for_channel_state_active_low(2, false, current);
   TEST_ASSERT_EQUAL_UINT8(0xFF, current);
 
-  current = relay_mask_for_channel_state_active_low(7, true, 0x00);
+  current = relay_mask_for_channel_state_active_low(7, true, 0xFF);
   TEST_ASSERT_EQUAL_UINT8(0x7F, current);
 }
 

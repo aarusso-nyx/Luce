@@ -245,7 +245,8 @@ void log_runtime_status_line(uint64_t uptime_s, bool i2c_ok, bool mcp_ok, uint8_
                             uint8_t button_mask) {
   char mask_line[32];
   format_mcp_mask_line(mask_line, sizeof(mask_line), relay_mask, button_mask);
-  ESP_LOGI(kTag, "LUCE S3 %lus | I2C:%s MCP:%s %s", uptime_s, i2c_ok ? "ok" : "no",
+  ESP_LOGI(kTag, "LUCE S3 %llu | I2C:%s MCP:%s %s",
+           static_cast<unsigned long long>(uptime_s), i2c_ok ? "ok" : "no",
            mcp_ok ? "ok" : "no", mask_line);
 }
 
@@ -343,6 +344,8 @@ void print_partition_summary() {
     return;
   }
 
+  // esp_partition_next() may free iterator state when it reaches end of list.
+  // Keep a single iterator variable and allow NULL-safe release at the end.
   for (esp_partition_iterator_t it = part_it; it;) {
     const esp_partition_t* partition = esp_partition_get(it);
     if (partition) {
@@ -350,11 +353,7 @@ void print_partition_summary() {
                partition->type, partition->subtype, partition->label, partition->address, partition->size);
     }
     it = esp_partition_next(it);
-    if (!it) {
-      break;
-    }
   }
-  esp_partition_iterator_release(part_it);
 }
 
 void print_heap_stats() {
@@ -1117,10 +1116,8 @@ void dump_nvs_value(nvs_handle_t handle, const nvs_entry_info_t& info) {
       if (nvs_get_str(handle, info.key, nullptr, &required) == ESP_OK && required > 0) {
         char str_val[129] = {0};
         size_t capacity = required < sizeof(str_val) ? required : sizeof(str_val);
-        if (capacity > 0) {
-          if (nvs_get_str(handle, info.key, str_val, &capacity) == ESP_OK) {
-            ESP_LOGI(kTag, "    value (str): %s", str_val);
-          }
+        if (nvs_get_str(handle, info.key, str_val, &capacity) == ESP_OK) {
+          ESP_LOGI(kTag, "    value (str): %s", str_val);
         }
       }
       break;
@@ -1128,17 +1125,15 @@ void dump_nvs_value(nvs_handle_t handle, const nvs_entry_info_t& info) {
     case NVS_TYPE_BLOB: {
       size_t required = 0;
       if (nvs_get_blob(handle, info.key, nullptr, &required) == ESP_OK && required > 0) {
-        char blob_preview[33] = {0};
-        if (required > 0) {
-          uint8_t data[32];
-          size_t copy_size = required < sizeof(data) ? required : sizeof(data);
-          if (nvs_get_blob(handle, info.key, data, &copy_size) == ESP_OK) {
-            for (size_t i = 0; i < copy_size; ++i) {
-              std::snprintf(blob_preview + (i * 2), 3, "%02x", data[i]);
-            }
-            ESP_LOGI(kTag, "    value (blob, %u bytes): %s%s", (unsigned)required,
-                     blob_preview, required > sizeof(data) ? "..." : "");
+        size_t copy_size = required < 32 ? required : 32;
+        uint8_t data[32] = {0};
+        if (nvs_get_blob(handle, info.key, data, &copy_size) == ESP_OK && copy_size > 0) {
+          char blob_preview[33] = {0};
+          for (size_t i = 0; i < copy_size; ++i) {
+            std::snprintf(blob_preview + (i * 2), 3, "%02x", data[i]);
           }
+          ESP_LOGI(kTag, "    value (blob, %u bytes): %s%s", (unsigned)required,
+                   blob_preview, required > sizeof(data) ? "..." : "");
         }
       }
       break;
@@ -1658,7 +1653,8 @@ bool init_mcp23017(Mcp23017State& state) {
       mcp_write_reg(kGpiob, 0x00),
   };
 
-  for (const esp_err_t err : errors) {
+  for (std::size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+    const esp_err_t err = errors[i];
     if (err != ESP_OK) {
       ESP_LOGW(kTag, "MCP23017 init register write failed: %s", esp_err_to_name(err));
       return false;
@@ -2129,7 +2125,7 @@ void cli_task(void*) {
       cli_trim(command_buffer);
       line_len = 0;
 
-      char* argv[8];
+      char* argv[8] = {nullptr};
       char* next_token = nullptr;
       int argc = 0;
       char* token = strtok_r(command_buffer, " \t", &next_token);
