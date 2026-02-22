@@ -13,10 +13,17 @@ Acceptance criteria:
 
 ## Stage1 - I/O Baseline
 Acceptance criteria:
-- J1 relay outputs map correctly to MCP `A0..A7`.
-- J2 button inputs map correctly to MCP `B0..B7`.
-- Button press/release polarity and debounce behavior are validated.
-- MCP interrupt path to ESP32 GPIO19 is verified.
+- Stage1 firmware builds with `luce_stage1` and reports `LUCE STAGE1`.
+- `esp_nvs` is initialized and no stage1 build includes I2C/LCD/CLI symbols.
+- Boot state record is persisted every boot:
+  - `boot_count` increments on each restart.
+  - `last_reset_reason` is updated with current `esp_reset_reason`.
+- Boot log prints verbose NVS section:
+  - `namespace`, `key`, `type`, and stored value (or readback marker where feasible).
+- Device and app diagnostics are present:
+  - partition table dump
+- Reset/reflash acceptance check:
+  - NVS erase + rebuild + flash shows reset history changes exactly as expected.
 
 ## Stage2 - Control Semantics
 Acceptance criteria:

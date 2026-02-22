@@ -1,0 +1,50 @@
+# Stage1 expected output (sample)
+
+Upload and monitor with:
+
+- `python3 -m platformio run -e luce_stage1 -t upload --upload-port /dev/cu.usbserial-0001`
+- `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
+
+Expected first lines after reset:
+
+- `LUCE STAGE1`
+- `Build timestamp: <DATE> <TIME>`
+- `Project version: <VERSION>`
+- `Git SHA: <SHA>`
+- `Reset reason: <REASON> (<CODE>)`
+- `Chip: model=<N> revision=<N> cores=<N>`
+- `Features: <...>`
+- `CPU frequency: <MHZ> MHz`
+- `Heap free: <N> bytes`
+- `Heap min-free: <N> bytes`
+- `Task watermark (current): <N> words`
+- `App version: <VERSION>`
+- `Project name: Luce`
+- `Secure version: <N>`
+- `ESP-IDF version: <VERSION>`
+- `ELF SHA256: <HASH>`
+- `Partition map:` with at least one line per partition
+- `Feature flags: NVS=1 I2C=0 LCD=0 CLI=0`
+- `NVS init: starting`
+- `NVS state: boot_count=<INCREMENTING_COUNT> last_reset_reason=<CODE>`
+- `NVS entries (namespace/key/type/value):`
+- entries for namespace `boot`:
+  - `ns=boot key=boot_count type=U32 value ...`
+  - `ns=boot key=last_reset_reason type=U32 value ...`
+
+If logs look truncated, still paste first 80 lines after reset and this command output header.
+
+Erase/redo instructions:
+
+- To clear boot state before rerun:
+  - `python3 -m platformio run -e luce_stage1 -t erase`
+  - (or `python3 -m platformio run -e luce_stage1 -t erase_region --erase-size 0x9000` if erase target unavailable)
+  - then re-upload firmware and reboot
+
+- To verify state progression:
+  - boot, record `boot_count`
+  - reset physically or power-cycle and confirm `boot_count` increments by 1 each boot
+
+What to paste back:
+
+- paste first ~80 lines after reset from monitor/console exactly as printed
