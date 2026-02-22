@@ -1,0 +1,10 @@
+luce_stage0 STATUS=PASS
+luce_stage1 STATUS=PASS
+luce_stage2 STATUS=PASS
+luce_stage3 STATUS=PASS
+luce_stage4 STATUS=PASS
+luce_stage0 STATUS=PASS
+luce_stage1 STATUS=PASS
+luce_stage2 STATUS=PASS
+luce_stage3 STATUS=PASS
+luce_stage4 STATUS=PASS

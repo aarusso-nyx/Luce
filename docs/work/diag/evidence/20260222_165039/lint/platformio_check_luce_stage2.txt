@@ -1,0 +1,19 @@
+Checking luce_stage2 > cppcheck (platform: espressif32; board: nodemcu-32s; framework: espidf)
+--------------------------------------------------------------------------------
+src/main.cpp:396: [low:style] Condition 'required>0' is always true [knownConditionTrueFalse]
+src/main.cpp:395: [low:style] The scope of the variable 'blob_preview' can be reduced. [variableScope]
+src/main.cpp:922: [low:style] Consider using std::find_if algorithm instead of a raw loop. [useStlAlgorithm]
+src/main.cpp:148: [low:style] The function 'log_status_health_lines' is never used. [unusedFunction]
+========================== [PASSED] Took 0.06 seconds ==========================
+
+Component     HIGH    MEDIUM    LOW
+-----------  ------  --------  -----
+src            0        0        4
+
+Total          0        0        4
+
+Environment    Tool      Status    Duration
+-------------  --------  --------  ------------
+luce_stage2    cppcheck  PASSED    00:00:00.059
+========================= 1 succeeded in 00:00:00.059 =========================
+STATUS=PASS
