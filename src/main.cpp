@@ -38,6 +38,59 @@ namespace {
 constexpr const char* kTag = "luce_boot";
 void blink_alive();
 
+#ifndef LUCE_STAGE4_DIAG
+#define LUCE_STAGE4_DIAG 1
+#endif
+
+#ifndef LUCE_STAGE4_LCD
+#define LUCE_STAGE4_LCD 1
+#endif
+
+#ifndef LUCE_STAGE4_CLI
+#define LUCE_STAGE4_CLI 1
+#endif
+
+#ifndef LUCE_DEBUG_STAGE4_DIAG
+#define LUCE_DEBUG_STAGE4_DIAG 1
+#endif
+
+constexpr std::size_t kDiagTaskStackWords = 8192;
+constexpr std::size_t kCliTaskStackWords = 6144;
+constexpr std::size_t kBlinkTaskStackWords = 2048;
+
+#if LUCE_HAS_I2C
+TaskHandle_t g_diag_task = nullptr;
+#endif
+#if LUCE_HAS_CLI
+TaskHandle_t g_cli_task = nullptr;
+#endif
+
+void log_heap_integrity(const char* context) {
+#if LUCE_DEBUG_STAGE4_DIAG
+  if (!context) {
+    context = "unknown";
+  }
+  const bool ok = heap_caps_check_integrity_all(true);
+  ESP_LOGI(kTag, "Heap integrity (%s): %s", context, ok ? "OK" : "CORRUPTED");
+#else
+  (void)context;
+#endif
+}
+
+void log_stage4_watermarks(const char* context) {
+#if LUCE_DEBUG_STAGE4_DIAG
+  if (!context) {
+    context = "unknown";
+  }
+  const UBaseType_t cli = g_cli_task ? uxTaskGetStackHighWaterMark(g_cli_task) : 0;
+  const UBaseType_t diag = g_diag_task ? uxTaskGetStackHighWaterMark(g_diag_task) : 0;
+  const UBaseType_t now = uxTaskGetStackHighWaterMark(nullptr);
+  ESP_LOGI(kTag, "Stack watermark (%s): cli=%u diag=%u current=%u", context, cli, diag, now);
+#else
+  (void)context;
+#endif
+}
+
 const char* reset_reason_to_string(esp_reset_reason_t reason) {
   switch (reason) {
     case ESP_RST_POWERON:
@@ -105,18 +158,21 @@ void print_partition_summary() {
   esp_partition_iterator_t part_it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
   if (!part_it) {
     ESP_LOGW(kTag, "  no partition table entries found");
-  } else {
-    for (esp_partition_iterator_t it = part_it; it; it = esp_partition_next(it)) {
-      const esp_partition_t* partition = esp_partition_get(it);
-      if (!partition) {
-        continue;
-      }
-      ESP_LOGI(kTag, "  type=%d subtype=%d label=%s offset=0x%08" PRIx32 " size=0x%08" PRIx32,
-               partition->type, partition->subtype, partition->label,
-               partition->address, partition->size);
-    }
-    esp_partition_iterator_release(part_it);
+    return;
   }
+
+  for (esp_partition_iterator_t it = part_it; it;) {
+    const esp_partition_t* partition = esp_partition_get(it);
+    if (partition) {
+      ESP_LOGI(kTag, "  type=%d subtype=%d label=%s offset=0x%08" PRIx32 " size=0x%08" PRIx32,
+               partition->type, partition->subtype, partition->label, partition->address, partition->size);
+    }
+    it = esp_partition_next(it);
+    if (!it) {
+      break;
+    }
+  }
+  esp_partition_iterator_release(part_it);
 }
 
 void print_heap_stats() {
@@ -601,6 +657,7 @@ esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value) {
 
 void update_lcd_status() {
 #if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
   if (!g_lcd_present) {
     return;
   }
@@ -609,6 +666,7 @@ void update_lcd_status() {
     return;
   }
   g_lcd.write_status_lines(g_relay_mask, g_button_mask);
+#endif
 #endif
 }
 
@@ -759,6 +817,7 @@ void configure_int_pin() {
 }
 
 void run_stage2_diagnostics() {
+  log_heap_integrity("run_stage2_diagnostics_enter");
   if (!init_i2c()) {
     ESP_LOGW(kTag, "Stage2 abort: I2C bus init failed");
     g_i2c_initialized = false;
@@ -767,10 +826,11 @@ void run_stage2_diagnostics() {
   g_i2c_initialized = true;
 
   const I2cScanResult scan = scan_i2c_bus();
+  bool lcd_present = false;
 
 #if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
   g_lcd_present = false;
-  bool lcd_present = false;
   if (scan.lcd) {
     lcd_present = g_lcd.begin();
     if (!lcd_present) {
@@ -783,6 +843,7 @@ void run_stage2_diagnostics() {
       g_lcd.write_status_lines(kRelayOffValue, 0x00);
     }
   }
+#endif
 #else
   (void)scan;
 #endif
@@ -790,10 +851,12 @@ void run_stage2_diagnostics() {
   Mcp23017State mcp_state;
   if (!init_mcp23017(mcp_state)) {
     ESP_LOGW(kTag, "Stage2 diagnostics degraded: MCP23017 missing or unresponsive");
- #if LUCE_HAS_LCD
+#if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
     if (lcd_present) {
       g_lcd.write_status_lines(kRelayOffValue, 0x00);
     }
+#endif
 #endif
     g_mcp_available = false;
     g_relay_mask = kRelayOffValue;
@@ -808,9 +871,13 @@ void run_stage2_diagnostics() {
         ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:no REL:0x%02X BTN:0x%02X",
                  (unsigned long)uptime_s, kRelayOffValue, 0x00);
 #if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
       if (lcd_present && !g_lcd.write_status_lines(kRelayOffValue, 0x00)) {
-          ESP_LOGW(kTag, "LCD update failed (LCD-only mode)");
-        }
+        ESP_LOGW(kTag, "LCD update failed (LCD-only mode)");
+      }
+#else
+      (void)lcd_present;
+#endif
 #endif
       }
 
@@ -831,10 +898,12 @@ void run_stage2_diagnostics() {
 
 
 #if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
   g_lcd.set_mcp_ok(scan.mcp);
   if (lcd_present) {
     g_lcd.write_status_lines(mcp_state.relay_mask, 0x00);
   }
+#endif
 #endif
 
   uint8_t debounce_counts[8] = {0};
@@ -919,14 +988,20 @@ void run_stage2_diagnostics() {
       ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:ok REL:0x%02X BTN:0x%02X",
                (unsigned long)uptime_s, relay_mask, button_mask);
 #if LUCE_HAS_LCD
+#if LUCE_STAGE4_LCD
       if (lcd_present) {
         if (!g_lcd.write_status_lines(relay_mask, button_mask)) {
           ESP_LOGW(kTag, "LCD update failed");
         }
       }
 #endif
+#endif
     }
 
+    log_stage4_watermarks("diag_loop");
+    if ((now - last_status_tick) >= pdMS_TO_TICKS(10000)) {
+      log_heap_integrity("diag_loop_health");
+    }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
@@ -1122,6 +1197,8 @@ void cli_task(void*) {
   } else {
     ESP_LOGI(kTag, "CLI listening on UART0 at 115200. Type 'help' for commands.");
   }
+  log_stage4_watermarks("cli_start");
+  log_heap_integrity("cli_start");
 
   char line_buffer[128] = {0};
   size_t line_len = 0;
@@ -1156,6 +1233,8 @@ void cli_task(void*) {
         token = strtok_r(nullptr, " \t", &next_token);
       }
       log_cli_arguments(argv[0], argc, argv);
+      log_heap_integrity("cli_pre_cmd");
+      log_stage4_watermarks("cli_pre_cmd");
 
       if (std::strcmp(argv[0], "help") == 0) {
         cli_print_help();
@@ -1234,6 +1313,8 @@ void cli_task(void*) {
         cli_print_help();
       }
       std::memset(line_buffer, 0, sizeof(line_buffer));
+      log_heap_integrity("cli_post_cmd");
+      log_stage4_watermarks("cli_post_cmd");
       continue;
     }
 
@@ -1253,9 +1334,15 @@ void cli_task(void*) {
 }
 
 void cli_startup() {
-  if (xTaskCreate(cli_task, "cli", 4096, nullptr, 2, nullptr) != pdPASS) {
+#if LUCE_STAGE4_CLI
+  if (xTaskCreate(cli_task, "cli", kCliTaskStackWords, nullptr, 2, &g_cli_task) != pdPASS) {
     ESP_LOGW(kTag, "CLI task create failed");
+  } else {
+    log_stage4_watermarks("cli_startup");
   }
+#else
+  ESP_LOGW(kTag, "CLI task creation disabled by LUCE_STAGE4_CLI=%d", LUCE_STAGE4_CLI);
+#endif
 }
 
 #endif  // LUCE_HAS_CLI
@@ -1318,13 +1405,22 @@ extern "C" void app_main(void) {
 #endif
 
 #if LUCE_HAS_I2C
-  xTaskCreate(blink_alive_task, "blink", 2048, nullptr, 1, nullptr);
+  xTaskCreate(blink_alive_task, "blink", kBlinkTaskStackWords, nullptr, 1, nullptr);
 #if LUCE_HAS_CLI
-  if (xTaskCreate(diagnostics_task, "diag", 4096, nullptr, 1, nullptr) != pdPASS) {
+#if LUCE_STAGE4_DIAG
+  if (xTaskCreate(diagnostics_task, "diag", kDiagTaskStackWords, nullptr, 1, &g_diag_task) != pdPASS) {
     ESP_LOGW(kTag, "Stage4 diagnostic task create failed");
   }
+#else
+  ESP_LOGW(kTag, "Diagnostics task disabled by LUCE_STAGE4_DIAG=%d", LUCE_STAGE4_DIAG);
+#endif
+#if LUCE_STAGE4_CLI
   cli_startup();
+#else
+  ESP_LOGW(kTag, "CLI startup disabled by LUCE_STAGE4_CLI=%d", LUCE_STAGE4_CLI);
+#endif
   for (;;) {
+    log_stage4_watermarks("stage4_main_wait");
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 #else
