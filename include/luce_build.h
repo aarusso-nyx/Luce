@@ -9,6 +9,7 @@
 #define LUCE_HAS_LCD ((LUCE_STAGE >= 3) ? 1 : 0)
 #define LUCE_HAS_CLI ((LUCE_STAGE >= 4) ? 1 : 0)
 #define LUCE_HAS_WIFI ((LUCE_STAGE >= 5) ? 1 : 0)
+#define LUCE_HAS_NTP ((LUCE_STAGE >= 6) ? 1 : 0)
 
 #ifndef LUCE_PROJECT_VERSION
 #define LUCE_PROJECT_VERSION "0.0.0-stage0"

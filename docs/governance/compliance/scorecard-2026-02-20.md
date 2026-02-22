@@ -18,6 +18,12 @@
 - evidence: docs/work/diag/evidence/20260222_202656/90_summary.md
 - notes: build/test/boot/e2e evidence chain captured for Stage5 workflow; runtime logs show TLSF panic loop on current stage5 image, requiring runtime follow-up.
 
+## Stage6 Evidence
+
+- status: PASS
+- evidence: docs/work/diag/evidence/20260222_180112/90_summary.md
+- notes: stage6 SNTP client is present under LUCE_STAGE=6 with non-blocking startup and CLI `time.status`.
+
 ## Blockers
 
 - none

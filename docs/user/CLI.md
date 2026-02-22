@@ -1,8 +1,8 @@
-# Luce Stage4 CLI
+# Luce CLI (Stage4+)
 
-This document is the authoritative CLI contract for LUCE stage4 firmware.
+This document is the authoritative CLI contract for LUCE stage4+ firmware.
 
-The Stage4 firmware exposes a serial CLI on UART0 (`LUCE_STAGE=4`) and intentionally excludes Wi‑Fi, HTTP, MQTT, and other networking stacks.
+The serial CLI on UART0 (`LUCE_STAGE=4+`) remains the primary deterministic interface.
 
 ## Transport
 - UART0 at 115200 8N1
@@ -34,6 +34,12 @@ The Stage4 firmware exposes a serial CLI on UART0 (`LUCE_STAGE=4`) and intention
   - Writes a single LCD line (row 0) when LCD is compiled in and present.
 - `reboot`
   - Triggers an ESP reset.
+- `time.status` *(stage6+)*
+  - Prints SNTP sync state, last successful sync Unix time, sync age, UTC string.
+  - Prints "time not synced" with an explicit reason when no valid time is available.
+
+### Stage6 additions
+- `time.status` reads `[NTP]` state and validates bounded retry behavior without blocking boot.
 
 ## Parsing and diagnostics
 - Every command is logged with parsed arguments and result codes.

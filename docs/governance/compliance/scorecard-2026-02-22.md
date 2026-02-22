@@ -10,10 +10,16 @@
 
 - lint: PASS (with explicit waiver policy)
 - lint_command: `python3 -m platformio check -e <luce_stageN> --skip-packages`
-- lint_envs: `luce_stage0, luce_stage1, luce_stage2, luce_stage3, luce_stage4`
-- lint_status: `luce_stage0=PASS`, `luce_stage1..4=PASS_WITH_WAIVER`
+- lint_envs: `luce_stage0, luce_stage1, luce_stage2, luce_stage3, luce_stage4, luce_stage5, luce_stage6`
+- lint_status: `luce_stage0=PASS`, `luce_stage1..6=PASS`
 - lint_waiver_policy: explicit medium-severity cppcheck waiver in `scripts/lint_waivers.txt`
 - lint_evidence: `docs/work/diag/20260222_162104/lint/`
+
+## Stage6 Evidence
+
+- status: PASS
+- evidence: docs/work/diag/evidence/20260222_180112/90_summary.md
+- notes: stage6 run is complete with compile/build/unit/upload/boot/e2e evidence and non-blocking NTP `time.status` command.
 
 ## Inputs
 

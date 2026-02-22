@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <ctime>
 
 #include "luce_build.h"
 
@@ -35,6 +36,10 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "lwip/ip4_addr.h"
+#endif
+
+#if LUCE_HAS_NTP
+#include "esp_sntp.h"
 #endif
 
 #if LUCE_HAS_CLI
@@ -157,6 +162,33 @@ void wifi_task(void* arg);
 void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 void wifi_scan_for_cli();
 void wifi_status_for_cli();
+bool wifi_has_ip();
+#endif
+
+#if LUCE_HAS_NTP
+enum class NtpState : uint8_t {
+  kDisabled = 0,
+  kUnsynced,
+  kSyncing,
+  kSynced,
+  kFailed,
+};
+
+struct NtpConfig {
+  bool enabled = false;
+  char server1[33] = "pool.ntp.org";
+  char server2[33] = "time.google.com";
+  char server3[33] = "";
+  uint32_t sync_timeout_s = 30;
+  uint32_t sync_interval_s = 3600;
+};
+
+void ntp_log_status_line();
+const char* ntp_state_name(NtpState state);
+void ntp_set_state(NtpState next_state, const char* reason);
+void ntp_startup();
+void ntp_task(void* arg);
+bool ntp_has_time();
 #endif
 
 const char* reset_reason_to_string(esp_reset_reason_t reason);
@@ -230,7 +262,8 @@ void log_status_health_lines() {
   ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag, "status: task_watermark_words=%u", uxTaskGetStackHighWaterMark(nullptr));
-  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d", LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI);
+  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d", LUCE_HAS_I2C,
+           LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP);
 #if LUCE_HAS_I2C
   ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d %s", g_i2c_initialized, g_mcp_available, mask_line);
 #endif
@@ -786,6 +819,10 @@ bool wifi_init_wifi_stack() {
   return true;
 }
 
+bool wifi_has_ip() {
+  return g_wifi_has_ip;
+}
+
 bool wifi_send_connect() {
   if (!g_wifi_initialized) {
     return false;
@@ -1025,6 +1062,310 @@ void wifi_startup() {
   }
 }
 #endif  // LUCE_HAS_WIFI
+
+#if LUCE_HAS_NTP
+constexpr char kNtpConfigNamespace[] = "ntp";
+constexpr uint32_t kNtpDefaultSyncTimeoutS = 30;
+constexpr uint32_t kNtpDefaultSyncIntervalS = 3600;
+constexpr uint32_t kNtpMinSyncTimeoutS = 5;
+constexpr uint32_t kNtpMaxSyncTimeoutS = 600;
+constexpr uint32_t kNtpMinSyncIntervalS = 60;
+constexpr uint32_t kNtpMaxSyncIntervalS = 86400;
+constexpr uint32_t kNtpMaxRetryAttempts = 3;
+constexpr uint32_t kNtpRetryDelayMs = 3000;
+constexpr TickType_t kNtpLoopDelayMs = 500;
+constexpr TickType_t kNtpLogIntervalMs = 10000;
+
+struct NtpRuntimeState {
+  bool active = false;
+  NtpState state = NtpState::kDisabled;
+  time_t last_sync_unix = 0;
+  TickType_t last_sync_tick = 0;
+  TickType_t sync_start_tick = 0;
+  TickType_t next_attempt_tick = 0;
+  uint32_t sync_retry_count = 0;
+  char last_reason[64] = "not-initialized";
+};
+
+TaskHandle_t g_ntp_task = nullptr;
+NtpConfig g_ntp_config {};
+NtpRuntimeState g_ntp_runtime {};
+
+const char* ntp_state_name(NtpState state) {
+  switch (state) {
+    case NtpState::kDisabled:
+      return "DISABLED";
+    case NtpState::kUnsynced:
+      return "UNSYNCED";
+    case NtpState::kSyncing:
+      return "SYNCING";
+    case NtpState::kSynced:
+      return "SYNCED";
+    case NtpState::kFailed:
+      return "FAILED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void ntp_set_last_reason(const char* reason) {
+  if (!reason) {
+    reason = "unknown";
+  }
+  std::snprintf(g_ntp_runtime.last_reason, sizeof(g_ntp_runtime.last_reason), "%s", reason);
+}
+
+void ntp_set_state(NtpState state, const char* reason) {
+  if (g_ntp_runtime.state == state) {
+    if (reason && reason[0] != '\0') {
+      ntp_set_last_reason(reason);
+    }
+    return;
+  }
+  g_ntp_runtime.state = state;
+  ntp_set_last_reason(reason);
+  ESP_LOGI(kTag, "[NTP][LIFECYCLE] state=%s reason=%s retry=%lu", ntp_state_name(state),
+           g_ntp_runtime.last_reason, static_cast<unsigned long>(g_ntp_runtime.sync_retry_count));
+}
+
+void ntp_set_default_config(NtpConfig& config) {
+  config = {};
+  config.enabled = false;
+  std::snprintf(config.server1, sizeof(config.server1), "pool.ntp.org");
+  std::snprintf(config.server2, sizeof(config.server2), "time.google.com");
+  config.server3[0] = '\0';
+  config.sync_timeout_s = kNtpDefaultSyncTimeoutS;
+  config.sync_interval_s = kNtpDefaultSyncIntervalS;
+}
+
+uint32_t ntp_clamp_u32(uint32_t value, uint32_t min_value, uint32_t max_value) {
+  if (value < min_value) {
+    return min_value;
+  }
+  if (value > max_value) {
+    return max_value;
+  }
+  return value;
+}
+
+bool ntp_load_config(NtpConfig& config) {
+  ntp_set_default_config(config);
+
+  nvs_handle_t handle = 0;
+  const esp_err_t open_err = nvs_open(kNtpConfigNamespace, NVS_READONLY, &handle);
+  if (open_err != ESP_OK) {
+    ESP_LOGW(kTag, "[NTP][NVS] namespace missing, using defaults (enabled=0): %s",
+             esp_err_to_name(open_err));
+    return false;
+  }
+
+  bool present = false;
+  uint8_t enabled = 0;
+  if (wifi_read_u8_key(handle, "enabled", &enabled, &present) && (enabled == 0 || enabled == 1)) {
+    config.enabled = enabled == 1;
+  } else if (present) {
+    ESP_LOGW(kTag, "[NTP][NVS] key=enabled invalid, using default OFF");
+  }
+  ESP_LOGI(kTag, "[NTP][NVS] key=enabled present=%d value=%d", present ? 1 : 0,
+           config.enabled ? 1 : 0);
+
+  char tmp[33] = "";
+  bool present_server = false;
+  if (wifi_read_string_key(handle, "server1", tmp, sizeof(tmp), &present_server) && present_server) {
+    std::snprintf(config.server1, sizeof(config.server1), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[NTP][NVS] key=server1 present=%d value=%s", present_server ? 1 : 0, config.server1);
+
+  if (wifi_read_string_key(handle, "server2", tmp, sizeof(tmp), &present_server) && present_server) {
+    std::snprintf(config.server2, sizeof(config.server2), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[NTP][NVS] key=server2 present=%d value=%s", present_server ? 1 : 0, config.server2);
+
+  if (wifi_read_string_key(handle, "server3", tmp, sizeof(tmp), &present_server) && present_server) {
+    std::snprintf(config.server3, sizeof(config.server3), "%s", tmp);
+  }
+  ESP_LOGI(kTag, "[NTP][NVS] key=server3 present=%d value=%s", present_server ? 1 : 0, config.server3[0] ? config.server3 : "(empty)");
+
+  uint32_t timeout_s = config.sync_timeout_s;
+  if (wifi_read_u32_key(handle, "sync_timeout_s", &timeout_s, &present)) {
+    config.sync_timeout_s = ntp_clamp_u32(timeout_s, kNtpMinSyncTimeoutS, kNtpMaxSyncTimeoutS);
+  }
+  ESP_LOGI(kTag, "[NTP][NVS] key=sync_timeout_s present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.sync_timeout_s));
+
+  uint32_t interval_s = config.sync_interval_s;
+  if (wifi_read_u32_key(handle, "sync_interval_s", &interval_s, &present)) {
+    config.sync_interval_s = ntp_clamp_u32(interval_s, kNtpMinSyncIntervalS, kNtpMaxSyncIntervalS);
+  }
+  ESP_LOGI(kTag, "[NTP][NVS] key=sync_interval_s present=%d value=%lu", present ? 1 : 0,
+           static_cast<unsigned long>(config.sync_interval_s));
+
+  nvs_close(handle);
+  return true;
+}
+
+bool ntp_has_time() {
+  return (g_ntp_runtime.state == NtpState::kSynced) && (g_ntp_runtime.last_sync_unix > 0);
+}
+
+std::size_t ntp_format_utc(char* out, std::size_t out_size, time_t epoch_seconds) {
+  if (!out || out_size == 0) {
+    return 0;
+  }
+  if (epoch_seconds <= 0) {
+    return std::snprintf(out, out_size, "n/a");
+  }
+
+  std::tm tm_info{};
+  if (gmtime_r(&epoch_seconds, &tm_info) == nullptr) {
+    return std::snprintf(out, out_size, "n/a");
+  }
+  return std::snprintf(out, out_size, "%04d-%02d-%02dT%02d:%02d:%02dZ", tm_info.tm_year + 1900,
+                       tm_info.tm_mon + 1, tm_info.tm_mday, tm_info.tm_hour, tm_info.tm_min,
+                       tm_info.tm_sec);
+}
+
+void ntp_configure_service(const NtpConfig& config) {
+  esp_sntp_stop();
+  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  esp_sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+
+  if (config.server1[0] != '\0') {
+    esp_sntp_setservername(0, config.server1);
+  }
+  if (config.server2[0] != '\0') {
+    esp_sntp_setservername(1, config.server2);
+  }
+  if (config.server3[0] != '\0') {
+    esp_sntp_setservername(2, config.server3);
+  }
+  esp_sntp_set_sync_interval(config.sync_interval_s * 1000U);
+}
+
+void ntp_log_status_line() {
+  const time_t now = time(nullptr);
+  const uint64_t age_s = ntp_has_time() && now >= g_ntp_runtime.last_sync_unix
+                           ? static_cast<uint64_t>(now - g_ntp_runtime.last_sync_unix)
+                           : 0;
+  char utc[64] = "n/a";
+  ntp_format_utc(utc, sizeof(utc), g_ntp_runtime.last_sync_unix);
+
+  if (ntp_has_time()) {
+    ESP_LOGI(kTag, "[NTP] status state=%s synced_unix=%lld age=%llus utc=%s",
+             ntp_state_name(g_ntp_runtime.state), static_cast<long long>(g_ntp_runtime.last_sync_unix),
+             static_cast<unsigned long long>(age_s), utc);
+  } else {
+    ESP_LOGI(kTag, "[NTP] status state=%s unsynced_reason=\"%s\"", ntp_state_name(g_ntp_runtime.state),
+             g_ntp_runtime.last_reason);
+  }
+}
+
+void ntp_task(void*) {
+  if (!ntp_load_config(g_ntp_config)) {
+    ntp_set_default_config(g_ntp_config);
+  }
+
+  if (!g_ntp_config.enabled) {
+    ntp_set_state(NtpState::kDisabled, "not-enabled");
+    ntp_log_status_line();
+  } else {
+    ntp_set_state(NtpState::kUnsynced, "boot:waiting-for-wifi");
+  }
+
+  TickType_t last_log_tick = xTaskGetTickCount();
+
+  while (true) {
+    const TickType_t now = xTaskGetTickCount();
+
+    if (!g_ntp_config.enabled) {
+      if (esp_sntp_enabled()) {
+        esp_sntp_stop();
+      }
+      g_ntp_runtime.active = false;
+      ntp_set_state(NtpState::kDisabled, "not-enabled");
+    } else if (!wifi_has_ip()) {
+      if (esp_sntp_enabled()) {
+        esp_sntp_stop();
+      }
+      g_ntp_runtime.active = false;
+      ntp_set_state(NtpState::kUnsynced, "waiting for wifi ip");
+    } else {
+      if (!g_ntp_runtime.active && now >= g_ntp_runtime.next_attempt_tick &&
+          g_ntp_runtime.state != NtpState::kSynced) {
+        ntp_configure_service(g_ntp_config);
+        g_ntp_runtime.sync_start_tick = now;
+        g_ntp_runtime.next_attempt_tick = 0;
+        g_ntp_runtime.active = true;
+        ntp_set_state(NtpState::kSyncing, "sntp init");
+        esp_sntp_init();
+      }
+
+      if (g_ntp_runtime.state == NtpState::kSyncing) {
+        if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+          g_ntp_runtime.last_sync_unix = time(nullptr);
+          g_ntp_runtime.last_sync_tick = now;
+          g_ntp_runtime.sync_retry_count = 0;
+          g_ntp_runtime.active = false;
+          ntp_set_state(NtpState::kSynced, "time synchronized");
+          ntp_log_status_line();
+          char utc[64] = "n/a";
+          const time_t synced = g_ntp_runtime.last_sync_unix;
+          ntp_format_utc(utc, sizeof(utc), synced);
+          ESP_LOGI(kTag, "[NTP] first successful sync: unix=%lld utc=%s", static_cast<long long>(synced),
+                   utc);
+        } else {
+          const TickType_t age_ms = now - g_ntp_runtime.sync_start_tick;
+          if (age_ms > pdMS_TO_TICKS(g_ntp_config.sync_timeout_s * 1000U)) {
+            g_ntp_runtime.sync_retry_count += 1;
+            if (g_ntp_runtime.sync_retry_count >= kNtpMaxRetryAttempts) {
+              ntp_set_state(NtpState::kFailed, "sync timeout: max retries reached");
+              g_ntp_runtime.next_attempt_tick =
+                  now + pdMS_TO_TICKS(g_ntp_config.sync_interval_s * 1000U);
+            } else {
+              char reason[64];
+              std::snprintf(reason, sizeof(reason), "sync timeout: retry %lu/%lu",
+                            static_cast<unsigned long>(g_ntp_runtime.sync_retry_count),
+                            static_cast<unsigned long>(kNtpMaxRetryAttempts));
+              ntp_set_state(NtpState::kFailed, reason);
+              g_ntp_runtime.next_attempt_tick = now + pdMS_TO_TICKS(kNtpRetryDelayMs);
+            }
+            g_ntp_runtime.active = false;
+            esp_sntp_stop();
+          }
+        }
+      } else if (g_ntp_runtime.state == NtpState::kFailed) {
+        if (now >= g_ntp_runtime.next_attempt_tick) {
+          ntp_set_state(NtpState::kUnsynced, "retry window elapsed");
+          g_ntp_runtime.sync_retry_count = 0;
+          g_ntp_runtime.next_attempt_tick = 0;
+        }
+      } else if (g_ntp_runtime.state == NtpState::kSynced) {
+        if ((now - g_ntp_runtime.last_sync_tick) >= pdMS_TO_TICKS(g_ntp_config.sync_interval_s * 1000U)) {
+          ntp_set_state(NtpState::kUnsynced, "periodic resync due");
+          g_ntp_runtime.next_attempt_tick = now;
+          g_ntp_runtime.sync_retry_count = 0;
+        }
+      }
+    }
+
+    if ((now - last_log_tick) >= pdMS_TO_TICKS(kNtpLogIntervalMs)) {
+      last_log_tick = now;
+      ntp_log_status_line();
+    }
+    vTaskDelay(pdMS_TO_TICKS(kNtpLoopDelayMs));
+  }
+}
+
+void ntp_startup() {
+  if (g_ntp_task) {
+    return;
+  }
+  if (xTaskCreate(ntp_task, "ntp", 4096, nullptr, 2, &g_ntp_task) != pdPASS) {
+    ESP_LOGW(kTag, "[NTP] failed to create SNTP task");
+    return;
+  }
+}
+#endif  // LUCE_HAS_NTP
 
 #if LUCE_HAS_NVS
 const char* nvs_type_name(nvs_type_t type) {
@@ -1949,6 +2290,7 @@ void cli_print_help() {
            "CLI commands: help, status, nvs_dump, i2c_scan, mcp_read, relay_set, relay_mask, buttons, lcd_print, reboot");
   ESP_LOGI(kTag, "  - wifi.status (if stage5 Wi-Fi active)");
   ESP_LOGI(kTag, "  - wifi.scan (if stage5 Wi-Fi active)");
+  ESP_LOGI(kTag, "  - time.status (if stage6 NTP active)");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
   ESP_LOGI(kTag, "  - relay_mask <hex> (8-bit register value)");
@@ -2077,6 +2419,31 @@ void cli_cmd_wifi_scan() {
   ESP_LOGW(kTag, "CLI command wifi.scan: unsupported (LUCE_HAS_WIFI=0)");
 #endif
 }
+
+#if LUCE_HAS_NTP
+void cli_cmd_time_status() {
+  ntp_log_status_line();
+  if (!ntp_has_time()) {
+    ESP_LOGI(kTag, "[NTP] time not synced: %s", g_ntp_runtime.last_reason);
+    return;
+  }
+
+  const time_t now = time(nullptr);
+  const uint64_t age_s = now >= g_ntp_runtime.last_sync_unix
+                             ? static_cast<uint64_t>(now - g_ntp_runtime.last_sync_unix)
+                             : 0;
+  char utc_now[64] = "n/a";
+  ntp_format_utc(utc_now, sizeof(utc_now), now);
+  ESP_LOGI(kTag, "CLI command time.status: state=%s sync_state=%s last_sync_unix=%lld last_sync_age_s=%llu utc_now=%s",
+           ntp_state_name(g_ntp_runtime.state), ntp_state_name(g_ntp_runtime.state),
+           static_cast<long long>(g_ntp_runtime.last_sync_unix), static_cast<unsigned long long>(age_s),
+           utc_now);
+}
+#else
+void cli_cmd_time_status() {
+  ESP_LOGW(kTag, "CLI command time.status: unsupported (LUCE_HAS_NTP=0)");
+}
+#endif
 
 void cli_task(void*) {
   uart_config_t uart_cfg{};
@@ -2212,6 +2579,8 @@ void cli_task(void*) {
         cli_cmd_wifi_status();
       } else if (std::strcmp(argv[0], "wifi.scan") == 0) {
         cli_cmd_wifi_scan();
+      } else if (std::strcmp(argv[0], "time.status") == 0) {
+        cli_cmd_time_status();
       } else if (std::strcmp(argv[0], "reboot") == 0) {
         ESP_LOGW(kTag, "CLI command reboot: restarting");
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -2300,8 +2669,8 @@ extern "C" void app_main(void) {
   print_app_info();
   print_partition_summary();
 
-  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d",
-           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI);
+  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d",
+           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP);
 
 #if LUCE_HAS_NVS
   update_boot_state_record();
@@ -2324,6 +2693,9 @@ extern "C" void app_main(void) {
 #endif
 #if LUCE_HAS_WIFI
   wifi_startup();
+#if LUCE_HAS_NTP
+  ntp_startup();
+#endif
 #endif
   for (;;) {
     log_stage4_watermarks("stage4_main_wait");
