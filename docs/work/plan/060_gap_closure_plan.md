@@ -61,17 +61,6 @@ Current blockers are concentrated in three classes:
    - append evidence to same timestamp run.
 3. Defer Should/Could refactors until Musts pass and stage4 gate is green.
 
-### DRY Must refactors - completion status
-
-- [x] Centralize startup banner + health line formatting (`src/main.cpp`)
-  - Evidence: `docs/work/diag/evidence/20260222_164643/build/build_luce_stage0.txt`
-- [x] Consolidate MCP mask formatting helpers used by logs + CLI (`src/main.cpp`)
-  - Evidence: `src/main.cpp:format_mcp_mask_line`
-- [x] Extract I2C scan/attach flow into reusable helper (`src/main.cpp`)
-  - Evidence: `src/main.cpp:run_i2c_scan_flow`
-- [x] Normalize init-path error-handling contracts (`src/main.cpp`)
-  - Evidence: `src/main.cpp:InitPathResult`, `init_i2c_contract`, `init_path_status`
-
 ## Prioritized must/fix sequence
 
 ### Must
@@ -92,6 +81,6 @@ Current blockers are concentrated in three classes:
 ## Readiness dependencies
 
 Must progress must complete before entering networking work:
-1. `docs/work/plan/050_phase2_entry_criteria.md` remains NO-GO until blockers closed.
+1. `docs/work/plan/050_phase2_entry_criteria.md` must remain aligned to current evidence before any stage2+ regression.
 2. `docs/work/plan/061_phase2_readiness_checklist.md` updated with all evidence links checked.
 3. Evidence-backed resolution of all Must items above.
