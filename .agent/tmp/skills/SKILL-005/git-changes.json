@@ -1,0 +1,13 @@
+{
+  "changed": [],
+  "added": [],
+  "removed": [],
+  "before": [
+    ".agent/",
+    "docs/governance/audit/structure-conformance.md"
+  ],
+  "after": [
+    ".agent/",
+    "docs/governance/audit/structure-conformance.md"
+  ]
+}

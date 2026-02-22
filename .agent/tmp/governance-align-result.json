@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "today": "2026-02-22",
+  "migration": {
+    "moved": [],
+    "copied": []
+  },
+  "gitignore": {
+    "updated": true,
+    "added": [
+      "docs/work/inv/*",
+      "docs/work/diag/*",
+      "docs/work/plan/*",
+      "!docs/work/inv/.gitkeep",
+      "!docs/work/diag/.gitkeep",
+      "!docs/work/plan/.gitkeep"
+    ]
+  },
+  "inspection": {
+    "version": "1.0",
+    "repo_root": ".",
+    "required_top_level_dirs": {
+      "docs": true,
+      "test": true,
+      "src": true,
+      "dist": true
+    },
+    "required_top_level_files": {
+      "README.md": true,
+      "AGENTS.md": true,
+      "GOVERNANCE.md": true
+    },
+    "required_docs_dirs": {
+      "docs/governance": true,
+      "docs/work": true,
+      "docs/dev": true,
+      "docs/user": true
+    },
+    "governance_dirs": {
+      "docs/governance/health": true,
+      "docs/governance/audit": true,
+      "docs/governance/compliance": true
+    },
+    "work_dirs": {
+      "docs/work/inv": true,
+      "docs/work/diag": true,
+      "docs/work/plan": true
+    },
+    "governance_files": {
+      "docs/governance/health/build-status.md": true,
+      "docs/governance/health/build-status.md.log": true,
+      "docs/governance/health/preflight.md": true,
+      "docs/governance/compliance/scoring.md": true
+    },
+    "gitignore": {
+      "has_docs_work_rule": true
+    },
+    "work_root_extras": [],
+    "missing": [],
+    "nci": 100,
+    "rating": "PASS"
+  }
+}

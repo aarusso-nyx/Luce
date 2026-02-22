@@ -1,0 +1,59 @@
+{
+  "changed": [
+    ".gitignore",
+    "dist/",
+    "docs/dev/",
+    "docs/governance/audit/README.md",
+    "docs/governance/compliance/scorecard-2026-02-22.md",
+    "docs/governance/compliance/scoring.md",
+    "docs/governance/health/build-status.md",
+    "docs/governance/health/preflight.md",
+    "docs/user/",
+    "docs/work/diag/.gitkeep",
+    "docs/work/inv/.gitkeep",
+    "docs/work/plan/.gitkeep",
+    "src/.gitkeep",
+    "test/.gitkeep"
+  ],
+  "added": [
+    ".gitignore",
+    "dist/",
+    "docs/dev/",
+    "docs/governance/audit/README.md",
+    "docs/governance/compliance/scorecard-2026-02-22.md",
+    "docs/governance/compliance/scoring.md",
+    "docs/governance/health/build-status.md",
+    "docs/governance/health/preflight.md",
+    "docs/user/",
+    "docs/work/diag/.gitkeep",
+    "docs/work/inv/.gitkeep",
+    "docs/work/plan/.gitkeep",
+    "src/.gitkeep",
+    "test/.gitkeep"
+  ],
+  "removed": [],
+  "before": [
+    ".agent/",
+    "docs/governance/audit/structure-conformance.md",
+    "docs/governance/compliance/scorecard-2026-02-20.md"
+  ],
+  "after": [
+    ".agent/",
+    ".gitignore",
+    "dist/",
+    "docs/dev/",
+    "docs/governance/audit/README.md",
+    "docs/governance/audit/structure-conformance.md",
+    "docs/governance/compliance/scorecard-2026-02-20.md",
+    "docs/governance/compliance/scorecard-2026-02-22.md",
+    "docs/governance/compliance/scoring.md",
+    "docs/governance/health/build-status.md",
+    "docs/governance/health/preflight.md",
+    "docs/user/",
+    "docs/work/diag/.gitkeep",
+    "docs/work/inv/.gitkeep",
+    "docs/work/plan/.gitkeep",
+    "src/.gitkeep",
+    "test/.gitkeep"
+  ]
+}

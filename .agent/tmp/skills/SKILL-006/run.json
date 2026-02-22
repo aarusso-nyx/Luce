@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "skill_id": "SKILL-006",
+  "registry_version": "1.0",
+  "kind": "node",
+  "entry": "src/skills/impl/repo_governance_aligner.mjs",
+  "repo_root": ".",
+  "evidence_dir": ".agent/tmp",
+  "args": {},
+  "timeout_ms": 120000,
+  "result": {
+    "ok": true,
+    "nci": 100,
+    "rating": "PASS"
+  },
+  "exec": {
+    "code": 0,
+    "killed": false,
+    "out_head": "",
+    "err_head": ""
+  }
+}
