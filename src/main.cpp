@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_private/esp_clk.h"
+#include "esp_timer.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -388,6 +389,135 @@ struct Mcp23017State {
   uint8_t relay_mask = kRelayOffValue;
 };
 
+struct I2cScanResult {
+  bool mcp = false;
+  bool lcd = false;
+  int found_count = 0;
+};
+
+constexpr uint8_t kLcdAddress = 0x27;
+
+#if LUCE_HAS_LCD
+// Common I2C backpack mapping assumed:
+// P0=RS, P1=RW, P2=EN, P3=BL, P4=DB4, P5=DB5, P6=DB6, P7=DB7
+constexpr uint8_t kLcdPcfRsBit = 0;
+constexpr uint8_t kLcdPcfRwBit = 1;
+constexpr uint8_t kLcdPcfEnBit = 2;
+constexpr uint8_t kLcdPcfBacklightBit = 3;
+constexpr uint8_t kLcdCols = 20;
+constexpr uint8_t kLcdRows = 4;
+
+class Pcf8574Hd44780 {
+ public:
+  Pcf8574Hd44780(i2c_port_t port, uint8_t address) : port_(port), address_(address) {}
+
+  bool begin() {
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    if (!write_nibble(0x03, false) || !write_nibble(0x03, false) || !write_nibble(0x03, false) ||
+        !write_nibble(0x02, false)) {
+      return false;
+    }
+    if (!send_command(0x28) || !send_command(0x08) || !send_command(0x0C) ||
+        !send_command(0x06) || !send_command(0x01)) {
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(3));
+    return true;
+  }
+
+  void set_mcp_ok(bool ok) { mcp_ok_ = ok; }
+
+  bool write_status_lines(uint8_t relay_mask, uint8_t button_mask) {
+    char line1[21] = {0};
+    char line2[21] = {0};
+    char line3[21] = {0};
+    char line4[21] = {0};
+
+    const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
+    std::snprintf(line1, sizeof(line1), "LUCE S3 %lus", (unsigned long)uptime_s);
+    std::snprintf(line2, sizeof(line2), "I2C:%s MCP:%s", "ok", mcp_ok_ ? "ok" : "no");
+    std::snprintf(line3, sizeof(line3), "REL:0x%02X", relay_mask);
+    std::snprintf(line4, sizeof(line4), "BTN:0x%02X", button_mask);
+
+    return write_line(0, line1) && write_line(1, line2) && write_line(2, line3) &&
+           write_line(3, line4);
+  }
+
+ private:
+  bool send_command(uint8_t cmd) { return send_byte(cmd, false); }
+
+  bool send_byte(uint8_t value, bool is_data) {
+    const uint8_t hi = (value >> 4) & 0x0F;
+    const uint8_t lo = value & 0x0F;
+    return write_nibble(hi, is_data) && write_nibble(lo, is_data);
+  }
+
+  bool write_nibble(uint8_t nibble, bool is_data) {
+    const uint8_t half_byte = static_cast<uint8_t>((nibble & 0x0F) << 4);
+    uint8_t frame = half_byte;
+    frame &= static_cast<uint8_t>(~(1u << kLcdPcfRwBit));
+    if (is_data) {
+      frame |= static_cast<uint8_t>(1u << kLcdPcfRsBit);
+    }
+    frame |= static_cast<uint8_t>(1u << kLcdPcfBacklightBit);
+    return pulse_en(frame);
+  }
+
+  bool pulse_en(uint8_t frame) {
+    if (!write_pcf(frame | (1u << kLcdPcfEnBit))) {
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+    if (!write_pcf(frame & ~(1u << kLcdPcfEnBit))) {
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+    return true;
+  }
+
+  bool write_pcf(uint8_t value) {
+    return i2c_master_write_to_device(port_, address_, &value, sizeof(value), pdMS_TO_TICKS(100)) ==
+           ESP_OK;
+  }
+
+  bool set_cursor(uint8_t row, uint8_t col) {
+    static constexpr uint8_t kRowAddress[] = {0x00, 0x40, 0x14, 0x54};
+    if (row >= kLcdRows || col >= kLcdCols) {
+      return false;
+    }
+    return send_command(static_cast<uint8_t>(0x80 | (kRowAddress[row] + col)));
+  }
+
+  bool write_line(uint8_t row, const char* text) {
+    char padded[kLcdCols + 1] = {0};
+    for (size_t idx = 0; idx < kLcdCols; ++idx) {
+      padded[idx] = ' ';
+    }
+    if (text) {
+      for (size_t idx = 0; idx < kLcdCols && text[idx] != '\0'; ++idx) {
+        padded[idx] = text[idx];
+      }
+    }
+
+    if (!set_cursor(row, 0)) {
+      return false;
+    }
+
+    for (uint8_t idx = 0; idx < kLcdCols; ++idx) {
+      if (!send_byte(static_cast<uint8_t>(padded[idx]), true)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  i2c_port_t port_;
+  uint8_t address_;
+  bool mcp_ok_ = false;
+};
+#endif  // LUCE_HAS_LCD
+
 esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks = pdMS_TO_TICKS(20)) {
   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
   if (!cmd) {
@@ -455,29 +585,37 @@ bool init_i2c() {
   return true;
 }
 
-void scan_i2c_bus() {
-  bool found_expected = false;
-  int found_count = 0;
+I2cScanResult scan_i2c_bus() {
+  I2cScanResult result;
 
   for (uint8_t addr = kI2CSampleAddressStart; addr <= kI2CSampleAddressEnd; ++addr) {
-    esp_err_t probe = i2c_probe_device(addr);
-    if (probe == ESP_OK) {
-      found_expected = found_expected || (addr == kMcpAddress);
+    if (i2c_probe_device(addr) == ESP_OK) {
+      result.found_count += 1;
+      result.mcp = result.mcp || (addr == kMcpAddress);
+      result.lcd = result.lcd || (addr == kLcdAddress);
       ESP_LOGI(kTag, "I2C found 0x%02X", addr);
-      ++found_count;
     }
   }
 
-  if (found_count == 0) {
+  if (result.found_count == 0) {
     ESP_LOGW(kTag, "I2C scan: no devices detected on bus");
   } else {
-    ESP_LOGI(kTag, "I2C scan summary: %d device(s) detected", found_count);
+    ESP_LOGI(kTag, "I2C scan summary: %d device(s) detected", result.found_count);
   }
-  if (found_expected) {
+
+  if (result.mcp) {
     ESP_LOGI(kTag, "I2C scan expects MCP23017 at 0x20: found");
   } else {
     ESP_LOGW(kTag, "I2C scan expects MCP23017 at 0x20: not found");
   }
+
+  if (result.lcd) {
+    ESP_LOGI(kTag, "I2C scan expects LCD at 0x%02X: found", kLcdAddress);
+  } else {
+    ESP_LOGW(kTag, "I2C scan expects LCD at 0x%02X: not found", kLcdAddress);
+  }
+
+  return result;
 }
 
 bool init_mcp23017(Mcp23017State& state) {
@@ -548,12 +686,51 @@ void run_stage2_diagnostics() {
     return;
   }
 
-  scan_i2c_bus();
+  const I2cScanResult scan = scan_i2c_bus();
+
+#if LUCE_HAS_LCD
+  Pcf8574Hd44780 lcd(kI2CPort, kLcdAddress);
+  bool lcd_present = false;
+  if (scan.lcd) {
+    lcd_present = lcd.begin();
+    if (!lcd_present) {
+      ESP_LOGW(kTag, "LCD detected at 0x%02X but initialization failed; continuing without LCD",
+               kLcdAddress);
+    } else {
+      lcd.set_mcp_ok(false);
+      ESP_LOGI(kTag, "LCD initialized at 0x%02X", kLcdAddress);
+      lcd.write_status_lines(kRelayOffValue, 0x00);
+    }
+  }
+#else
+  (void)scan;
+#endif
 
   Mcp23017State mcp_state;
   if (!init_mcp23017(mcp_state)) {
     ESP_LOGW(kTag, "Stage2 diagnostics degraded: MCP23017 missing or unresponsive");
-    return;
+#if LUCE_HAS_LCD
+    if (lcd_present) {
+      lcd.write_status_lines(kRelayOffValue, 0x00);
+    }
+#endif
+    while (true) {
+      static TickType_t last_status_tick = 0;
+      const TickType_t now = xTaskGetTickCount();
+      if ((now - last_status_tick) >= pdMS_TO_TICKS(2000)) {
+        last_status_tick = now;
+        const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
+        ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:no REL:0x%02X BTN:0x%02X",
+                 (unsigned long)uptime_s, kRelayOffValue, 0x00);
+#if LUCE_HAS_LCD
+        if (lcd_present && !lcd.write_status_lines(kRelayOffValue, 0x00)) {
+          ESP_LOGW(kTag, "LCD update failed (LCD-only mode)");
+        }
+#endif
+      }
+
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
   }
 
   configure_int_pin();
@@ -563,23 +740,35 @@ void run_stage2_diagnostics() {
     return;
   }
 
+
+#if LUCE_HAS_LCD
+  lcd.set_mcp_ok(scan.mcp);
+  if (lcd_present) {
+    lcd.write_status_lines(mcp_state.relay_mask, 0x00);
+  }
+#endif
+
   uint8_t debounce_counts[8] = {0};
-  uint8_t debounced_buttons = kRelayOffValue;  // placeholder replaced by first read
+  uint8_t debounced_buttons = 0x00;
   uint8_t last_reported_buttons = 0x00;
   uint8_t current_buttons = 0x00;
   uint8_t channel = 0;
+  uint8_t relay_mask = kRelayOffValue;
+  uint8_t button_mask = 0x00;
   bool have_button_snapshot = false;
   TickType_t last_relay_tick = 0;
   TickType_t last_button_tick = 0;
   TickType_t last_int_tick = 0;
+  TickType_t last_status_tick = 0;
   int last_int_level = gpio_get_level(kMcpIntPin);
 
-  ESP_LOGI(kTag, "Entering Stage2 runtime diagnostics loop (1 ch at a time relay sweep + button sample)");
+  ESP_LOGI(kTag,
+           "Entering Stage2 runtime diagnostics loop (1 ch at a time relay sweep + button sample)");
   while (true) {
     const TickType_t now = xTaskGetTickCount();
 
     if ((now - last_relay_tick) >= kRelayStepDelay) {
-      const uint8_t relay_mask = relay_mask_for_channel(channel);
+      relay_mask = relay_mask_for_channel(channel);
       if (set_relay_mask(mcp_state, relay_mask) == ESP_OK) {
         ESP_LOGI(kTag, "Relay channel=%d sweep mask=0x%02X", static_cast<int>(channel), relay_mask);
       }
@@ -593,6 +782,7 @@ void run_stage2_diagnostics() {
         if (!have_button_snapshot) {
           debounced_buttons = current_buttons;
           last_reported_buttons = current_buttons;
+          button_mask = debounced_buttons;
           have_button_snapshot = true;
           ESP_LOGI(kTag, "Button init mask: 0x%02X (1=pressed? check wiring polarity)", current_buttons);
         } else {
@@ -613,6 +803,7 @@ void run_stage2_diagnostics() {
             }
           }
           if (changed && debounced_buttons != last_reported_buttons) {
+            button_mask = debounced_buttons;
             ESP_LOGI(kTag, "Button mask change: 0x%02X", debounced_buttons);
             last_reported_buttons = debounced_buttons;
           }
@@ -629,6 +820,20 @@ void run_stage2_diagnostics() {
         ESP_LOGI(kTag, "MCP INTB changed to %d", level);
         last_int_level = level;
       }
+    }
+
+    if ((now - last_status_tick) >= pdMS_TO_TICKS(2000)) {
+      last_status_tick = now;
+      const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
+      ESP_LOGI(kTag, "LUCE S3 %lus | I2C:ok MCP:ok REL:0x%02X BTN:0x%02X",
+               (unsigned long)uptime_s, relay_mask, button_mask);
+#if LUCE_HAS_LCD
+      if (lcd_present) {
+        if (!lcd.write_status_lines(relay_mask, button_mask)) {
+          ESP_LOGW(kTag, "LCD update failed");
+        }
+      }
+#endif
     }
 
     vTaskDelay(pdMS_TO_TICKS(20));

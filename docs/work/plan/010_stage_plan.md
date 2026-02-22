@@ -41,10 +41,16 @@ Acceptance criteria:
 
 ## Stage3 - Interface Integration
 Acceptance criteria:
-- CLI controls relay/sensor workflows correctly.
-- HTTP and MQTT use canonical routes/topics only.
-- State changes are consistent across CLI/HTTP/MQTT surfaces.
-- Documentation in `doc/` matches observed behavior.
+- LCD is optional and detected on I2C address `0x27`.
+- I2C backpack initializes with a small 4-bit HD44780-like sequence.
+- Stage3 displays continuously (every few seconds):
+  - `LUCE S3 <uptime>`
+  - `I2C:ok MCP:ok/no`
+  - `REL:0xNN`
+  - `BTN:0xNN`
+- Identical status is mirrored to console output.
+- Missing LCD does not prevent running; diagnostics continue with warnings.
+- Stage2 I2C/MCP sweep path remains functional under `luce_stage3`.
 
 ## Stage4 - Resilience And Release Readiness
 Acceptance criteria:

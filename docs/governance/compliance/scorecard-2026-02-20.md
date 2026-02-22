@@ -43,3 +43,14 @@
 - Build result: `SUCCESS` on 2026-02-22
 - Build command: `python3 -m platformio run -e luce_stage1`
 - Build result: `SUCCESS` on 2026-02-22
+
+## STAGE3 complete
+- [x] LCD detection on I2C address `0x27` with graceful degrade when missing.
+- [x] 20x4 status rendering implemented (status lines + periodic updates).
+- [x] Console mirrors status every few seconds.
+- [x] `luce_stage3` build environment added.
+- [x] Stage2/Stage3 gating continues to compile/execute through env build matrix.
+
+## Evidence
+- Build command: `python3 -m platformio run -e luce_stage3`
+- Build result: `SUCCESS` on 2026-02-22
