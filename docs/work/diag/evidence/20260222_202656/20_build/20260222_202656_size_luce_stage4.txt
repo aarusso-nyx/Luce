@@ -1,0 +1,47 @@
+# size_luce_stage4
+timestamp_utc: 2026-02-22T20:27:29Z
+command: pio run -e luce_stage4 -t size
+status:
+load-nvmrc:1: command not found: nvm
+load-nvmrc:2: command not found: nvm_find_nvmrc
+load-nvmrc:8: command not found: nvm
+load-nvmrc:1: command not found: nvm
+load-nvmrc:2: command not found: nvm_find_nvmrc
+load-nvmrc:8: command not found: nvm
+Processing luce_stage4 (platform: espressif32; board: nodemcu-32s; framework: espidf)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/nodemcu-32s.html
+PLATFORM: Espressif 32 (6.12.0) > NodeMCU-32S
+HARDWARE: ESP32 240MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-espidf @ 3.50500.0 (5.5.0) 
+ - tool-cmake @ 3.30.2 
+ - tool-esp-rom-elfs @ 0.0.1+20241011 
+ - tool-esptoolpy @ 2.40900.250804 (4.9.0) 
+ - tool-ninja @ 1.9.0 
+ - tool-riscv32-esp-elf-gdb @ 12.1.0+20221002 
+ - tool-xtensa-esp-elf-gdb @ 12.1.0+20221002 
+ - toolchain-esp32ulp @ 1.23800.240113 (2.38.0) 
+ - toolchain-xtensa-esp-elf @ 14.2.0+20241119
+Reading CMake configuration...
+Warning! Flash memory size mismatch detected. Expected 4MB, found 2MB!
+Please select a proper value in your `sdkconfig.defaults` or via the `menuconfig` target!
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 0 compatible libraries
+Scanning dependencies...
+No dependencies
+Building in release mode
+Calculating size .pio/build/luce_stage4/firmware.elf
+   text	   data	    bss	    dec	    hex	filename
+ 206289	  66396	   2385	 275070	  4327e	.pio/build/luce_stage4/firmware.elf
+========================= [SUCCESS] Took 2.67 seconds =========================
+
+Environment    Status    Duration
+-------------  --------  ------------
+luce_stage4    SUCCESS   00:00:02.674
+========================= 1 succeeded in 00:00:02.674 =========================
+status: PASS
+exit_code: 0

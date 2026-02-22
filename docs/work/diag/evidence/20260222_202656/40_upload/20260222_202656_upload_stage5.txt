@@ -1,0 +1,122 @@
+# upload_stage5
+timestamp_utc: 2026-02-22T20:27:39Z
+command: pio run -e luce_stage5 -t upload --upload-port /dev/cu.usbserial-0001
+status:
+load-nvmrc:1: command not found: nvm
+load-nvmrc:2: command not found: nvm_find_nvmrc
+load-nvmrc:8: command not found: nvm
+load-nvmrc:1: command not found: nvm
+load-nvmrc:2: command not found: nvm_find_nvmrc
+load-nvmrc:8: command not found: nvm
+Processing luce_stage5 (platform: espressif32; board: nodemcu-32s; framework: espidf)
+--------------------------------------------------------------------------------
+Verbose mode can be enabled via `-v, --verbose` option
+CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/nodemcu-32s.html
+PLATFORM: Espressif 32 (6.12.0) > NodeMCU-32S
+HARDWARE: ESP32 240MHz, 320KB RAM, 4MB Flash
+DEBUG: Current (cmsis-dap) External (cmsis-dap, esp-bridge, esp-prog, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
+PACKAGES: 
+ - framework-espidf @ 3.50500.0 (5.5.0) 
+ - tool-cmake @ 3.30.2 
+ - tool-esp-rom-elfs @ 0.0.1+20241011 
+ - tool-esptoolpy @ 2.40900.250804 (4.9.0) 
+ - tool-mkfatfs @ 2.0.1 
+ - tool-mklittlefs @ 1.203.210628 (2.3) 
+ - tool-mkspiffs @ 2.230.0 (2.30) 
+ - tool-ninja @ 1.9.0 
+ - tool-riscv32-esp-elf-gdb @ 12.1.0+20221002 
+ - tool-xtensa-esp-elf-gdb @ 12.1.0+20221002 
+ - toolchain-esp32ulp @ 1.23800.240113 (2.38.0) 
+ - toolchain-xtensa-esp-elf @ 14.2.0+20241119
+Reading CMake configuration...
+Warning! Flash memory size mismatch detected. Expected 4MB, found 2MB!
+Please select a proper value in your `sdkconfig.defaults` or via the `menuconfig` target!
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 0 compatible libraries
+Scanning dependencies...
+No dependencies
+Building in release mode
+Retrieving maximum program size .pio/build/luce_stage5/firmware.elf
+Checking size .pio/build/luce_stage5/firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+RAM:   [=         ]  10.1% (used 33132 bytes from 327680 bytes)
+Flash: [========  ]  79.2% (used 830649 bytes from 1048576 bytes)
+Configuring upload protocol...
+AVAILABLE: cmsis-dap, esp-bridge, esp-prog, espota, esptool, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa
+CURRENT: upload_protocol = esptool
+Looking for upload port...
+Using manually specified: /dev/cu.usbserial-0001
+Uploading .pio/build/luce_stage5/firmware.bin
+esptool.py v4.9.0
+Serial port /dev/cu.usbserial-0001
+Connecting.......
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: 04:83:08:59:99:c0
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 460800
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00001000 to 0x00007fff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+Flash will be erased from 0x00010000 to 0x000dafff...
+SHA digest in image updated
+Compressed 26240 bytes to 16489...
+Writing at 0x00001000... (50 %)
+Writing at 0x000075f7... (100 %)
+Wrote 26240 bytes (16489 compressed) at 0x00001000 in 0.6 seconds (effective 376.2 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 103...
+Writing at 0x00008000... (100 %)
+Wrote 3072 bytes (103 compressed) at 0x00008000 in 0.0 seconds (effective 898.7 kbit/s)...
+Hash of data verified.
+Compressed 831056 bytes to 516587...
+Writing at 0x00010000... (3 %)
+Writing at 0x0001d461... (6 %)
+Writing at 0x00026f34... (9 %)
+Writing at 0x00031599... (12 %)
+Writing at 0x00036fbc... (15 %)
+Writing at 0x0003d02e... (18 %)
+Writing at 0x00042a5b... (21 %)
+Writing at 0x000482c7... (25 %)
+Writing at 0x0004dd84... (28 %)
+Writing at 0x00053a5f... (31 %)
+Writing at 0x00059d58... (34 %)
+Writing at 0x0005f775... (37 %)
+Writing at 0x00065524... (40 %)
+Writing at 0x0006b2d0... (43 %)
+Writing at 0x000716fa... (46 %)
+Writing at 0x00077708... (50 %)
+Writing at 0x0007ccc1... (53 %)
+Writing at 0x00082006... (56 %)
+Writing at 0x00087c5f... (59 %)
+Writing at 0x0008d768... (62 %)
+Writing at 0x00092fac... (65 %)
+Writing at 0x00098666... (68 %)
+Writing at 0x0009e2af... (71 %)
+Writing at 0x000a419f... (75 %)
+Writing at 0x000a9a7d... (78 %)
+Writing at 0x000b342c... (81 %)
+Writing at 0x000ba567... (84 %)
+Writing at 0x000c05e8... (87 %)
+Writing at 0x000c69a1... (90 %)
+Writing at 0x000cc50d... (93 %)
+Writing at 0x000d2800... (96 %)
+Writing at 0x000d7aef... (100 %)
+Wrote 831056 bytes (516587 compressed) at 0x00010000 in 12.6 seconds (effective 527.8 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...
+========================= [SUCCESS] Took 19.93 seconds =========================
+
+Environment    Status    Duration
+-------------  --------  ------------
+luce_stage5    SUCCESS   00:00:19.932
+========================= 1 succeeded in 00:00:19.932 =========================
+status: PASS
+exit_code: 0

@@ -1,0 +1,34 @@
+# unit_tests
+timestamp_utc: 2026-02-22T20:27:35Z
+command: pio test -e luce_stage0
+status:
+load-nvmrc:1: command not found: nvm
+load-nvmrc:2: command not found: nvm_find_nvmrc
+load-nvmrc:8: command not found: nvm
+load-nvmrc:1: command not found: nvm
+load-nvmrc:2: command not found: nvm_find_nvmrc
+load-nvmrc:8: command not found: nvm
+Verbosity level can be increased via `-v, -vv, or -vvv` option
+Collected 1 tests
+
+Processing test_unit_native in luce_stage0 environment
+--------------------------------------------------------------------------------
+Building & Uploading...
+Library Manager: Installing throwtheswitch/Unity @ ^2.6.1
+Unpacking 0% 10% 20% 30% 40% 50% 60% 70% 80% 90% 100%
+Library Manager: Unity@2.6.1 has been installed!
+/Users/aarusso/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pio/build/luce_stage0/esp-idf/freertos/libfreertos.a(app_startup.c.o):(.literal.main_task+0x24): undefined reference to `app_main'
+/Users/aarusso/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pio/build/luce_stage0/esp-idf/freertos/libfreertos.a(app_startup.c.o): in function `main_task':
+/Users/aarusso/.platformio/packages/framework-espidf/components/freertos/app_startup.c:206:(.text.main_task+0x96): undefined reference to `app_main'
+collect2: error: ld returned 1 exit status
+*** [.pio/build/luce_stage0/firmware.elf] Error 1
+Uploading stage has failed, see errors above. Use `pio test -vvv` option to enable verbose output.
+----------- luce_stage0:test_unit_native [ERRORED] Took 3.49 seconds -----------
+
+=================================== SUMMARY ===================================
+Environment    Test              Status    Duration
+-------------  ----------------  --------  ------------
+luce_stage0    test_unit_native  ERRORED   00:00:03.494
+================== 1 test cases: 0 succeeded in 00:00:03.494 ==================
+status: FAIL
+exit_code: 1
