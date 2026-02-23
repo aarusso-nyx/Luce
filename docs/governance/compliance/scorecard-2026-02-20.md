@@ -4,44 +4,52 @@
 - rating: PASS
 - scoring_source: docs/governance/compliance/scoring.md
 - health_source: docs/governance/health/build-status.md
-- audit_files_count: 3
+- audit_files_count: 9
+- evidence_path: docs/work/diag/evidence/20260222_211814
+- local_evidence_policy: evidence under docs/work/diag is local only; docs reference paths only
 
 ## Inputs
 
 - docs/governance/audit/README.md
 - docs/governance/audit/governance-structure-report.md
 - docs/governance/audit/structure-conformance.md
+- docs/governance/audit/code-docs.md
+- docs/governance/audit/code-tests.md
+- docs/governance/audit/docs-tests.md
+- docs/governance/compliance/scoring.md
 
-## Stage5 Evidence
+## PASS/FAIL/UNAVAILABLE table
 
-- status: PASS
-- evidence: docs/work/diag/evidence/20260222_202656/90_summary.md
-- notes: build/test/boot/e2e evidence chain captured for Stage5 workflow; runtime logs show TLSF panic loop on current stage5 image, requiring runtime follow-up.
+- lint/static: PASS_WITH_WAIVER
+- build matrix: PASS
+- unit: PASS
+- upload: PASS
+- e2e: PASS
+- notes: native matrix sub-entry for test image generation remains constrained in one toolchain path.
 
-## Stage6 Evidence
+## Summary
 
-- status: PASS
-- evidence: docs/work/diag/evidence/20260222_180112/90_summary.md
-- notes: stage6 SNTP client is present under LUCE_STAGE=6 with non-blocking startup and CLI `time.status`.
+- evidence_root: docs/work/diag/evidence/20260222_211814/
+- git_sha: ecd0768b22d41e07df8b1f025a0416c4e0f753c8
+- stage coverage: stage0..stage10 build PASS
+- boot coverage: stage0 and stage10 PASS
+- CLI command coverage: serial command pathway PASS
 
-## Stage7 Evidence
-
-- status: PASS
-- evidence: docs/work/diag/evidence/20260222_183903/90_summary.md
-- notes: stage7 adds optional mDNS advertisement with `mdns/status` CLI; runtime boot and CLI evidence are captured with `mdns` disabled by default and safe no-crash behavior.
-
-## Stage8 Evidence
+## Stage evidence
 
 - status: PASS_WITH_LIMITATIONS
-- evidence: docs/work/diag/evidence/20260222_191336/90_summary.md
-- notes: stage8 adds read-only TCP line CLI on port 2323 with compile-time `LUCE_STAGE=8`, `[CLI_NET]` startup/auth/session logging, and disabled-by-default evidence. full stage8 network e2e transcript is UNAVAILABLE in this run due no network credentials in onboard NVS.
+- evidence: docs/work/diag/evidence/20260222_211814/90_summary.md
+- notes: comprehensive stage matrix and serial e2e proof captured; remaining gaps are tooling and environment constraints.
 
-## Stage9 Evidence
+## Top known issues
 
-- status: PASS
-- evidence: docs/work/diag/20260222_195556/90_summary.md
-- notes: stage9 adds MQTT publish-only telemetry (`luce_stage9`) with `mqtt.status`, bounded reconnects, and non-blocking runtime behavior in this evidence run.
+1. Linting remains on waiver path (`PASS_WITH_WAIVER`).
+2. `luce_test_native` matrix entry has known non-native compile constraints.
+3. Network-enabled e2e on stage8/9/10 depends on valid runtime environment.
+4. Stage8 read-only transport allowlist and lockout scenarios need dedicated coverage script.
+5. `docs/work/tooling` missing is still flagged in one structure snapshot.
 
 ## Blockers
 
 - none
+
