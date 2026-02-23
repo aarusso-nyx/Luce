@@ -35,6 +35,7 @@ constexpr const char* kMdnsTaskName = "mdns";
 constexpr std::size_t kMdnsTaskStackWords = 4096;
 constexpr std::uint32_t kPollPeriodMs = 1000;
 constexpr std::uint16_t kDefaultPort = 80;
+constexpr std::size_t kTxtFieldMax = 64;
 
 enum class MdnsState : std::uint8_t {
   kDisabledByConfig = 0,
@@ -54,6 +55,11 @@ char g_hostname[33] = {0};
 uint16_t g_port = kDefaultPort;
 TaskHandle_t g_task_handle = nullptr;
 bool g_registered = false;
+s8_t g_service_slot = -1;
+char g_txt_fw[kTxtFieldMax] = {};
+char g_txt_stage[kTxtFieldMax] = {};
+char g_txt_device[kTxtFieldMax] = {};
+char g_txt_build[kTxtFieldMax] = {};
 
 const char* state_name(MdnsState state) {
   switch (state) {
@@ -76,6 +82,31 @@ void set_state(MdnsState next, const char* reason = nullptr) {
     ESP_LOGI(kTag, "[mDNS] state=%s reason=%s", state_name(g_state), reason);
   } else {
     ESP_LOGI(kTag, "[mDNS] state=%s", state_name(g_state));
+  }
+}
+
+void refresh_mdns_txt_fields() {
+  std::snprintf(g_txt_fw, sizeof(g_txt_fw), "fw=%s", LUCE_PROJECT_VERSION);
+  std::snprintf(g_txt_stage, sizeof(g_txt_stage), "stage=%d", LUCE_STAGE);
+  std::snprintf(g_txt_device, sizeof(g_txt_device), "device=%s", g_hostname[0] != '\0' ? g_hostname : "luce-device");
+  std::snprintf(g_txt_build, sizeof(g_txt_build), "build=%s", __DATE__ " " __TIME__);
+}
+
+void mdns_service_txt_cb(mdns_service* service, void* /*txt_userdata*/) {
+  if (!service) {
+    return;
+  }
+  if (g_txt_fw[0] != '\0') {
+    mdns_resp_add_service_txtitem(service, g_txt_fw, static_cast<uint8_t>(std::strlen(g_txt_fw)));
+  }
+  if (g_txt_stage[0] != '\0') {
+    mdns_resp_add_service_txtitem(service, g_txt_stage, static_cast<uint8_t>(std::strlen(g_txt_stage)));
+  }
+  if (g_txt_device[0] != '\0') {
+    mdns_resp_add_service_txtitem(service, g_txt_device, static_cast<uint8_t>(std::strlen(g_txt_device)));
+  }
+  if (g_txt_build[0] != '\0') {
+    mdns_resp_add_service_txtitem(service, g_txt_build, static_cast<uint8_t>(std::strlen(g_txt_build)));
   }
 }
 
@@ -164,6 +195,7 @@ void load_mdns_config() {
 
   g_port = configured_port != 0 ? configured_port : kDefaultPort;
   load_hostname(g_hostname, sizeof(g_hostname));
+  refresh_mdns_txt_fields();
 
   ESP_LOGI(kTag, "[mDNS] enabled=%d instance='%s' port=%u", g_cfg.enabled ? 1 : 0,
            g_cfg.instance[0] != '\0' ? g_cfg.instance : kDefaultInstance, g_port);
@@ -195,16 +227,17 @@ void start_mdns_service() {
   const err_t add_netif_err = mdns_resp_add_netif(lwip_netif, g_hostname);
   if (add_netif_err != ERR_OK) {
     set_state(MdnsState::kFailed, "add_netif_failed");
-    ESP_LOGW(kTag, "[mDNS] mdns_resp_add_netif failed=%d", static_cast<int>(add_netif_err));
+    ESP_LOGW(kTag, "[mDNS] FAILED err=%d", static_cast<int>(add_netif_err));
     return;
   }
 
-  const s8_t slot = mdns_resp_add_service(lwip_netif, g_cfg.instance, "_luce", DNSSD_PROTO_TCP,
-                                         g_port, nullptr, nullptr);
-  if (slot < 0) {
+  refresh_mdns_txt_fields();
+  g_service_slot = mdns_resp_add_service(lwip_netif, g_cfg.instance, "_luce", DNSSD_PROTO_TCP, g_port, mdns_service_txt_cb,
+                                         nullptr);
+  if (g_service_slot < 0) {
     mdns_resp_remove_netif(lwip_netif);
     set_state(MdnsState::kFailed, "add_service_failed");
-    ESP_LOGW(kTag, "[mDNS] mdns_resp_add_service failed slot=%d", static_cast<int>(slot));
+    ESP_LOGW(kTag, "[mDNS] FAILED err=%d", static_cast<int>(g_service_slot));
     return;
   }
 
@@ -219,6 +252,10 @@ void stop_mdns_service() {
   }
   netif* lwip_netif = get_lwip_sta();
   if (lwip_netif) {
+    if (g_service_slot >= 0) {
+      mdns_resp_del_service(lwip_netif, g_service_slot);
+      g_service_slot = -1;
+    }
     mdns_resp_remove_netif(lwip_netif);
   }
   g_registered = false;
