@@ -132,14 +132,32 @@ This plan is mechanical only (no behavior changes, no runtime logic edits in thi
 Each slice must be validated with `pio run -e luce_stage0..luce_stage10` and, where parser/NVS
 helpers are touched, `pio test -e luce_test_native`.
 
-### S0 — Inventory and extraction map (docs-only, no file moves)
+### S0 — Inventory and extraction map (docs-only, no file moves) ✅ DONE
 - Move:
-  - Create this plan and freeze ownership mapping + line ownership references.
+  - Created/maintained this plan as the authoritative slice map.
 - No behavior changes.
+- Status: completed for this executor run.
+- Files touched:
+  - `docs/work/plan/090_main_split_plan.md`
 - Validate:
-  - none required (documentation-only slice).
+  - full stage build matrix captured under:
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage0.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage1.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage2.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage3.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage4.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage5.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage6.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage7.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage8.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage9.txt`
+    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage10.txt`
+  - native unit test command captured under:
+  - `docs/work/diag/evidence/20260222_210632/30_unit/native_test.txt`
 - Evidence:
-  - `docs/work/diag/evidence/<ts>/plan/090/s0_plan_capture.txt` (plan manifest + file map).
+  - `docs/work/diag/evidence/20260222_210632/split/s0_plan_capture.md` (plan manifest + file map)
+  - `docs/work/diag/evidence/20260222_210632/00_index.md`
+  - `docs/work/diag/evidence/20260222_210632/90_summary.md`
 
 ### S1 — Publish module interfaces
 - Move:

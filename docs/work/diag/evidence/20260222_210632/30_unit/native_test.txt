@@ -1,0 +1,28 @@
+********************************************************************************
+Obsolete PIO Core v6.1.18 is used (previous was 6.1.19)
+Please remove multiple PIO Cores from a system:
+https://docs.platformio.org/en/latest/core/installation/troubleshooting.html
+********************************************************************************
+Verbosity level can be increased via `-v, -vv, or -vvv` option
+Collected 1 tests
+
+Processing test_unit_native in luce_test_native environment
+--------------------------------------------------------------------------------
+Building...
+Testing...
+test/test_unit_native/test_pure_logic.cpp:168: test_bitmask_helpers_single_channel_state	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:169: test_bitmask_helpers_set_clear_sequence	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:170: test_bitmask_helpers_active_low_semantics	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:171: test_parse_u32_with_base_decimal	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:172: test_parse_u32_with_base_hex	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:173: test_cli_trim_and_tokenize	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:174: test_tokenization_stable_empty_and_spacing	[PASSED]
+test/test_unit_native/test_pure_logic.cpp:175: test_formatting_helpers_stable_hex	[PASSED]
+--------- luce_test_native:test_unit_native [PASSED] Took 1.45 seconds ---------
+
+=================================== SUMMARY ===================================
+Environment       Test              Status    Duration
+----------------  ----------------  --------  ------------
+luce_test_native  test_unit_native  PASSED    00:00:01.446
+================== 8 test cases: 8 succeeded in 00:00:01.446 ==================
+unit_rc=0
