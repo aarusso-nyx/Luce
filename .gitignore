@@ -35,3 +35,7 @@ docs/work/plan/*
 !docs/work/inv/.gitkeep
 !docs/work/diag/.gitkeep
 !docs/work/plan/.gitkeep
+
+# Skill/agent scratch output
+.agent/tmp/
+.agent/tmp/**/*
