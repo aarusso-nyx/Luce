@@ -15,7 +15,7 @@
   - `docs/work/diag/`
   - `docs/work/plan/`
 - Product documentation stays in:
-  - `doc/` (APIs, protocol contracts, operations, architecture)
+  - `docs/user/` (APIs, protocol contracts, operations, architecture)
 
 ## Repository Files to Keep Stable
 - `README.md` and `AGENTS.md` must remain at repository root.
@@ -29,7 +29,7 @@
 
 ## Required Governance Evidence
 - `docs/governance/audit/structure-conformance.md`
-- `docs/governance/compliance/scorecard-2026-02-20.md`
+- `docs/governance/compliance/scorecard-current.md`
 - `docs/governance/health/preflight.md`
 - Evidence outputs and temporary logs may be written under `docs/work/**`.
 
@@ -45,5 +45,5 @@ See `.codex/system.md` for repository scope and stack-level assumptions.
 
 ## Operational Notes
 - Keep security and resilience features in sync across CLI/HTTP/MQTT and docs.
-- Any plan or intervention touching behavior should include matching doc updates under `doc/`.
+- Any plan or intervention touching behavior should include matching doc updates under `docs/user/`.
 - When uncertain, prefer conservative defaults, clear rollback paths, and explicit diagnostics.

@@ -26,7 +26,8 @@
   "work_dirs": {
     "docs/work/inv": true,
     "docs/work/diag": true,
-    "docs/work/plan": true
+    "docs/work/plan": true,
+    "docs/work/tooling": true
   },
   "governance_files": {
     "docs/governance/health/build-status.md": true,

@@ -3,7 +3,7 @@
 - generated_at: 2026-02-22T18:14:24.345Z
 - repo: /Users/aarusso/Development/Luce
 - current_point: post-scoring
-- latest_scorecard: docs/governance/compliance/scorecard-2026-02-22.md
+- latest_scorecard: docs/governance/compliance/scorecard-current.md
 - latest_scorecard_status: PASS
 - latest_scorecard_nci: 100
 
@@ -16,7 +16,7 @@
 - 5. Health Evidence | PASS | skill: health-evidence-capture + health-gate | evidence: docs/governance/health/build-status.md
 - 6. NPM Security Audit | N/A | skill: npm-security-upgrade | evidence: docs/governance/audit/npm-applicability.md
 - 7. Adherence Audit | PASS | skill: verify-adherence | evidence: docs/governance/audit/{code-docs,code-tests,docs-tests}.md
-- 8. Compliance Scorecard | PASS | skill: compliance-scorecard | evidence: docs/governance/compliance/scorecard-2026-02-22.md
+- 8. Compliance Scorecard | PASS | skill: compliance-scorecard | evidence: docs/governance/compliance/scorecard-current.md
 - 9. Final Re-Gate | PASS | skill: compliance-gate / agents-preflight | evidence: preflight is up-to-date
 
 ## Next Steps

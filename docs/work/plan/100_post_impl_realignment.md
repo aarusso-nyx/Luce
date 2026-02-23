@@ -1,9 +1,9 @@
 # Post-Implementation Governance Realignment
 
 Date: 2026-02-23
-Status: Completed documentation/gov update draft with stale-reference cleanup
-Evidence folder: `docs/work/diag/20260222_214039/`
-Evidence SHA used for narrative: `2a3b9df`
+Status: Consolidation pass with canonical doc and governance index updates
+Evidence folder: `docs/work/diag/20260222_221921/`
+Evidence SHA used for narrative: `2a3b9df` (historical), latest anchor above
 
 ## Phase A preconditions
 
@@ -23,7 +23,7 @@ Evidence SHA used for narrative: `2a3b9df`
 
 ## Pass / fail / unavailable snapshot (from local evidence)
 
-- Source: `docs/work/diag/20260222_214039/90_summary.md`
+- Source: `docs/work/diag/20260222_221921/90_summary.md`
 - Lint/static: `PASS`
 - Build matrix: `PASS` (stages 0..10)
 - Unit tests: `PASS` (8 tests)
@@ -46,7 +46,7 @@ New authoritative docs under `docs/user` are now present:
 9. `docs/user/hardware-map.md`
 Updated governance docs:
 10. `docs/governance/health/preflight.md`
-11. `docs/governance/compliance/scorecard-2026-02-20.md`
+11. `docs/governance/compliance/scorecard-current.md`
 
 ## Issues remaining
 

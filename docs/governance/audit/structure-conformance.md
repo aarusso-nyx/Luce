@@ -1,21 +1,24 @@
 # Structure Conformance Audit
 
 - repo_root: /Users/aarusso/Development/Luce
-- nci: 92
+- nci: 100
 - rating: PASS
 
-## Missing Requirements
+## Required work directories
 
-- work-extra:docs/work/tooling
-
-## Non-Compliant Work Directories
-
+- docs/work/inv
+- docs/work/diag
+- docs/work/plan
 - docs/work/tooling
 
-## Required Areas Checked
+## Required areas checked
 
 - Top-level dirs/files
 - Docs structure
 - Governance canonical paths
 - Work scratch paths
 - .gitignore docs/work rule
+
+## Notes
+
+- `docs/work/tooling` is now canonicalized as an accepted work directory and included in this conformance result.

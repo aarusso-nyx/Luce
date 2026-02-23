@@ -11,8 +11,9 @@ Authoritative docs for implementation behavior and operations.
 - `http.md` — HTTPS read-only API
 - `nvs-schema.md` — persisted configuration keys
 - `hardware-map.md` — stage hardware constants and pin mapping
+- `contract-index.md` — canonical command/transport matrix and evidence pointers
 
 Verification for these docs should use local evidence in:
 
-- `docs/work/diag/evidence/20260222_214039/90_summary.md`
+- `docs/work/diag/evidence/20260222_221921/90_summary.md`
 - git SHA `2a3b9df`

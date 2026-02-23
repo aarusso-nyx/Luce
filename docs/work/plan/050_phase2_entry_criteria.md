@@ -22,8 +22,8 @@ This gate combines results from:
 1. Governance and evidence hygiene is clean
 - `docs/work/diag/audit/20260222_governance_structure.md` must report PASS with canonical path and evidence coverage.
 - Required evidence files from structure/compliance docs exist and are current:
-  - `docs/governance/audit/structure-conformance.md`
-  - `docs/governance/compliance/scorecard-2026-02-22.md`
+- `docs/governance/audit/structure-conformance.md`
+- `docs/governance/compliance/scorecard-current.md`
   - `docs/governance/health/preflight.md`
 
 2. Stage-gating integrity is proven

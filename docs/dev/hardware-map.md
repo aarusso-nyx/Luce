@@ -1,7 +1,7 @@
-# Hardware Map (Authoritative)
+# Hardware Map (historical copy)
 
 Date: 2026-02-22
-Status: Authoritative for firmware pin mapping
+Status: Historical reference copy (non-authoritative)
 Scope: Derived from rescued KiCAD project at `docs/work/inv/rescued/pcb/`.
 
 ## ESP32 Board And Core GPIO Mapping
@@ -100,7 +100,12 @@ Port mapping:
 - Pin 3: `GND`
 - Pin 4: `3.3V`
 
+## Canonical source and deprecation
+
+- Canonical map: `docs/user/hardware-map.md`.
+- This file is preserved for historical continuity and migration traceability.
+
 ## Notes
 
 - Rescued source under `docs/work/inv/rescued/src/` was used only as a consistency check.
-- Firmware should treat this document as canonical until superseded by a new board revision audit.
+- Treat this document as historical context only.
