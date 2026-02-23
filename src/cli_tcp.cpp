@@ -241,13 +241,19 @@ void cli_net_task(void*) {
   ESP_LOGI(kTag, "[CLI_NET] enabled=%d port=%u", g_cfg.enabled ? 1 : 0, g_cfg.port);
   if (!g_cfg.enabled) {
     g_session.running = false;
-    return;
+    // Keep task alive; returning from a task triggers a hard abort.
+    while (true) {
+      g_session.running = false;
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
   }
 
   g_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
   if (g_listener < 0) {
     ESP_LOGW(kTag, "[CLI_NET] socket() failed");
-    return;
+    while (true) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
   }
 
   const int reuse = 1;
@@ -261,12 +267,16 @@ void cli_net_task(void*) {
   if (bind(g_listener, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
     ESP_LOGW(kTag, "[CLI_NET] bind failed");
     stop_listener();
-    return;
+    while (true) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
   }
   if (listen(g_listener, 1) != 0) {
     ESP_LOGW(kTag, "[CLI_NET] listen failed");
     stop_listener();
-    return;
+    while (true) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
+    }
   }
   g_session.port = g_cfg.port;
   ESP_LOGI(kTag, "[CLI_NET] listener started on port=%u", g_cfg.port);
