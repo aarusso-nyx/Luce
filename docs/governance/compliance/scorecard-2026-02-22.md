@@ -45,6 +45,12 @@
 - evidence: docs/work/diag/evidence/20260222_204547/90_summary.md
 - notes: stage10 adds HTTPS-only, read-only endpoints (`/api/health`, `/api/info`, `/api/state`) with bearer token on protected routes, compile-time gating via `LUCE_STAGE=10`, and disabled-by-default startup evidence. Current run is CLI-only (`http/enabled=0`); HTTPS endpoint transcript is pending `http/enabled=1` with network-enabled validation.
 
+## Modularization Slice S0 Evidence
+
+- status: PASS
+- evidence: docs/work/diag/evidence/20260222_211814/90_summary.md
+- notes: build matrix (stage0..stage10), lint (PASS_WITH_WAIVER), native unit tests PASS, stage0/stage10 boot captures, stage10 serial CLI transcript captured after refactor slice merge.
+
 ## Inputs
 
 - docs/governance/audit/README.md
