@@ -26,7 +26,7 @@ envs=()
 for e in "${raw_envs[@]}"; do
   e="${e#env:}"
   case "${e}" in
-    luce_stage0|luce_stage1|luce_stage2|luce_stage3|luce_stage4)
+    luce_stage0|luce_stage1|luce_stage2|luce_stage3|luce_stage4|luce_stage5|luce_stage6|luce_stage7|luce_stage8|luce_stage9|luce_stage10)
       envs+=("${e}")
       ;;
   esac
@@ -90,19 +90,19 @@ for env in "${envs[@]}"; do
     if [[ "$line" != src*:*"["*":"* ]]; then
       continue
     fi
-    if [[ "$line" =~ ^([^:]+):([0-9]+):\ \[(low|medium|high|error)[:] ]]; then
-      severity="${BASH_REMATCH[3]}"
-      rank=$(severity_to_rank "$severity")
-      finding_count=$((finding_count + 1))
-      finding_text="$line"
+  if [[ "$line" =~ ^([^:]+):([0-9]+):\ \[(low|medium|high|error)[:] ]]; then
+    severity="${BASH_REMATCH[3]}"
+    rank=$(severity_to_rank "$severity")
+    if [ "$rank" -lt "$MIN_RANK" ]; then
+      continue
+    fi
 
-      if [ "$rank" -lt "$MIN_RANK" ]; then
-        continue
-      fi
+    finding_count=$((finding_count + 1))
+    finding_text="$line"
 
-      if is_waived_finding "$finding_text"; then
-        echo "WAIVED: ${finding_text}" >> "${out_file}"
-        continue
+    if is_waived_finding "$finding_text"; then
+      echo "WAIVED: ${finding_text}" >> "${out_file}"
+      continue
       fi
 
       unmatched_count=$((unmatched_count + 1))

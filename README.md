@@ -41,6 +41,6 @@ Monitor: /dev/cu.usbserial-40110
 
 ## Documentation Locations
 
-- Product/architecture/operations docs: `doc/`
+- Product/architecture/operations docs: `docs/user/`
 - Governance evidence: `docs/governance/audit/`, `docs/governance/health/`, `docs/governance/compliance/`
 - Scratch investigation/diagnostics/plans: `docs/work/inv/`, `docs/work/diag/`, `docs/work/plan/`

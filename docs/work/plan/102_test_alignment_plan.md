@@ -4,8 +4,8 @@ Date: 2026-02-23
 
 ## Current test inventory (from evidence)
 
-Host unit: `pio test -e luce_test_native` -> PASS. Host unit case count: 8. Artifact: `docs/work/diag/evidence/20260222_211814/30_unit/unit_test_native.txt`.
-On-device captures: boot capture stage0 and stage10 -> `docs/work/diag/evidence/20260222_211814/50_boot/`; e2e CLI transcript -> `docs/work/diag/evidence/20260222_211814/60_e2e/`.
+Host unit: `pio test -e luce_test_native` -> PASS. Host unit case count: 8. Artifact: `docs/work/diag/evidence/20260222_214039/30_unit/unit_luce_test_native.txt`.
+On-device captures: boot capture stage0 and stage10 -> `docs/work/diag/evidence/20260222_214039/50_boot/`; e2e CLI transcript -> `docs/work/diag/evidence/20260222_214039/60_e2e/`.
 
 ## Missing or incomplete tests
 

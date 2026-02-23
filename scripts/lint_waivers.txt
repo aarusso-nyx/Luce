@@ -1,1 +1,0 @@
-src/main.cpp:1158: [medium:warning] Uninitialized variable: argv [uninitvar]

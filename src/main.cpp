@@ -1168,7 +1168,7 @@ void wifi_task(void*) {
 
   TickType_t last_status_tick = xTaskGetTickCount();
   while (true) {
-    WifiEvent evt;
+    WifiEvent evt{};
     const TickType_t now = xTaskGetTickCount();
     if (xQueueReceive(g_wifi_event_queue, &evt, pdMS_TO_TICKS(kWifiIdlePollMs)) == pdTRUE) {
       switch (evt.type) {

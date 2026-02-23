@@ -1,9 +1,9 @@
 # Post-Implementation Governance Realignment
 
 Date: 2026-02-23
-Status: Completed documentation/gov update draft; commit pending
-Evidence folder: `docs/work/diag/evidence/20260222_211814/`
-Evidence SHA used for narrative: `ecd0768b22d41e07df8b1f025a0416c4e0f753c8`
+Status: Completed documentation/gov update draft with stale-reference cleanup
+Evidence folder: `docs/work/diag/20260222_214039/`
+Evidence SHA used for narrative: `2a3b9df`
 
 ## Phase A preconditions
 
@@ -23,38 +23,38 @@ Evidence SHA used for narrative: `ecd0768b22d41e07df8b1f025a0416c4e0f753c8`
 
 ## Pass / fail / unavailable snapshot (from local evidence)
 
-- Source: `docs/work/diag/evidence/20260222_211814/90_summary.md`
-- Lint/static: `PASS_WITH_WAIVER`
+- Source: `docs/work/diag/20260222_214039/90_summary.md`
+- Lint/static: `PASS`
 - Build matrix: `PASS` (stages 0..10)
 - Unit tests: `PASS` (8 tests)
-- Build-native test matrix entry: `FAIL` for `luce_test_native` image generation path
-- Upload/boot: `PASS` (stage0 and stage10 captured)
-- E2E: `PASS` (serial CLI transcript captured)
-- Hardware status: upload ports `/dev/tty.usbserial-0001`, `/dev/tty.usbserial-40110`; serial capture command `scripts/collect_logs.sh`.
+- Build-native test matrix entry: `PASS` for `luce_test_native` (host build + `pio test`)
+- Upload/boot: `SKIPPED` (hardware not attached in this evidence run)
+- E2E: `PREREQ_MISSING` for stages 8/9/10 (reason logged)
+- Hardware status: unavailable for this run; PREREQ_MISSING e2e artifacts captured.
 
 ## Docs promoted or updated
 
-New authoritative docs under `/doc` are now present:
-1. `doc/architecture.md`
-2. `doc/cli-contract.md`
-3. `doc/wifi-lifecycle.md`
-4. `doc/ntp.md`
-5. `doc/mdns.md`
-6. `doc/mqtt.md`
-7. `doc/http.md`
-8. `doc/nvs-schema.md`
-9. `doc/hardware-map.md`
+New authoritative docs under `docs/user` are now present:
+1. `docs/user/architecture.md`
+2. `docs/user/cli-contract.md`
+3. `docs/user/wifi-lifecycle.md`
+4. `docs/user/ntp.md`
+5. `docs/user/mdns.md`
+6. `docs/user/mqtt.md`
+7. `docs/user/http.md`
+8. `docs/user/nvs-schema.md`
+9. `docs/user/hardware-map.md`
 Updated governance docs:
 10. `docs/governance/health/preflight.md`
 11. `docs/governance/compliance/scorecard-2026-02-20.md`
 
 ## Issues remaining
 
-1. `PASS_WITH_WAIVER` lint status currently depends on `scripts/lint_waivers.txt` and must be revisited if strict clean lint is required.
-2. Stage matrix capture includes a native test-entry failure in non-native toolchain path (`luce_test_native` build step).
-3. `docs/work/tooling` is still reported missing in one structure audit snapshot path check.
-4. Stage8 network e2e availability is not guaranteed by the latest evidence set and should be treated as conditional on available WLAN config.
-5. `docs/work/inv/hardware-map.md` remains under `docs/dev`; canonical hardware map is represented in the new `doc/hardware-map.md`.
+1. `PASS` lint status now depends on strict reruns after waiver removal and warning fix.
+2. Stage matrix capture now includes native test matrix after native-filter hardening.
+3. `docs/work/tooling` was missing in one historical audit snapshot; it is now present and documented.
+4. Stage8/9/10 e2e evidence now uses explicit `PREREQ_MISSING` entries when runtime credentials/network prerequisites are absent.
+5. `docs/work/inv/hardware-map.md` remains under `docs/work/inv`; canonical hardware map is represented in `docs/user/hardware-map.md`.
 
 ## Backlog seed references
 

@@ -1,7 +1,7 @@
 # Docs vs Tests Audit
 
-- docs_files_detected: 43
-- test_files_detected: 2
+- docs_files_detected: 151
+- test_files_detected: 3
 - status: PASS
 
 ## Findings

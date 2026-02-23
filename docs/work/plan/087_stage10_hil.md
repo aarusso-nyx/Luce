@@ -16,6 +16,17 @@ Status: Baseline captured (disabled-by-default CLI path)
 - Optional baseline case with `http/enabled=0`.
 - Known DUT IP from serial logs (`wifi.ip`/boot line).
 
+## Evidence case matrix
+
+- PREREQ_MET:
+  - `http/enabled=1`
+  - `http/token` configured when querying protected endpoints
+  - reachable DUT HTTPS endpoint and certificate acceptance path established
+- PREREQ_MISSING:
+  - `http/enabled=0`, token absent for protected checks, or no reachable HTTPS path
+  - capture explicit skip in:
+    - `docs/work/diag/<timestamp>/60_e2e/luce_stage10_prereq_missing.txt`
+
 ## Test commands
 
 1. Configure NVS keys:
@@ -34,6 +45,12 @@ Status: Baseline captured (disabled-by-default CLI path)
   - `curl -k -H "Authorization: Bearer <token>" https://<ip>/api/state`
   - optional: `curl -k -H "Authorization: Bearer wrong" https://<ip>/api/info` expect `401/403`.
 
+5. PREREQ_MISSING control path:
+   - if required endpoint/client prerequisites are missing, mark skip and include one-line reason.
+   - Artifact:
+     - `docs/work/diag/<timestamp>/60_e2e/luce_stage10_prereq_missing.txt`
+     - required line: `SKIPPED: <reason>`
+
 ## Output transcript requirements
 
   - `docs/work/diag/20260222_204547/60_e2e/luce_stage10_cli_http_status.txt`
@@ -43,6 +60,7 @@ Status: Baseline captured (disabled-by-default CLI path)
 
 - `docs/work/diag/20260222_204547/50_boot/luce_stage10_boot.txt`
 - `docs/work/diag/20260222_204547/60_e2e/luce_stage10_cli_http_status.txt`
+- `docs/work/diag/<timestamp>/60_e2e/luce_stage10_prereq_missing.txt`
 
 ## Minimum expected lines in boot transcript
 

@@ -34,6 +34,14 @@ The serial CLI on UART0 (`LUCE_STAGE=4+`) remains the primary deterministic inte
   - Writes a single LCD line (row 0) when LCD is compiled in and present.
 - `reboot`
   - Triggers an ESP reset.
+- For full contract references, see:
+  - `docs/user/cli-contract.md`
+  - `docs/user/README.md`
+
+### Canonical docs note
+
+Authoritative product documentation is maintained under `docs/user/`.
+Legacy references to historical paths are no longer canonical.
 - `time.status` *(stage6+)*
   - Prints SNTP sync state, last successful sync Unix time, sync age, UTC string.
   - Prints "time not synced" with an explicit reason when no valid time is available.

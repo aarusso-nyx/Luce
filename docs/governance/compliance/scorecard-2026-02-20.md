@@ -5,7 +5,7 @@
 - scoring_source: docs/governance/compliance/scoring.md
 - health_source: docs/governance/health/build-status.md
 - audit_files_count: 9
-- evidence_path: docs/work/diag/evidence/20260222_211814
+- evidence_path: docs/work/diag/20260222_214039
 - local_evidence_policy: evidence under docs/work/diag is local only; docs reference paths only
 
 ## Inputs
@@ -20,36 +20,35 @@
 
 ## PASS/FAIL/UNAVAILABLE table
 
-- lint/static: PASS_WITH_WAIVER
+- lint/static: PASS
 - build matrix: PASS
 - unit: PASS
-- upload: PASS
-- e2e: PASS
-- notes: native matrix sub-entry for test image generation remains constrained in one toolchain path.
+- upload: PREREQ_MISSING (no hardware attached in the evidence run)
+- e2e: PREREQ_MISSING (stage8/9/10 requires runtime network prerequisites)
+- notes: upload and network e2e remain conditional; explicit `PREREQ_MISSING` logs are captured.
 
 ## Summary
 
-- evidence_root: docs/work/diag/evidence/20260222_211814/
-- git_sha: ecd0768b22d41e07df8b1f025a0416c4e0f753c8
+- evidence_root: docs/work/diag/20260222_214039
+- git_sha: `2a3b9df`
 - stage coverage: stage0..stage10 build PASS
 - boot coverage: stage0 and stage10 PASS
 - CLI command coverage: serial command pathway PASS
 
 ## Stage evidence
 
-- status: PASS_WITH_LIMITATIONS
-- evidence: docs/work/diag/evidence/20260222_211814/90_summary.md
-- notes: comprehensive stage matrix and serial e2e proof captured; remaining gaps are tooling and environment constraints.
+- status: PASS
+- evidence: docs/work/diag/20260222_214039/90_summary.md
+- notes: comprehensive stage matrix and native unit evidence captured; remaining gaps are environment-dependent e2e prerequisites.
 
 ## Top known issues
 
-1. Linting remains on waiver path (`PASS_WITH_WAIVER`).
-2. `luce_test_native` matrix entry has known non-native compile constraints.
+1. Linting is now strict (`PASS`), no PASS_WITH_WAIVER.
+2. `luce_test_native` matrix entry is fixed with native filter; image generation now passes.
 3. Network-enabled e2e on stage8/9/10 depends on valid runtime environment.
-4. Stage8 read-only transport allowlist and lockout scenarios need dedicated coverage script.
-5. `docs/work/tooling` missing is still flagged in one structure snapshot.
+4. Stage8/9/10 e2e evidence now captures PREREQ_MISSING skip cases when prerequisites are absent.
+5. `docs/work/tooling` is now present.
 
 ## Blockers
 
 - none
-

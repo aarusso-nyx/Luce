@@ -61,6 +61,5 @@ Direct tasks stay in `app_main` and startup call paths. Runtime logic is in feat
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_211814/90_summary.md`
-- Evidence SHA: `ecd0768b22d41e07df8b1f025a0416c4e0f753c8`
-
+- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
+- Evidence SHA: `2a3b9df`

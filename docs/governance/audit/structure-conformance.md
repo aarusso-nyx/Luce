@@ -1,12 +1,16 @@
 # Structure Conformance Audit
 
-- repo_root: .
-- nci: 100
+- repo_root: /Users/aarusso/Development/Luce
+- nci: 92
 - rating: PASS
 
-## Result
+## Missing Requirements
 
-PASS: repository is compliant with governance standard v1.0.
+- work-extra:docs/work/tooling
+
+## Non-Compliant Work Directories
+
+- docs/work/tooling
 
 ## Required Areas Checked
 
