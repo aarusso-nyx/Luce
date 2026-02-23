@@ -41,8 +41,8 @@ bool parse_u32_with_base(const char* text, int base, uint32_t* value, char* toke
 
   char* end = nullptr;
   errno = 0;
-  const unsigned long parsed = std::strtoul(text, &end, base);
-  if (errno != 0 || end == text || *end != '\0') {
+  const unsigned long long parsed = std::strtoull(text, &end, base);
+  if (errno != 0 || end == text || *end != '\0' || parsed > 0xFFFFFFFFULL) {
     return false;
   }
   *value = static_cast<uint32_t>(parsed);
@@ -122,6 +122,7 @@ void test_parse_u32_with_base_hex() {
   char token[32] = {0};
   TEST_ASSERT_FALSE(parse_u32_with_base("12ab", 10, &value, token));
   TEST_ASSERT_EQUAL_STRING("12ab", token);
+  TEST_ASSERT_FALSE(parse_u32_with_base("4294967296", 10, &value, token));
 }
 
 void test_cli_trim_and_tokenize() {

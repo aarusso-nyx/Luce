@@ -16,6 +16,7 @@
 
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
+#include "luce/cli.h"
 
 #if LUCE_HAS_I2C
 #include "luce/stage2_io.h"
@@ -61,12 +62,6 @@ void stage2_task(void*) {
 }
 #endif
 
-void print_feature_flags() {
-  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d",
-           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI,
-           LUCE_HAS_NTP, LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
-}
-
 }  // namespace
 
 void luce_runtime_main(void) {
@@ -75,7 +70,7 @@ void luce_runtime_main(void) {
   luce_print_heap_stats();
   luce_print_app_info();
   luce_print_partition_summary();
-  print_feature_flags();
+  luce_print_feature_flags();
 
 #if LUCE_HAS_NVS
   update_boot_state_record();
@@ -88,6 +83,7 @@ void luce_runtime_main(void) {
   if (xTaskCreate(stage2_task, "stage2", 8192, nullptr, 1, nullptr) != pdPASS) {
     ESP_LOGW(kTag, "Failed to create Stage2 diagnostics task");
   }
+  cli_startup();
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));

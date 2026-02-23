@@ -30,6 +30,9 @@ struct Mcp23017State {
   uint8_t relay_mask = 0xFF;
 };
 
+constexpr std::uint8_t kMcpRegGpioA = 0x12;
+constexpr std::uint8_t kMcpRegGpioB = 0x13;
+
 extern bool g_i2c_initialized;
 extern bool g_mcp_available;
 extern uint8_t g_relay_mask;

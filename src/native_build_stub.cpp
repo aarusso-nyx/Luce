@@ -3,5 +3,3 @@
 // without pulling ESP-IDF firmware entry points.
 
 int __attribute__((weak)) main() { return 0; }
-
-void luce_native_build_stub() {}

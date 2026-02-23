@@ -10,10 +10,15 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "esp_timer.h"
 #include "esp_private/esp_clk.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#if LUCE_HAS_I2C
+#include "luce/stage2_io.h"
+#endif
 
 constexpr const char* kTag = "luce_boot";
 
@@ -131,4 +136,52 @@ void luce_print_heap_stats() {
   ESP_LOGI(kTag, "Heap min-free: %u bytes",
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag, "Task watermark (current): %u words", uxTaskGetStackHighWaterMark(nullptr));
+}
+
+void luce_print_feature_flags() {
+  ESP_LOGI(kTag,
+           "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d",
+           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI,
+           LUCE_HAS_NTP, LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
+}
+
+void luce_log_status_health() {
+  char reason_line[48];
+  std::uint8_t relay_mask = 0;
+  std::uint8_t button_mask = 0;
+
+  luce_init_path_reset_reason_line(reason_line, sizeof(reason_line), esp_reset_reason());
+  ESP_LOGI(kTag, "status: stage=%d reset=%s uptime=%llus", LUCE_STAGE, reason_line,
+           static_cast<long long>(esp_timer_get_time() / 1000000ULL));
+  ESP_LOGI(kTag, "status: heap_free=%u min_free=%u",
+           heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+  ESP_LOGI(kTag,
+           "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d mdns=%d mqtt=%d http=%d",
+           LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS,
+           LUCE_HAS_MQTT, LUCE_HAS_HTTP);
+
+#if LUCE_HAS_I2C
+  relay_mask = g_relay_mask;
+  button_mask = g_button_mask;
+  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d REL:0x%02X BTN:0x%02X", g_i2c_initialized ? 1 : 0,
+           g_mcp_available ? 1 : 0, relay_mask, button_mask);
+#else
+  ESP_LOGI(kTag, "status: i2c_init=0 mcp=0 REL:0x%02X BTN:0x%02X", relay_mask, button_mask);
+#endif
+}
+
+void luce_log_runtime_status(std::uint64_t uptime_s, bool i2c_ok, bool mcp_ok,
+                            std::uint8_t relay_mask, std::uint8_t button_mask) {
+  char mask_line[32] = {0};
+  std::snprintf(mask_line, sizeof(mask_line), "REL:0x%02X BTN:0x%02X", relay_mask, button_mask);
+  ESP_LOGI(kTag, "LUCE S3 %llu | I2C:%s MCP:%s %s",
+           static_cast<unsigned long long>(uptime_s), i2c_ok ? "ok" : "no",
+           mcp_ok ? "ok" : "no", mask_line);
+}
+
+void luce_log_stage_watermarks(const char* context) {
+  const char* used_context = context ? context : "unknown";
+  const UBaseType_t now = uxTaskGetStackHighWaterMark(nullptr);
+  ESP_LOGI(kTag, "Stack watermark (%s): current=%u", used_context, now);
 }
