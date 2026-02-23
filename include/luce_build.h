@@ -13,6 +13,7 @@
 #define LUCE_HAS_MDNS ((LUCE_STAGE == 7 || LUCE_STAGE == 8) ? 1 : 0)
 #define LUCE_HAS_TCP_CLI ((LUCE_STAGE >= 8) ? 1 : 0)
 #define LUCE_HAS_MQTT ((LUCE_STAGE >= 9) ? 1 : 0)
+#define LUCE_HAS_HTTP ((LUCE_STAGE >= 10) ? 1 : 0)
 
 #ifndef LUCE_PROJECT_VERSION
 #define LUCE_PROJECT_VERSION "0.0.0-stage0"

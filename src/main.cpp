@@ -55,6 +55,9 @@
 #if LUCE_HAS_MQTT
 #include "mqtt_client.h"
 #endif
+#if LUCE_HAS_HTTP
+#include "esp_https_server.h"
+#endif
 
 #if LUCE_HAS_CLI
 #include "driver/uart.h"
@@ -89,6 +92,9 @@ constexpr std::size_t kDiagTaskStackWords = 8192;
 constexpr std::size_t kCliTaskStackWords = 6144;
 constexpr std::size_t kBlinkTaskStackWords = 2048;
 constexpr std::size_t kMqttTaskStackWords = 6144;
+#if LUCE_HAS_HTTP
+constexpr std::size_t kHttpServerStackWords = 8192;
+#endif
 #if LUCE_HAS_MQTT
 constexpr uint32_t kMqttMinRetryBackoffMs = 1000;
 #endif
@@ -277,6 +283,49 @@ int mqtt_publish_test_payload();
 #endif
 
 #if LUCE_HAS_NTP
+enum class NtpState : uint8_t;
+struct NtpRuntimeState;
+extern NtpRuntimeState g_ntp_runtime;
+const char* ntp_state_name(NtpState state);
+std::size_t ntp_format_utc(char* out, std::size_t out_size, time_t epoch_seconds);
+time_t ntp_last_sync_unix();
+NtpState ntp_state_snapshot();
+#endif
+
+#if LUCE_HAS_HTTP
+enum class HttpState : uint8_t {
+  kDisabled = 0,
+  kInit,
+  kReady,
+  kStarted,
+  kFailed,
+};
+
+struct HttpConfig {
+  bool enabled = false;
+  uint16_t port = 443;
+  bool tls_dev_mode = false;
+  char token[64] = {0};
+};
+
+struct HttpRuntime {
+  HttpState state = HttpState::kDisabled;
+  bool started = false;
+  uint32_t request_count = 0;
+  uint32_t unauthorized_count = 0;
+  uint32_t error_count = 0;
+};
+
+bool http_load_config(HttpConfig& config);
+void http_startup();
+void http_start_if_ready();
+void http_handle_wifi_got_ip();
+void http_handle_wifi_lost_ip();
+void http_shutdown();
+void cli_cmd_http_status();
+#endif
+
+#if LUCE_HAS_NTP
 enum class NtpState : uint8_t {
   kDisabled = 0,
   kUnsynced,
@@ -373,8 +422,9 @@ void log_status_health_lines() {
   ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag, "status: task_watermark_words=%u", uxTaskGetStackHighWaterMark(nullptr));
-  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d mdns=%d", LUCE_HAS_I2C,
-           LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS);
+  ESP_LOGI(kTag, "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d mdns=%d mqtt=%d http=%d",
+           LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS,
+           LUCE_HAS_MQTT, LUCE_HAS_HTTP);
 #if LUCE_HAS_I2C
   ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d %s", g_i2c_initialized, g_mcp_available, mask_line);
 #endif
@@ -689,6 +739,9 @@ void wifi_event_handler(void*,
   #if LUCE_HAS_MQTT
       mqtt_handle_wifi_got_ip();
   #endif
+  #if LUCE_HAS_HTTP
+      http_handle_wifi_got_ip();
+  #endif
       wifi_queue_send(WifiEventType::kGotIp, 0);
       return;
     }
@@ -699,6 +752,9 @@ void wifi_event_handler(void*,
   #endif
   #if LUCE_HAS_MQTT
       mqtt_handle_wifi_lost_ip();
+  #endif
+  #if LUCE_HAS_HTTP
+      http_handle_wifi_lost_ip();
   #endif
       wifi_queue_send(WifiEventType::kDisconnected, 0);
     }
@@ -2146,6 +2202,596 @@ void mqtt_startup() {
 }
 #endif
 
+#if LUCE_HAS_HTTP
+constexpr char kHttpConfigNamespace[] = "http";
+constexpr uint16_t kHttpDefaultPort = 443;
+constexpr uint16_t kHttpMaxConfigPort = 65535;
+constexpr std::size_t kHttpLogBuffer = 64;
+constexpr std::size_t kHttpJsonBuffer = 256;
+constexpr std::size_t kHttpBodyLimitBytes = 256;
+constexpr char kHttpAuthBearerPrefix[] = "Bearer ";
+
+constexpr char kHttpDefaultToken[] = "luce-http";
+constexpr char kHttpRouteHealth[] = "/api/health";
+constexpr char kHttpRouteInfo[] = "/api/info";
+constexpr char kHttpRouteState[] = "/api/state";
+
+constexpr char kHttpDevCert[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIICpjCCAY4CCQDMeA8ybFpcLjANBgkqhkiG9w0BAQsFADAVMRMwEQYDVQQDDAps\n"
+    "dWNlLmxvY2FsMB4XDTI2MDIyMjIzMDgxNloXDTI3MDIyMjIzMDgxNlowFTETMBEG\n"
+    "A1UEAwwKbHVjZS5sb2NhbDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB\n"
+    "AL5STL7/ODhEQxAQZPzXZt6EdImfLT+C/VeJyXxpECY58eFYrBkAELPYc5BWAIPT\n"
+    "pcyxxCtstWMWQgXWdAHXARy6UAXjE7aQ33k0+Y2LIiz9xlCDLa1AONiRJTaBJen4\n"
+    "NuKcEjUNynmKZTJ3gMIsTrADHO8oTxYb6O9RgFJXBy1p3lH40Fd62/NpsSN3zxSO\n"
+    "/Daenjie841FyPD9gW1YLV9bQNuxDZe+8JSPc6kRecBKLVSJFHkREERpgX6zDwtj\n"
+    "sGL1hptou2VlibdlRNPIztap5FRkhYxP03xGNJzwPtHXvagA7gbbZt/8PfV874qK\n"
+    "dlsimdoZa4+azz1QPSWf6UECAwEAATANBgkqhkiG9w0BAQsFAAOCAQEAmPkVdwTt\n"
+    "oD5FjVjZCGmJqG4ElWlSzMGkwWfi+CSKlUAoGy0Jmjq9zQL2893d0uVOew08jyiB\n"
+    "QgnG1L3tygFJbbE2TfmD41Yze9eypBCEz6hk39FmbGl9EJcK719HCamjJzh7Lfio\n"
+    "qzUw9HvGR0IMD3kCep28LrPVAPW/TNwDCTWyS+9Q5lMheKbBZuu9tgw7YHuulvIc\n"
+    "eApV0eXa4910sUXW+uGNACNRLT2JSiVfa95ocyZ26tZlO0oUOAhxmb0Mvp1ISocO\n"
+    "SCaFUm5sKYvnF8D9fF4BnfHgz5UiOwnSt8r7AKEX8178stvgEjtwKd6ibaZWZhvz\n"
+    "Vnfe6i7No6/slA==\n"
+    "-----END CERTIFICATE-----\n";
+constexpr char kHttpDevPrivateKey[] =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC+Uky+/zg4REMQ\n"
+    "EGT812behHSJny0/gv1Xicl8aRAmOfHhWKwZABCz2HOQVgCD06XMscQrbLVjFkIF\n"
+    "1nQB1wEculAF4xO2kN95NPmNiyIs/cZQgy2tQDjYkSU2gSXp+DbinBI1Dcp5imUy\n"
+    "d4DCLE6wAxzvKE8WG+jvUYBSVwctad5R+NBXetvzabEjd88Ujvw2np44nvONRcjw\n"
+    "/YFtWC1fW0DbsQ2XvvCUj3OpEXnASi1UiRR5ERBEaYF+sw8LY7Bi9YabaLtlZYm3\n"
+    "ZUTTyM7WqeRUZIWMT9N8RjSc8D7R172oAO4G22bf/D31fO+KinZbIpnaGWuPms89\n"
+    "UD0ln+lBAgMBAAECggEAPPVhTX+zgxoiHMATiIR5l2X3aakJNiF/gY1Jcsa3/HZs\n"
+    "yc+795n0v5XhleZl7dNZdJGvknUUN/OGHBaPO5Og8JGgVfJgewY1/b2A/NwGi0CR\n"
+    "R3Jsq+Q5EOyUbbu56BGviq+QiVuscXdpaFusawUEAw5MMzHG+v7fgd+p6TWkv99t\n"
+    "4S3pcvonk/7XmWDdogfHBKi9NSPa4oe5hXO1DirKoFmpk6328z+mrx7qXzOd//sN\n"
+    "9aRSlHTXcBzhhySP0YtWU5kl2W05pRcH0/Nn65l+/mAzx4c+N4JWCPkF9ef+gCUL\n"
+    "UbUVki76D0oogkTeSjRgdL3iaWQGno+gvKOjYruHLQKBgQDy4IsmM8HwQS6B9XCj\n"
+    "FLVczaPf5wWJXNlYrQtBnUi7E+3yHCDaKYI7VXi508A8euL8MMevv6qPOHjAAOLI\n"
+    "tdHgdQA+ZCGbSGhS97mEhm/B1bQXnn51IMVDIWwHQxIFYNhwrj/wzHy8+L/bSNbn\n"
+    "UF3aukYMF+CKWhkS6SlUk09yAwKBgQDIms+ZwxajTPoyxlve8r80yjgBCvxCuzpG\n"
+    "6FqQq/mhgKIgymxNH9X44veiD/qS/+YsoYa6uyOmBko6VqCwBVtGTUMDFWvxgnYZ\n"
+    "Qn3JgoQbSVbZ5brevOE+itd1VLjW71zMqup5viycC7LIplB8EsYkzd8paLmLVPf7\n"
+    "R5kYtzUWawKBgBEyFKf/whtgggpxdigVr0GCzbdsg9fV2w2MMt/SYvPb1Vzu4OSR\n"
+    "S8cnpgSCGXouuSNh0MGAsHKzbNkrNuM+/D0IC5xfOoHj/n7hSyE243K1zqpdblac\n"
+    "m1rFYwCgnwYCdVCFBcHmuG4ormy4G38FEaAK0CrLBfrFpkDQgTybsWRBAoGAF3ZL\n"
+    "y48OqcDKDoA2pIe9pz3zeOPBB0kAkuSAGyWSB7qUu8MREaAklXxuPA0kYGb/k768\n"
+    "lEBo9fUMX3BcUNn/h+RnbwflXRTGHUQylAvoyYw1VTzSM1Th/z+b3YQwLitGrkVb\n"
+    "MSv16bZQjbkt9qT3ebx+Wkh+UvZ4HnKMTGC5G8sCgYArbBM7C0j2dHLP4TzwtpMQ\n"
+    "ZzVyKtSZ2RDJ66MAmjQDFI0ey2vgamJh5VJy0vNKGgAsAZviBxyGQFmeeVZNbpSz\n"
+    "nuN/bNMgicgEatZynzyAHBJT3NkUhnJKuK59s6JF+s7l2hM2OiVSpebig1+YI+fe\n"
+    "ZBJ9UZciff+NShL6BYEpGg==\n"
+    "-----END PRIVATE KEY-----\n";
+
+enum class HttpUriType : uint8_t {
+  kHealth = 0,
+  kInfo,
+  kState,
+};
+
+HttpConfig g_http_config {};
+HttpRuntime g_http_runtime {};
+httpd_handle_t g_http_server = nullptr;
+
+const char* http_state_name(HttpState state) {
+  switch (state) {
+    case HttpState::kDisabled:
+      return "DISABLED";
+    case HttpState::kInit:
+      return "INIT";
+    case HttpState::kReady:
+      return "READY";
+    case HttpState::kStarted:
+      return "STARTED";
+    case HttpState::kFailed:
+      return "FAILED";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void http_set_defaults(HttpConfig& config) {
+  config = {};
+  config.enabled = false;
+  config.port = kHttpDefaultPort;
+  config.tls_dev_mode = true;
+  std::snprintf(config.token, sizeof(config.token), "%s", kHttpDefaultToken);
+}
+
+const char* http_method_name(int method) {
+  switch (method) {
+    case HTTP_DELETE:
+      return "DELETE";
+    case HTTP_GET:
+      return "GET";
+    case HTTP_HEAD:
+      return "HEAD";
+    case HTTP_POST:
+      return "POST";
+    case HTTP_PUT:
+      return "PUT";
+    case HTTP_PATCH:
+      return "PATCH";
+    case HTTP_OPTIONS:
+      return "OPTIONS";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+void http_load_remote_ip(const httpd_req_t* req, char* out, std::size_t out_size) {
+  if (!req || !out || out_size == 0) {
+    return;
+  }
+  out[0] = '\0';
+
+  const int socket = httpd_req_to_sockfd(const_cast<httpd_req_t*>(req));
+  if (socket < 0) {
+    std::snprintf(out, out_size, "socket:%d", socket);
+    return;
+  }
+
+  sockaddr_in addr {};
+  socklen_t addr_len = sizeof(addr);
+  if (getpeername(socket, reinterpret_cast<sockaddr*>(&addr), &addr_len) == 0) {
+    const char* addr_text = inet_ntoa(addr.sin_addr);
+    std::snprintf(out, out_size, "%s", addr_text ? addr_text : "0.0.0.0");
+    return;
+  }
+  std::snprintf(out, out_size, "(unknown)");
+}
+
+void http_set_runtime_state(HttpState state, const char* reason) {
+  g_http_runtime.state = state;
+  if (reason && reason[0] != '\0') {
+    ESP_LOGI(kTag, "[HTTP] state=%s reason=%s", http_state_name(state), reason);
+  } else {
+    ESP_LOGI(kTag, "[HTTP] state=%s", http_state_name(state));
+  }
+}
+
+void http_log_request(const httpd_req_t* req, const char* route, int status,
+                     const char* remote_ip, uint64_t duration_ms) {
+  const char* method = req ? http_method_name(req->method) : "UNKNOWN";
+  ESP_LOGI(kTag, "[HTTP] method=%s path=%s status=%d remote=%s duration_ms=%llu",
+           method, route ? route : "(unknown)", status, remote_ip ? remote_ip : "(unknown)",
+           static_cast<unsigned long long>(duration_ms));
+}
+
+void http_record_request(const httpd_req_t* req, int status, const char* route, uint64_t start_us,
+                        bool unauthorized, const HttpUriType uri_type) {
+  g_http_runtime.request_count += 1;
+  if (unauthorized) {
+    g_http_runtime.unauthorized_count += 1;
+  }
+  if (status >= 400) {
+    g_http_runtime.error_count += 1;
+  }
+
+  char remote_ip[kHttpLogBuffer] = "unknown";
+  http_load_remote_ip(req, remote_ip, sizeof(remote_ip));
+  const uint64_t duration_ms = (esp_timer_get_time() - start_us) / 1000ULL;
+  (void)uri_type;
+  http_log_request(req, route, status, remote_ip, duration_ms);
+}
+
+bool http_send_json(httpd_req_t* req, const char* body, int status, const char* route, uint64_t start_us,
+                   bool unauthorized, HttpUriType uri_type) {
+  if (!req || !body) {
+    http_record_request(req, 500, route, start_us, true, uri_type);
+    return false;
+  }
+
+  char status_line[24] = "200 OK";
+  if (status != 200) {
+    if (status == 401) {
+      std::snprintf(status_line, sizeof(status_line), "401 Unauthorized");
+    } else if (status == 403) {
+      std::snprintf(status_line, sizeof(status_line), "403 Forbidden");
+    } else if (status == 404) {
+      std::snprintf(status_line, sizeof(status_line), "404 Not Found");
+    } else if (status == 405) {
+      std::snprintf(status_line, sizeof(status_line), "405 Method Not Allowed");
+    } else if (status == 413) {
+      std::snprintf(status_line, sizeof(status_line), "413 Payload Too Large");
+    } else {
+      std::snprintf(status_line, sizeof(status_line), "%d Error", status);
+    }
+    (void)httpd_resp_set_status(req, status_line);
+  }
+  (void)httpd_resp_set_type(req, "application/json");
+  const esp_err_t err = httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+  http_record_request(req, status, route, start_us, unauthorized, uri_type);
+  return err == ESP_OK;
+}
+
+bool http_is_body_too_large(const httpd_req_t* req) {
+  return req && req->content_len > kHttpBodyLimitBytes;
+}
+
+bool http_authorize_request(httpd_req_t* req, const HttpConfig& config, bool log_noauth) {
+  if (!req) {
+    return false;
+  }
+  if (!config.enabled) {
+    return false;
+  }
+  if (config.token[0] == '\0') {
+    if (log_noauth) {
+      char remote_ip[kHttpLogBuffer] = "unknown";
+      http_load_remote_ip(req, remote_ip, sizeof(remote_ip));
+      ESP_LOGW(kTag, "[HTTP] auth fail ip=%s reason=missing_token", remote_ip);
+    }
+    return false;
+  }
+  char auth_header[128] = "";
+  if (httpd_req_get_hdr_value_str(req, "Authorization", auth_header, sizeof(auth_header)) != ESP_OK) {
+    if (log_noauth) {
+      char remote_ip[kHttpLogBuffer] = "unknown";
+      http_load_remote_ip(req, remote_ip, sizeof(remote_ip));
+      ESP_LOGW(kTag, "[HTTP] auth fail ip=%s reason=no_header", remote_ip);
+    }
+    return false;
+  }
+
+  if (std::strncmp(auth_header, kHttpAuthBearerPrefix, std::strlen(kHttpAuthBearerPrefix)) != 0) {
+    if (log_noauth) {
+      char remote_ip[kHttpLogBuffer] = "unknown";
+      http_load_remote_ip(req, remote_ip, sizeof(remote_ip));
+      ESP_LOGW(kTag, "[HTTP] auth fail ip=%s reason=bad_scheme", remote_ip);
+    }
+    return false;
+  }
+  const char* presented = auth_header + std::strlen(kHttpAuthBearerPrefix);
+  if (std::strcmp(presented, config.token) != 0) {
+    if (log_noauth) {
+      char remote_ip[kHttpLogBuffer] = "unknown";
+      http_load_remote_ip(req, remote_ip, sizeof(remote_ip));
+      ESP_LOGW(kTag, "[HTTP] auth fail ip=%s reason=bad_token", remote_ip);
+    }
+    return false;
+  }
+  return true;
+}
+
+bool http_load_config(HttpConfig& config) {
+  http_set_defaults(config);
+
+  nvs_handle_t handle = 0;
+  if (nvs_open(kHttpConfigNamespace, NVS_READONLY, &handle) != ESP_OK) {
+    ESP_LOGI(kTag, "[HTTP][NVS] namespace missing, using defaults (enabled=0)");
+    return false;
+  }
+
+  bool present = false;
+  uint8_t enabled = 0;
+  (void)wifi_read_u8_key(handle, "enabled", &enabled, &present);
+  if (present && (enabled == 0 || enabled == 1)) {
+    config.enabled = (enabled != 0);
+  }
+  ESP_LOGI(kTag, "[HTTP][NVS] key=enabled present=%d value=%d", present ? 1 : 0,
+           config.enabled ? 1 : 0);
+
+  uint32_t port = config.port;
+  if (wifi_read_u32_key(handle, "port", &port, &present) && port > 0 && port <= kHttpMaxConfigPort) {
+    config.port = static_cast<uint16_t>(port);
+  }
+  ESP_LOGI(kTag, "[HTTP][NVS] key=port present=%d value=%u", present ? 1 : 0,
+           static_cast<unsigned>(config.port));
+
+  bool tls_present = false;
+  uint8_t tls_dev = config.tls_dev_mode ? 1 : 0;
+  if (wifi_read_u8_key(handle, "tls_dev_mode", &tls_dev, &tls_present) &&
+      (tls_dev == 0 || tls_dev == 1)) {
+    config.tls_dev_mode = (tls_dev != 0);
+  }
+  ESP_LOGI(kTag, "[HTTP][NVS] key=tls_dev_mode present=%d value=%d", tls_present ? 1 : 0,
+           config.tls_dev_mode ? 1 : 0);
+
+  bool token_present = false;
+  if (wifi_read_string_key(handle, "token", config.token, sizeof(config.token), &token_present) &&
+      token_present && config.token[0] != '\0') {
+    ESP_LOGI(kTag, "[HTTP][NVS] key=token present=%d value=(set)", 1);
+  } else {
+    std::snprintf(config.token, sizeof(config.token), "%s", kHttpDefaultToken);
+    ESP_LOGI(kTag, "[HTTP][NVS] key=token present=%d value=%s", token_present ? 1 : 0,
+             "(default)");
+  }
+  nvs_close(handle);
+  return true;
+}
+
+esp_err_t http_health_handler(httpd_req_t* req) {
+  const uint64_t start_us = esp_timer_get_time();
+  if (!req) {
+    return ESP_FAIL;
+  }
+  if (req->method != HTTP_GET) {
+    const char payload[] = "{\"error\":\"method_not_allowed\"}";
+    (void)http_send_json(req, payload, 405, kHttpRouteHealth, start_us, false, HttpUriType::kHealth);
+    return ESP_OK;
+  }
+  if (http_is_body_too_large(req)) {
+    const char payload[] = "{\"error\":\"payload_too_large\"}";
+    (void)http_send_json(req, payload, 413, kHttpRouteHealth, start_us, false,
+                         HttpUriType::kHealth);
+    return ESP_OK;
+  }
+  char payload[kHttpJsonBuffer];
+  const time_t now = time(nullptr);
+  const int rc = std::snprintf(payload, sizeof(payload),
+                               "{\"service\":\"luce\",\"stage\":%d,\"status\":\"ok\","
+                               "\"build\":\"%s %s\",\"sha\":\"%s\",\"uptime_s\":%llu}",
+                               LUCE_STAGE, __DATE__, __TIME__, LUCE_GIT_SHA,
+                               static_cast<unsigned long long>(now));
+  if (rc <= 0) {
+    const char err[] = "{\"error\":\"response_failed\"}";
+    (void)http_send_json(req, err, 500, kHttpRouteHealth, start_us, false, HttpUriType::kHealth);
+    return ESP_OK;
+  }
+  (void)http_send_json(req, payload, 200, kHttpRouteHealth, start_us, false, HttpUriType::kHealth);
+  return ESP_OK;
+}
+
+esp_err_t http_info_handler(httpd_req_t* req) {
+  const uint64_t start_us = esp_timer_get_time();
+  if (!req) {
+    return ESP_FAIL;
+  }
+  if (req->method != HTTP_GET) {
+    const char payload[] = "{\"error\":\"method_not_allowed\"}";
+    (void)http_send_json(req, payload, 405, kHttpRouteInfo, start_us, false, HttpUriType::kInfo);
+    return ESP_OK;
+  }
+  if (http_is_body_too_large(req)) {
+    const char payload[] = "{\"error\":\"payload_too_large\"}";
+    (void)http_send_json(req, payload, 413, kHttpRouteInfo, start_us, false, HttpUriType::kInfo);
+    return ESP_OK;
+  }
+  if (!http_authorize_request(req, g_http_config, true)) {
+    const char payload[] = "{\"error\":\"unauthorized\"}";
+    (void)http_send_json(req, payload, 401, kHttpRouteInfo, start_us, true, HttpUriType::kInfo);
+    return ESP_OK;
+  }
+  char payload[kHttpJsonBuffer];
+  const int rc =
+      std::snprintf(payload, sizeof(payload),
+                    "{\"service\":\"luce\",\"stage\":%d,\"wifi_ip\":\"%s\",\"http_enabled\":%d,"
+                    "\"http_port\":%u,\"tls\":\"self_signed\"}",
+                    LUCE_STAGE, g_wifi_ip, g_http_config.enabled ? 1 : 0, g_http_config.port);
+  if (rc <= 0) {
+    const char err[] = "{\"error\":\"response_failed\"}";
+    (void)http_send_json(req, err, 500, kHttpRouteInfo, start_us, true, HttpUriType::kInfo);
+    return ESP_OK;
+  }
+  (void)http_send_json(req, payload, 200, kHttpRouteInfo, start_us, false, HttpUriType::kInfo);
+  return ESP_OK;
+}
+
+esp_err_t http_state_handler(httpd_req_t* req) {
+  const uint64_t start_us = esp_timer_get_time();
+  if (!req) {
+    return ESP_FAIL;
+  }
+  if (req->method != HTTP_GET) {
+    const char payload[] = "{\"error\":\"method_not_allowed\"}";
+    (void)http_send_json(req, payload, 405, kHttpRouteState, start_us, false, HttpUriType::kState);
+    return ESP_OK;
+  }
+  if (http_is_body_too_large(req)) {
+    const char payload[] = "{\"error\":\"payload_too_large\"}";
+    (void)http_send_json(req, payload, 413, kHttpRouteState, start_us, false, HttpUriType::kState);
+    return ESP_OK;
+  }
+  if (!http_authorize_request(req, g_http_config, true)) {
+    const char payload[] = "{\"error\":\"unauthorized\"}";
+    (void)http_send_json(req, payload, 403, kHttpRouteState, start_us, true, HttpUriType::kState);
+    return ESP_OK;
+  }
+  char payload[kHttpJsonBuffer];
+  char relay_mask[24] = {0};
+  char button_mask[24] = {0};
+  format_mcp_mask_line(relay_mask, sizeof(relay_mask), g_relay_mask, g_button_mask,
+                       McpMaskFormat::kStatusCommand);
+
+#if LUCE_HAS_NTP
+  const int64_t now = static_cast<int64_t>(time(nullptr));
+  const time_t ntp_last_sync = ntp_last_sync_unix();
+  const int64_t sync_age = (now >= 0 && now >= static_cast<int64_t>(ntp_last_sync))
+                              ? (now - static_cast<int64_t>(ntp_last_sync))
+                              : 0;
+  const char* ntp_state = ntp_state_name(ntp_state_snapshot());
+  char ntp_utc_buf[64] = "n/a";
+  if (ntp_last_sync > 0) {
+    ntp_format_utc(ntp_utc_buf, sizeof(ntp_utc_buf), ntp_last_sync);
+  }
+  const int rc = std::snprintf(payload, sizeof(payload),
+                               "{\"state\":\"%s\",\"wifi_ip\":\"%s\",\"relay\":\"%s\",\"buttons\":\"%s\","
+                               "\"ntp_state\":\"%s\",\"ntp_unix\":%lld,\"ntp_age_s\":%lld,"
+                               "\"ntp_utc\":\"%s\",\"requests\":%lu,\"unauth\":%lu}",
+                               http_state_name(g_http_runtime.state), g_wifi_ip, relay_mask, button_mask,
+                               ntp_state, static_cast<long long>(ntp_last_sync),
+                               static_cast<long long>(sync_age), ntp_utc_buf,
+                               static_cast<unsigned long>(g_http_runtime.request_count),
+                               static_cast<unsigned long>(g_http_runtime.unauthorized_count));
+  (void)rc;
+#else
+  const int rc = std::snprintf(payload, sizeof(payload),
+                               "{\"state\":\"%s\",\"wifi_ip\":\"%s\",\"relay\":\"%s\",\"buttons\":\"%s\","
+                               "\"requests\":%lu,\"unauth\":%lu}",
+                               http_state_name(g_http_runtime.state), g_wifi_ip, relay_mask, button_mask,
+                               static_cast<unsigned long>(g_http_runtime.request_count),
+                               static_cast<unsigned long>(g_http_runtime.unauthorized_count));
+#endif
+  if (rc <= 0) {
+    const char err[] = "{\"error\":\"response_failed\"}";
+    (void)http_send_json(req, err, 500, kHttpRouteState, start_us, true, HttpUriType::kState);
+    return ESP_OK;
+  }
+  (void)http_send_json(req, payload, 200, kHttpRouteState, start_us, false, HttpUriType::kState);
+  return ESP_OK;
+}
+
+void http_register_handlers(httpd_handle_t server) {
+  if (!server) {
+    http_set_runtime_state(HttpState::kFailed, "handler registration no server");
+    return;
+  }
+
+  bool ok = true;
+  const httpd_uri_t health_uri = {
+      .uri = kHttpRouteHealth,
+      .method = HTTP_GET,
+      .handler = http_health_handler,
+      .user_ctx = nullptr,
+  };
+  const httpd_uri_t info_uri = {
+      .uri = kHttpRouteInfo,
+      .method = HTTP_GET,
+      .handler = http_info_handler,
+      .user_ctx = nullptr,
+  };
+  const httpd_uri_t state_uri = {
+      .uri = kHttpRouteState,
+      .method = HTTP_GET,
+      .handler = http_state_handler,
+      .user_ctx = nullptr,
+  };
+  if (httpd_register_uri_handler(server, &health_uri) != ESP_OK) {
+    ESP_LOGW(kTag, "[HTTP] register uri failed: %s", kHttpRouteHealth);
+    ok = false;
+  }
+  if (httpd_register_uri_handler(server, &info_uri) != ESP_OK) {
+    ESP_LOGW(kTag, "[HTTP] register uri failed: %s", kHttpRouteInfo);
+    ok = false;
+  }
+  if (httpd_register_uri_handler(server, &state_uri) != ESP_OK) {
+    ESP_LOGW(kTag, "[HTTP] register uri failed: %s", kHttpRouteState);
+    ok = false;
+  }
+
+  if (!ok) {
+    const esp_err_t stop_rc = httpd_ssl_stop(server);
+    g_http_server = nullptr;
+    g_http_runtime.started = false;
+    http_set_runtime_state(HttpState::kFailed, "handler registration failed");
+    if (stop_rc != ESP_OK) {
+      g_http_runtime.error_count += 1;
+      ESP_LOGW(kTag, "[HTTP] shutdown after handler registration failure: %s", esp_err_to_name(stop_rc));
+    } else {
+      g_http_runtime.error_count += 1;
+      ESP_LOGI(kTag, "[HTTP] stopped after handler registration failure");
+    }
+  }
+}
+
+void http_start_if_ready() {
+  if (!g_http_config.enabled) {
+    return;
+  }
+  if (g_http_runtime.started) {
+    return;
+  }
+  if (!wifi_has_ip()) {
+    http_set_runtime_state(HttpState::kReady, "waiting for wifi");
+    return;
+  }
+  if (!g_http_config.tls_dev_mode) {
+    ESP_LOGW(kTag, "[HTTP] tls_dev_mode=0 but no alternate provisioning supported in firmware yet");
+  }
+  httpd_ssl_config_t https_config = HTTPD_SSL_CONFIG_DEFAULT();
+  https_config.servercert = reinterpret_cast<const uint8_t*>(kHttpDevCert);
+  https_config.servercert_len = sizeof(kHttpDevCert) - 1;
+  https_config.prvtkey_pem = reinterpret_cast<const uint8_t*>(kHttpDevPrivateKey);
+  https_config.prvtkey_len = sizeof(kHttpDevPrivateKey) - 1;
+  https_config.httpd.server_port = g_http_config.port;
+  https_config.port_secure = g_http_config.port;
+  ESP_LOGI(kTag, "[HTTP] starting with port=%u", g_http_config.port);
+  http_set_runtime_state(HttpState::kInit, "creating server");
+  const esp_err_t err = httpd_ssl_start(&g_http_server, &https_config);
+  if (err != ESP_OK) {
+    g_http_runtime.started = false;
+    http_set_runtime_state(HttpState::kFailed, "startup failed");
+    ESP_LOGW(kTag, "[HTTP] FAILED err=%s", esp_err_to_name(err));
+    return;
+  }
+  http_register_handlers(g_http_server);
+  if (g_http_runtime.state == HttpState::kFailed) {
+    return;
+  }
+  g_http_runtime.started = true;
+  http_set_runtime_state(HttpState::kStarted, "running");
+  ESP_LOGI(kTag, "[HTTP] started");
+  ESP_LOGI(kTag, "[HTTP] route=%s, %s, %s", kHttpRouteHealth, kHttpRouteInfo, kHttpRouteState);
+}
+
+void http_shutdown() {
+  if (!g_http_runtime.started || !g_http_server) {
+    g_http_runtime.started = false;
+    g_http_runtime.state = HttpState::kReady;
+    return;
+  }
+  const esp_err_t err = httpd_ssl_stop(g_http_server);
+  g_http_server = nullptr;
+  g_http_runtime.started = false;
+  if (err != ESP_OK) {
+    g_http_runtime.error_count += 1;
+    ESP_LOGW(kTag, "[HTTP] shutdown failed: %s", esp_err_to_name(err));
+    http_set_runtime_state(HttpState::kFailed, "shutdown failed");
+    return;
+  }
+  http_set_runtime_state(HttpState::kReady, "stopped");
+  ESP_LOGI(kTag, "[HTTP] stopped");
+}
+
+void http_startup() {
+  if (!http_load_config(g_http_config)) {
+    g_http_runtime.state = HttpState::kDisabled;
+  }
+  if (!g_http_config.enabled) {
+    g_http_runtime.state = HttpState::kDisabled;
+    g_http_runtime.started = false;
+    ESP_LOGI(kTag, "[HTTP] enabled=%d", 0);
+    return;
+  }
+  g_http_runtime.state = HttpState::kInit;
+  ESP_LOGI(kTag, "[HTTP] enabled=%d", 1);
+  http_start_if_ready();
+}
+
+void http_handle_wifi_got_ip() {
+  if (!g_http_config.enabled) {
+    return;
+  }
+  if (g_http_runtime.started) {
+    return;
+  }
+  http_start_if_ready();
+}
+
+void http_handle_wifi_lost_ip() {
+  if (!g_http_runtime.started) {
+    return;
+  }
+  http_shutdown();
+}
+
+void cli_cmd_http_status() {
+#if LUCE_HAS_CLI
+  ESP_LOGI(kTag,
+           "CLI command http.status: enabled=%d started=%d state=%s port=%u requests=%lu unauth=%lu errors=%lu",
+           g_http_config.enabled ? 1 : 0, g_http_runtime.started ? 1 : 0,
+           http_state_name(g_http_runtime.state), g_http_config.port,
+           static_cast<unsigned long>(g_http_runtime.request_count),
+           static_cast<unsigned long>(g_http_runtime.unauthorized_count),
+           static_cast<unsigned long>(g_http_runtime.error_count));
+#else
+  ESP_LOGW(kTag, "CLI command http.status: unsupported (LUCE_HAS_HTTP=0)");
+#endif
+}
+#endif  // LUCE_HAS_HTTP
+
 // CLI helpers.
 void cli_cmd_mqtt_status() {
 #if LUCE_HAS_MQTT
@@ -2700,6 +3346,14 @@ const char* ntp_state_name(NtpState state) {
     default:
       return "UNKNOWN";
   }
+}
+
+time_t ntp_last_sync_unix() {
+  return g_ntp_runtime.last_sync_unix;
+}
+
+NtpState ntp_state_snapshot() {
+  return g_ntp_runtime.state;
 }
 
 void ntp_set_last_reason(const char* reason) {
@@ -3867,8 +4521,10 @@ struct CliNetRuntime {
   uint32_t auth_failures = 0;
 };
 
+#if LUCE_HAS_TCP_CLI
 CliNetConfig g_cli_net_config {};
 CliNetRuntime g_cli_net_runtime {};
+#endif
 }
 
 void cli_trim(char* line) {
@@ -3931,6 +4587,7 @@ void cli_print_help() {
   ESP_LOGI(kTag, "  - mdns.status (if stage7 mDNS active)");
   ESP_LOGI(kTag, "  - mqtt.status (if stage9 MQTT active)");
   ESP_LOGI(kTag, "  - mqtt.pubtest (if stage9 MQTT active)");
+  ESP_LOGI(kTag, "  - http.status (if stage10 HTTPS active)");
   ESP_LOGI(kTag, "  - cli_net.status");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
@@ -4118,7 +4775,8 @@ bool cli_net_is_readonly_allowed(const char* cmd) {
          std::strcmp(cmd, "wifi.status") == 0 || std::strcmp(cmd, "time.status") == 0 ||
          std::strcmp(cmd, "mdns.status") == 0 || std::strcmp(cmd, "i2c_scan") == 0 ||
          std::strcmp(cmd, "mcp_read") == 0 || std::strcmp(cmd, "buttons") == 0 ||
-         std::strcmp(cmd, "sensors") == 0 || std::strcmp(cmd, "cli_net.status") == 0;
+         std::strcmp(cmd, "sensors") == 0 || std::strcmp(cmd, "cli_net.status") == 0 ||
+         std::strcmp(cmd, "http.status") == 0;
 }
 
 int execute_cli_command(int argc, char* argv[], bool read_only, const char* source_ip) {
@@ -4224,6 +4882,12 @@ int execute_cli_command(int argc, char* argv[], bool read_only, const char* sour
     cli_cmd_mqtt_pubtest();
   } else if (std::strcmp(argv[0], "cli_net.status") == 0) {
     cli_cmd_cli_net_status();
+  } else if (std::strcmp(argv[0], "http.status") == 0) {
+#if LUCE_HAS_HTTP
+    cli_cmd_http_status();
+#else
+    ESP_LOGW(kTag, "CLI command http.status: unsupported (LUCE_HAS_HTTP=0)");
+#endif
   } else if (std::strcmp(argv[0], "reboot") == 0) {
     ESP_LOGW(kTag, "CLI command reboot: restarting");
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -4648,9 +5312,9 @@ extern "C" void app_main(void) {
   print_app_info();
   print_partition_summary();
 
-  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d MQTT=%d",
+  ESP_LOGI(kTag, "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d",
            LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP,
-           LUCE_HAS_MDNS, LUCE_HAS_MQTT);
+           LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
 
 #if LUCE_HAS_NVS
   update_boot_state_record();
@@ -4673,6 +5337,9 @@ extern "C" void app_main(void) {
 #endif
 #if LUCE_HAS_WIFI
   wifi_startup();
+#if LUCE_HAS_HTTP
+  http_startup();
+#endif
 #if LUCE_HAS_MDNS
   mdns_startup();
 #endif

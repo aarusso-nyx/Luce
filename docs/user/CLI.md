@@ -44,6 +44,14 @@ The serial CLI on UART0 (`LUCE_STAGE=4+`) remains the primary deterministic inte
     - `connect_count`, `publish_count`, `last_topic`, `last_rc`, `last_payload`, `last_latency_ms`
 - `mqtt.pubtest` *(stage9+)*
   - Sends a single telemetry test publish and prints `publish rc=<code>`.
+- `http.status` *(stage10+)*
+  - Prints HTTPS lifecycle state, startup config, and request counters.
+  - Example fields:
+    - `enabled`, `started`, `state`, `port`, `requests`, `unauth`, `errors`.
+- `HTTP API` *(stage10+)*
+  - `curl -k https://<ip>/api/health`
+  - `curl -k -H "Authorization: Bearer <token>" https://<ip>/api/info`
+  - `curl -k -H "Authorization: Bearer <token>" https://<ip>/api/state`
 
 ### Stage9 behavior
 - `mqtt.status` and `mqtt.pubtest` are unavailable unless firmware is built with `LUCE_STAGE=9`.
