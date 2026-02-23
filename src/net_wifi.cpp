@@ -558,8 +558,68 @@ void wifi_scan_for_cli() {
   }
 }
 
+bool wifi_is_enabled() {
+  return g_cfg.enabled;
+}
+
+bool wifi_is_ip_ready() {
+  return g_have_ip;
+}
+
+void wifi_copy_ip_str(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  if (!g_sta_if || !g_have_ip) {
+    std::snprintf(out, out_size, "n/a");
+    return;
+  }
+
+  esp_netif_ip_info_t ip_info {};
+  if (esp_netif_get_ip_info(g_sta_if, &ip_info) != ESP_OK) {
+    std::snprintf(out, out_size, "n/a");
+    return;
+  }
+  std::snprintf(out, out_size, IPSTR, IP2STR(&ip_info.ip));
+}
+
+void wifi_get_rssi(int* rssi_out) {
+  if (!rssi_out) {
+    return;
+  }
+  wifi_ap_record_t ap {};
+  if (!g_have_ip || esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+    *rssi_out = 0;
+    return;
+  }
+  *rssi_out = ap.rssi;
+}
+
 #else
 
-// no Wi-Fi path for this stage
+void wifi_startup() {}
+void wifi_status_for_cli() {}
+void wifi_scan_for_cli() {}
+bool wifi_is_enabled() {
+  return false;
+}
+
+bool wifi_is_ip_ready() {
+  return false;
+}
+
+void wifi_copy_ip_str(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  std::snprintf(out, out_size, "n/a");
+}
+
+void wifi_get_rssi(int* rssi_out) {
+  if (!rssi_out) {
+    return;
+  }
+  *rssi_out = 0;
+}
 
 #endif  // LUCE_HAS_WIFI

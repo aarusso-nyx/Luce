@@ -17,8 +17,12 @@
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
 #include "luce/cli.h"
+#include "luce/cli_tcp.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
+#include "luce/mdns.h"
+#include "luce/mqtt.h"
+#include "luce/http_server.h"
 
 #if LUCE_HAS_I2C
 #include "luce/stage2_io.h"
@@ -78,21 +82,45 @@ void luce_runtime_main(void) {
   update_boot_state_record();
 #endif
 
-#if LUCE_HAS_I2C
   if (xTaskCreate(blink_alive_task, "blink", kBlinkTaskStackWords, nullptr, 1, nullptr) != pdPASS) {
     ESP_LOGW(kTag, "Failed to create LED blink task");
   }
+
+#if LUCE_HAS_I2C
   if (xTaskCreate(stage2_task, "stage2", 8192, nullptr, 1, nullptr) != pdPASS) {
     ESP_LOGW(kTag, "Failed to create Stage2 diagnostics task");
   }
+#endif
+
+#if LUCE_HAS_CLI
   cli_startup();
+#endif
+
+#if LUCE_HAS_WIFI
   wifi_startup();
+#endif
+
+#if LUCE_HAS_NTP
   ntp_startup();
+#endif
+
+#if LUCE_HAS_MDNS
+  mdns_startup();
+#endif
+
+#if LUCE_HAS_TCP_CLI
+  cli_net_startup();
+#endif
+
+#if LUCE_HAS_MQTT
+  mqtt_startup();
+#endif
+
+#if LUCE_HAS_HTTP
+  http_startup();
+#endif
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
-#else
-  blink_alive();
-#endif
 }

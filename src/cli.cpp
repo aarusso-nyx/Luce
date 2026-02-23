@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include "luce_build.h"
 
 #if LUCE_HAS_CLI
 #include "driver/uart.h"
@@ -20,21 +21,28 @@
 #include "luce/stage2_io.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
-#include "luce_build.h"
-
-namespace {
-
+#if LUCE_HAS_MDNS
+#include "luce/mdns.h"
+#endif
+#if LUCE_HAS_TCP_CLI
+#include "luce/cli_tcp.h"
+#endif
+#if LUCE_HAS_MQTT
+#include "luce/mqtt.h"
+#endif
+#if LUCE_HAS_HTTP
+#include "luce/http_server.h"
+#endif
 constexpr const char* kTag = "luce_boot";
 constexpr std::size_t kCliTaskStackWords = 6144;
 constexpr std::size_t kCliLineBuffer = 128;
 
 std::size_t tokenize_cli_line(char* line, char* argv[], std::size_t max_args) {
   std::size_t argc = 0;
-  char* next_token = nullptr;
-  char* token = std::strtok_r(line, " \t", &next_token);
+  char* token = std::strtok(line, " \t");
   while (token && argc < max_args) {
     argv[argc++] = token;
-    token = std::strtok_r(nullptr, " \t", &next_token);
+    token = std::strtok(nullptr, " \t");
   }
   return argc;
 }
@@ -82,6 +90,19 @@ void cli_print_help() {
   ESP_LOGI(kTag, "  - wifi.status");
   ESP_LOGI(kTag, "  - wifi.scan");
   ESP_LOGI(kTag, "  - time.status");
+#if LUCE_HAS_MDNS
+  ESP_LOGI(kTag, "  - mdns.status");
+#endif
+#if LUCE_HAS_TCP_CLI
+  ESP_LOGI(kTag, "  - cli_net.status");
+#endif
+#if LUCE_HAS_MQTT
+  ESP_LOGI(kTag, "  - mqtt.status");
+  ESP_LOGI(kTag, "  - mqtt.pubtest");
+#endif
+#if LUCE_HAS_HTTP
+  ESP_LOGI(kTag, "  - http.status");
+#endif
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
   ESP_LOGI(kTag, "  - relay_mask <hex>");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
@@ -89,6 +110,14 @@ void cli_print_help() {
   ESP_LOGI(kTag, "  - i2c_scan");
   ESP_LOGI(kTag, "  - lcd_print <text>");
   ESP_LOGI(kTag, "  - reboot");
+}
+
+bool cli_command_is_mutating(const char* command) {
+  if (!command || !*command) {
+    return false;
+  }
+  return std::strcmp(command, "relay_set") == 0 || std::strcmp(command, "relay_mask") == 0 ||
+         std::strcmp(command, "reboot") == 0 || std::strcmp(command, "mqtt.pubtest") == 0;
 }
 
 void cli_cmd_status() {
@@ -195,7 +224,7 @@ void cli_cmd_lcd_print(const char* text) {
 #endif
 }
 
-int execute_cli_command(int argc, char* argv[]) {
+int cli_execute_command(int argc, char* argv[]) {
   if (argc <= 0 || !argv || !argv[0]) {
     return 1;
   }
@@ -262,7 +291,7 @@ int execute_cli_command(int argc, char* argv[]) {
       rc = 1;
     } else {
       char text[kCliLineBuffer] = {0};
-      std::snprintf(text, sizeof(text), "%s", argv[1]);
+      snprintf(text, sizeof(text), "%s", argv[1]);
       for (int i = 2; i < argc; ++i) {
         const std::size_t used = std::strlen(text);
         const std::size_t next_len = std::strlen(argv[i]);
@@ -286,12 +315,47 @@ int execute_cli_command(int argc, char* argv[]) {
     wifi_scan_for_cli();
   } else if (std::strcmp(argv[0], "time.status") == 0) {
     ntp_status_for_cli();
+#if LUCE_HAS_MDNS
+  } else if (std::strcmp(argv[0], "mdns.status") == 0) {
+    mdns_status_for_cli();
+#endif
+#if LUCE_HAS_TCP_CLI
+  } else if (std::strcmp(argv[0], "cli_net.status") == 0) {
+    cli_net_status_for_cli();
+#endif
+#if LUCE_HAS_MQTT
+  } else if (std::strcmp(argv[0], "mqtt.status") == 0) {
+    mqtt_status_for_cli();
+  } else if (std::strcmp(argv[0], "mqtt.pubtest") == 0) {
+    mqtt_pubtest_for_cli();
+#endif
+#if LUCE_HAS_HTTP
+  } else if (std::strcmp(argv[0], "http.status") == 0) {
+    http_status_for_cli();
+#endif
   } else {
     ESP_LOGW(kTag, "CLI unknown command '%s'", argv[0]);
     cli_print_help();
     rc = 1;
   }
   return rc;
+}
+
+int cli_execute_command_readonly(int argc, char* argv[], bool* denied_mutation) {
+  if (denied_mutation) {
+    *denied_mutation = false;
+  }
+  if (argc <= 0 || !argv || !argv[0]) {
+    return 1;
+  }
+  if (cli_command_is_mutating(argv[0])) {
+    if (denied_mutation) {
+      *denied_mutation = true;
+    }
+    ESP_LOGW(kTag, "CLI readonly command denied: '%s'", argv[0]);
+    return 2;
+  }
+  return cli_execute_command(argc, argv);
 }
 
 void cli_task(void*) {
@@ -344,7 +408,7 @@ void cli_task(void*) {
         continue;
       }
       log_cli_arguments(argv[0], static_cast<int>(argc), argv);
-      execute_cli_command(static_cast<int>(argc), argv);
+      cli_execute_command(static_cast<int>(argc), argv);
       std::memset(line_buffer, 0, sizeof(line_buffer));
       continue;
     }
@@ -364,8 +428,6 @@ void cli_task(void*) {
     }
   }
 }
-
-}  // namespace
 
 void cli_startup() {
   if (xTaskCreate(cli_task, "cli", kCliTaskStackWords, nullptr, 2, nullptr) != pdPASS) {
