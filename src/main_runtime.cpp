@@ -17,6 +17,8 @@
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
 #include "luce/cli.h"
+#include "luce/net_wifi.h"
+#include "luce/ntp.h"
 
 #if LUCE_HAS_I2C
 #include "luce/stage2_io.h"
@@ -84,6 +86,8 @@ void luce_runtime_main(void) {
     ESP_LOGW(kTag, "Failed to create Stage2 diagnostics task");
   }
   cli_startup();
+  wifi_startup();
+  ntp_startup();
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));

@@ -1,42 +1,19 @@
-# Stage5 expected output (sample)
+Expected Stage5 boot snapshot (normal disabled-by-default path):
 
-Upload and monitor with:
+1) [WIFI][NVS] namespace 'wifi' not found; defaults active
+2) [WIFI][NVS] key=enabled missing; using default=0
+3) [WIFI][NVS] config summary ssid='' pass=******** hostname='luce-esp32' enabled=0 max_retries=6 backoff_min_ms=500 backoff_max_ms=8000
+4) [WIFI][LIFECYCLE] state=DISABLED reason=cfg_disabled
 
-- `source ~/.zshrc && pio run -e luce_stage5 -t upload --upload-port /dev/cu.usbserial-0001`
-- `source ~/.zshrc && pio device monitor -p /dev/cu.usbserial-40110 --filter time`
+If credentials are provisioned and enabled:
+1) [WIFI][LIFECYCLE] state=INIT reason=stack_initialized
+2) [WIFI][LIFECYCLE] state=CONNECTING reason=sta_start
+3) [WIFI][STATUS] state=CONNECTING ...
+4) [WIFI][LIFECYCLE] state=GOT_IP reason=got_ip
 
-Expected key lines after reset:
+Additional expected lines:
+- [WIFI][BACKOFF] delay_ms=...
+- [WIFI][SCAN] <ap records>
+- [NTP] time.status ... (Stage6, if enabled and synced)
 
-- `LUCE STAGE5`
-- `Build timestamp: <DATE> <TIME>`
-- `Project version: <VERSION>`
-- `Git SHA: <SHA>`
-- `Reset reason: <REASON> (<CODE>)`
-- `Heap free: <N> bytes`
-- `Heap min-free: <N> bytes`
-- `Task watermark (current): <N> words`
-- `NVS state: boot_count=<N> last_reset_reason=<N>` (from Stage1 path, inherited)
-- `Feature flags: NVS=1 I2C=1 LCD=1 CLI=1 WIFI=1`
-- `[WIFI][NVS] key=...` lines for `ssid`, `pass`, `hostname`, `enabled`, `max_retries`, `backoff_min_ms`, `backoff_max_ms`
-- `[WIFI][NVS] config summary ssid='...' pass=******** hostname='...' enabled=<0|1> max_retries=<N> backoff_min_ms=<N> backoff_max_ms=<N>`
-- `[WIFI] stack initialized`
-- `[WIFI][LIFECYCLE] state=INIT|CONNECTING ...`
-- If disabled-by-default config:
-  - `[WIFI][LIFECYCLE] state=DISABLED`
-  - periodic `[WIFI][STATUS] ...`
-- If enabled and SSID present:
-  - `[WIFI][LIFECYCLE] state=CONNECTING`
-  - `[WIFI][LIFECYCLE] state=GOT_IP` on success, otherwise `[WIFI][BACKOFF] next_ms=...`
-- `CLI listening on UART0 at 115200. Type 'help' for commands.`
-- `CLI cmd='wifi.status' ...` and/or `CLI cmd='wifi.scan' ...` when tested
-
-If startup is disabled in NVS (`wifi/enabled=0`):
-- the firmware stays in `DISABLED` and should not attempt `wifi_connect` until enabled in NVS.
-
-If no SSID is configured:
-- `[WIFI][ERROR] cannot connect: SSID is empty`
-- `state=BACKOFF` and bounded retry delay logs.
-
-What to paste back:
-- first ~80 lines after boot
-- plus one `[WIFI][SCAN]` / `[WIFI][STATUS]` block after command interaction
+Capture these first 80–120 lines after reset for evidence comparisons.

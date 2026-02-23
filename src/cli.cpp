@@ -18,6 +18,8 @@
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
 #include "luce/stage2_io.h"
+#include "luce/net_wifi.h"
+#include "luce/ntp.h"
 #include "luce_build.h"
 
 namespace {
@@ -77,6 +79,9 @@ bool parse_u32_with_base(const char* text, int base, std::uint32_t* value, char*
 
 void cli_print_help() {
   ESP_LOGI(kTag, "CLI commands: help, status, nvs_dump, i2c_scan, mcp_read, relay_set, relay_mask, buttons, lcd_print, reboot");
+  ESP_LOGI(kTag, "  - wifi.status");
+  ESP_LOGI(kTag, "  - wifi.scan");
+  ESP_LOGI(kTag, "  - time.status");
   ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
   ESP_LOGI(kTag, "  - relay_mask <hex>");
   ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
@@ -275,6 +280,12 @@ int execute_cli_command(int argc, char* argv[]) {
     ESP_LOGW(kTag, "CLI command reboot: restarting");
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();
+  } else if (std::strcmp(argv[0], "wifi.status") == 0) {
+    wifi_status_for_cli();
+  } else if (std::strcmp(argv[0], "wifi.scan") == 0) {
+    wifi_scan_for_cli();
+  } else if (std::strcmp(argv[0], "time.status") == 0) {
+    ntp_status_for_cli();
   } else {
     ESP_LOGW(kTag, "CLI unknown command '%s'", argv[0]);
     cli_print_help();
