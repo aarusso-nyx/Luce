@@ -1,316 +1,147 @@
-# Main.cpp Split Planner (Luce)
+# Main.cpp Modularization Plan (Current Monolith)
 
-Date: 2026-02-23
-Status: Planned
-Owner: Luce firmware team
+## Scope
+This is a mechanical split of the existing `src/main.cpp` only. No features are added, removed, or behavior-altered. Log formats, command names, state semantics, and pin mappings are preserved.
 
-## Objective
+## Source scan used for this plan
+Current canonical file: `src/main.cpp`  
+Build environment snapshot: `platformio.ini` currently defines `luce_stage0` through `luce_stage10` plus `luce_test_native`.
 
-Split `src/main.cpp` into low-churn modules while preserving:
+## Current monolith map (line ranges are approximate)
+1. Build/layout declarations: lines `1-345`. Includes LUCE stage macros, task handles, shared structs, enums, and forward declarations for feature blocks.
+2. Diagnostics block: lines `358-553`. Includes startup/banner, chip/app/partition/heap status routines.
+3. Wi‑Fi block: lines `589-1229`. Includes `WifiState`, `WifiConfig`, config loader, event queue, task lifecycle, config/state logging, and startup hook.
+4. mDNS block: lines `1258-1588` under `LUCE_HAS_MDNS`.
+5. MQTT block: lines `1637-2198` active implementation under `LUCE_HAS_MQTT`; duplicate legacy block exists around `2953-3304` in `#if 0`.
+6. NTP block: lines `3319-3607` under `LUCE_HAS_NTP`.
+7. HTTP block: lines `2267-2782` under `LUCE_HAS_HTTP`.
+8. NVS boot/state block: lines `3645-3810` under `LUCE_HAS_NVS`.
+9. I2C + MCP + LCD + Stage2 diagnostics: lines `3882-4315`.
+10. CLI parser + commands + startup: lines `4496-5270` under `LUCE_HAS_CLI` and `LUCE_HAS_TCP_CLI` for subset.
+11. Task-level misc + entrypoint: lines `5271-5350`; includes `diagnostics_task`, `blink_alive_task`, `blink_alive`, `app_main`.
 
-- compile-time stage gating via `LUCE_STAGE`
-- direct task orchestration in `app_main` / top-level startup helpers
-- runtime behavior and CLI/network CLI semantics
-- no `service_manager`/`supervisor`/`reducer` style architecture
+## Required extraction regions from existing monolith
+1. Core diagnostics/startup functions: `log_startup_banner`, `print_chip_info`, `print_app_info`, `print_partition_summary`, `print_heap_stats`, `log_status_health_lines`, `log_runtime_status_line`, `log_stage4_watermarks`, `log_heap_integrity`, `reset_reason_to_string`.
+2. NVS functions: `dump_nvs_value`, `dump_nvs_entries`, `update_boot_state_record`, `nvs_type_name`.
+3. LCD transport and rendering: `Pcf8574Hd44780` class + helpers `write_pcf`, `pulse_en`, `write_nibble`, `send_byte`, `send_command`, `set_cursor`, `write_line`, `write_text_line`, `write_status_lines`, `write_text`.
+4. I2C + MCP helpers: `init_i2c`, `run_i2c_scan_flow`, `scan_i2c_bus`, `i2c_probe_device`, `mcp_write_reg`, `mcp_read_reg`, `init_mcp23017`, `set_relay_mask`, `set_relay_mask_safe`, `read_button_inputs`, `relay_mask_for_channel`, `relay_mask_for_channel_state`, `configure_int_pin`, `run_stage2_diagnostics`.
+5. CLI core/parsing: `cli_trim`, `parse_u32_with_base`, `tokenize_cli_line`, `log_cli_arguments`, command handlers `cli_cmd_*`, `execute_cli_command`, `cli_task`, `cli_startup`.
+6. Wi‑Fi/NTP/MDNS/MQTT/HTTP/TCP CLI internals already present and guarded by feature flags must be preserved as mechanical transfers.
 
-This plan is mechanical only (no behavior changes, no runtime logic edits in this step).
+## Important observation
+1. `main.cpp` already carries compile flags not currently all staged in runtime order (`LUCE_HAS_MDNS`, `LUCE_HAS_TCP_CLI`, `LUCE_HAS_MQTT`, `LUCE_HAS_HTTP`).
+2. The current file contains duplicated `MQTT` code: one active block and one disabled duplicate under `#if 0`; split should include only active implementations in migrated modules.
+3. No new architectural spine is introduced. Feature init remains explicit in `app_main` orchestration and subsystem modules.
 
-## Constraints from AGENTS and project policy
+## Target module tree (must remain compatible with `CMakeLists.txt` glob of `src`)
+1. `src/app_main.cpp` for orchestration only.
+2. `src/boot_diagnostics.cpp` with matching `include/luce/boot_diagnostics.h`.
+3. `src/nvs_boot.cpp` with matching `include/luce/nvs_boot.h`.
+4. `src/i2c_bus.cpp` with matching `include/luce/i2c_bus.h`.
+5. `src/mcp23017.cpp` with matching `include/luce/mcp23017.h`.
+6. `src/lcd_pcf8574.cpp` with matching `include/luce/lcd_pcf8574.h`.
+7. `src/cli_parser.cpp` with `include/luce/cli_parser.h`.
+8. `src/cli_commands.cpp` with `include/luce/cli_commands.h`.
+9. `src/cli_uart.cpp` with `include/luce/cli_uart.h`.
+10. `src/wifi_stage.cpp` with `include/luce/wifi_stage.h`.
+11. `src/ntp_stage.cpp` with `include/luce/ntp_stage.h`.
+12. `src/mdns_stage.cpp` with `include/luce/mdns_stage.h` if MDNS remains supported.
+13. `src/mqtt_stage.cpp` with `include/luce/mqtt_stage.h` if MQTT remains supported.
+14. `src/http_stage.cpp` with `include/luce/http_stage.h` if HTTP remains supported.
+15. `src/tcp_cli_stage.cpp` with `include/luce/tcp_cli_stage.h` if TCP CLI remains supported.
+16. Keep `include/luce/build.h` as canonical reference for derived stage flags if desired, or continue consuming existing `include/luce_build.h`.
 
-- Keep code under `src/` and `include/`.
-- Keep docs under `docs/work/plan/`.
-- Keep reference material under `docs/work/inv/`.
-- Keep evidence under `docs/work/diag/`.
-- `platformio.ini` remains the compile-time source of env/stage gating.
-- Every split slice must be followed by at least:
-  - `pio run -e luce_stage0..luce_stage10` matrix
-  - optional unit evidence (`luce_test_native`) if test-related files changed
-- No change in external behavior for this plan pass.
+## Dependency and header rules
+1. Keep public include files under `include/luce/*` minimal and free of heavy ESP-IDF includes unless unavoidable.
+2. ESP-IDF headers stay in implementation files (`src/*.cpp`) where they are required by feature code.
+3. Global cross-module state (relay mask, button mask, wifi state, ntp state) is owned by subsystem modules and accessed via dedicated accessors.
+4. Compile-time gating is enforced at implementation boundary with stub branches:
+   1. Active branch under `#if LUCE_HAS_*`.
+   2. Disabled branch returns neutral defaults and preserves call sites.
 
-## Current monolith responsibility map from `src/main.cpp` (already present)
+## Slice plan (mechanical, test-gated)
+Slice S0: split app entry only.
+1. Move `extern "C" void app_main(void)` to `src/app_main.cpp` and reduce it to startup orchestration.
+2. Replace in-file orchestration details with module start calls.
+3. Keep order deterministic and stage-respecting.
+4. Validate with `pio run -e luce_stage0` and `pio run -e luce_stage1`.
 
-- Boot diagnostics:
-  - startup banner, chip/app/heap logs, reset reason formatting, partition report
-- Stage/feature macros and compile-time constants
-  - `LUCE_HAS_*` dispatch, task stack constants, debug/tuning knobs
-- NVS config and dump helpers
-- I2C/MCP/LCD/I/O core:
-  - bus init/probe/scan, MCP init/read/write, relay/button mask update
-  - LCD init, optional status rendering, ITB-only line
-- CLI parser/dispatch:
-  - tokenization, arg parsing helpers, command mapping, serial command task
-- Networking surfaces:
-  - Wi-Fi state machine/events
-  - SNTP sync loop and status API
-  - mDNS advertising lifecycle
-  - MQTT lifecycle/publish/test flows
-  - HTTPS server and protected handlers
-  - TCP CLI transport + auth + line protocol session
-- `main.cpp` orchestrator:
-  - blink + stage2 diagnostics + stage-gated startup + infinite wait loop
+Slice S1: extract diagnostics/build loggers.
+1. Move startup banner and health helpers to `src/boot_diagnostics.cpp`.
+2. Preserve all log lines/keywords used by existing evidence workflows.
+3. Ensure all functions remain callable before feature startup gates.
+4. Validation commands:
+   1. `pio run -e luce_stage0`
+   2. `pio run -e luce_stage1`
+   3. `pio run -e luce_stage2`
 
-## Target module layout (keep `src/*` glob build behavior)
+Slice S2: extract NVS boot layer.
+1. Move NVS dump and boot counter updates to `src/nvs_boot.cpp`.
+2. Keep shared key readers (`wifi_read_u32_key`, etc.) accessible to Wi‑Fi/NTP loaders.
+3. Add disabled stubs in `nvs_boot` for `LUCE_HAS_NVS==0`.
+4. Validation commands:
+   1. `pio run -e luce_stage0`
+   2. `pio run -e luce_stage1`
 
-### Public headers (`include/luce/`)
+Slice S3: extract I2C/MCP/LCD and Stage2 diagnostics.
+1. Move I2C scan and MCP register operations to dedicated modules.
+2. Move LCD class and status line rendering to dedicated LCD module.
+3. Move `run_stage2_diagnostics` as-is with loop logic unchanged.
+4. Add I2C-disabled and LCD-disabled no-op branches.
+5. Validation commands:
+   1. `pio run -e luce_stage2`
+   2. `pio run -e luce_stage3`
+   3. `pio run -e luce_stage4`
 
-- `include/luce/build_features.h`
-  - LUCE feature aliases and compile-stage helper constants (thin, no ESP IDs)
-- `include/luce/diagnostics.h`
-  - startup/status formatting contracts (`format_mcp_mask_line`, reset/feature status helpers)
-- `include/luce/state_types.h`
-  - POD structs and enums that cross modules (no ESP task objects)
-- `include/luce/nvs_keys.h`
-  - canonical namespace/key names and small readers/writers helpers (decl)
-- `include/luce/drivers/i2c_types.h`
-  - driver-facing MCP/LCD constants + simple utility signatures
-- `include/luce/cli/cli_parser.h`
-  - parse helpers and dispatcher contract
-- `include/luce/net/*`
-  - `wifi.h`, `ntp.h`, `mdns.h`, `mqtt.h`, `http.h`, `cli_net.h`
+Slice S4: extract CLI parser and command routing.
+1. Move CLI helper functions, parsing, and execution dispatch to `src/cli_parser.cpp`.
+2. Move command handler functions to `src/cli_commands.cpp`.
+3. Keep UART startup and task wiring in `src/cli_uart.cpp`.
+4. Add stubs for `LUCE_HAS_CLI==0` and preserve command strings and behavior.
+5. Validation commands:
+   1. `pio run -e luce_stage4`
+   2. `pio run -e luce_stage5`
 
-### Implementations (`src/luce/`)
+Slice S5: extract gated networking subsystems.
+1. Move `wifi_stage.cpp` (`wifi_task`, startup, event callbacks, status helpers).
+2. Move `ntp_stage.cpp` (state machine + status formatting) and keep `cli` dependencies intact.
+3. Move existing MDNS/MQTT/HTTP/TCP CLI blocks to their own modules with disabled stubs.
+4. Keep direct `LUCE_HAS_*` gating and stage semantics untouched.
+5. Validation commands:
+   1. `pio run -e luce_stage5`
+   2. `pio run -e luce_stage6`
+   3. `pio run -e luce_stage7`
+   4. `pio run -e luce_stage8`
+   5. `pio run -e luce_stage9`
+   6. `pio run -e luce_stage10`
 
-- `src/luce/diagnostics.cpp`
-  - startup banner, chip/app/heap logs, status formatting implementation
-- `src/luce/stage_gating.cpp`
-  - stage constants, compile-time capability logs, safe stubs for disabled features
-- `src/luce/nvs_config.cpp`
-  - unified namespace/key read helpers and schema defaults
-- `src/luce/drivers/i2c_bus.cpp`
-  - i2c init + scan + IT interrupt config
-- `src/luce/drivers/mcp23017.cpp`
-  - MCP read/write/state control + constants
-- `src/luce/drivers/lcd2004.cpp`
-  - thin wrapper around existing `Pcf8574Hd44780` flow
-- `src/luce/cli/cli_parser.cpp`
-  - `tokenize_cli_line`, `parse_u32_with_base`, command dispatch table + helpers
-- `src/luce/cli/cli_serial.cpp`
-  - UART task + serial command integration points
-- `src/luce/net/wifi.cpp`
-  - Wi-Fi config/state machine/events/task
-- `src/luce/net/ntp.cpp`
-  - SNTP runtime task + CLI status contract
-- `src/luce/net/mdns.cpp`
-  - mDNS config + TXT/state helpers + startup/shutdown
-- `src/luce/net/mqtt.cpp`
-  - MQTT task + config + status/log/publish helpers
-- `src/luce/net/http.cpp`
-  - HTTPS startup/route handlers (`/api/health`, `/api/info`, `/api/state`)
-- `src/luce/net/cli_tcp.cpp`
-  - TCP session handler + auth/allowlist enforcement
-- `src/luce/main_runtime.cpp` (optional, small)
-  - common helper functions currently only in `main.cpp` that are not strictly modules above
+Slice S6: finalize orchestration and full build matrix.
+1. Wire orchestration sequence in `app_main`: diagnostics, NVS, I2C and optional diagnostics task, CLI, networking features.
+2. Remove duplicated declarations from old monolith and include headers for new modules.
+3. Keep build/test command list stable and complete.
+4. Validation commands:
+   1. `pio run -e luce_stage0`
+   2. `pio run -e luce_stage1`
+   3. `pio run -e luce_stage2`
+   4. `pio run -e luce_stage3`
+   5. `pio run -e luce_stage4`
+   6. `pio run -e luce_stage5`
+   7. `pio run -e luce_stage6`
+   8. `pio run -e luce_stage7`
+   9. `pio run -e luce_stage8`
+   10. `pio run -e luce_stage9`
+   11. `pio run -e luce_stage10`
+   12. `pio run -e luce_test_native` (if required by local workflow)
+5. Unit tests: if test harness exists, run `pio test -e luce_test_native`.
 
-### Orchestrator (`src/main.cpp`)
+## Slice acceptance gates
+1. PASS per slice only if all required `pio run -e <env>` commands succeed.
+2. PASS only if compile-time gates preserve behavior for all `LUCE_HAS_*` branches without cross-feature leakage.
+3. PASS only if CLI command paths still resolve and produce previous signature text.
+4. PASS only if no subsystem call graph inversion is introduced.
+5. UNAVAILABLE if tests are not runnable from current environment.
 
-- Keep only:
-  - includes
-  - compile-time flag setup
-  - global task handles
-  - startup procedure (`app_main`) and direct module startup calls in stage order
-  - minimal stage entrypoint bridging into modules
-
-## Dependency rules to avoid cycles
-
-- `main.cpp` includes only public headers and never includes module `.cpp`.
-- No module should include another module’s `.cpp` or private header internals.
-- ESP-IDF/C headers stay in:
-  - `main.cpp`
-  - `src/luce/*` implementations
-  - and must be kept out of public headers unless limited to forward declarations.
-- `include/luce/state_types.h` owns cross-module structs/enums only.
-- Network modules may depend on `nvs_config` + `diagnostics`, but not on each other except via
-  lifecycle hooks needed in `main.cpp`.
-- `cli_*` dispatch only calls command handler APIs from feature modules; no networking handler should
-  directly mutate another module’s internals without public contracts.
-- Compile-time exclusion is maintained as:
-  - build flags in `luce_build.h` plus optional runtime no-op stubs (for unsupported stage values).
-- Use narrow ABI-style headers and keep heavy include chains local to each `.cpp`.
-
-## Planned slice plan (commit-friendly)
-
-Each slice must be validated with `pio run -e luce_stage0..luce_stage10` and, where parser/NVS
-helpers are touched, `pio test -e luce_test_native`.
-
-### S0 — Inventory and extraction map (docs-only, no file moves) ✅ DONE
-- Move:
-  - Created/maintained this plan as the authoritative slice map.
-- No behavior changes.
-- Status: completed for this executor run.
-- Files touched:
-  - `docs/work/plan/090_main_split_plan.md`
-- Validate:
-  - full stage build matrix captured under:
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage0.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage1.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage2.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage3.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage4.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage5.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage6.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage7.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage8.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage9.txt`
-    - `docs/work/diag/evidence/20260222_210632/20_build/luce_stage10.txt`
-  - native unit test command captured under:
-  - `docs/work/diag/evidence/20260222_210632/30_unit/native_test.txt`
-- Evidence:
-  - `docs/work/diag/evidence/20260222_210632/split/s0_plan_capture.md` (plan manifest + file map)
-  - `docs/work/diag/evidence/20260222_210632/00_index.md`
-  - `docs/work/diag/evidence/20260222_210632/90_summary.md`
-
-### S1 — Publish module interfaces
-- Move:
-  - create `include/luce/build_features.h`, `state_types.h`, `nvs_keys.h`.
-  - replace duplicated `constexpr` structs/enums/namespace constants with declarations.
-- No behavior changes.
-- Validate:
-  - `pio run -e luce_stage0`
-  - `pio run -e luce_stage10`
-- Evidence:
-  - `docs/work/diag/evidence/<ts>/build/luce_stage0.txt`
-  - `docs/work/diag/evidence/<ts>/build/luce_stage10.txt`
-
-### S2 — Diagnostics extraction
-- Move:
-  - banner/reset/format helpers from `main.cpp` into `src/luce/diagnostics.cpp`.
-- No behavior changes.
-- Validate:
-  - full matrix `pio run -e luce_stage0..luce_stage10`.
-- Evidence:
-  - build artifacts and `docs/work/diag/evidence/<ts>/boot/stage10_boot_capture.txt` equivalent.
-
-### S3 — NVS + config helpers extraction
-- Move:
-  - NVS open/read/readers/log helpers into `src/luce/nvs_config.cpp`.
-  - keep stage-specific key names in `nvs_keys.h`.
-- No behavior changes.
-- Validate:
-  - full matrix.
-- Evidence:
-  - build matrix success
-  - `docs/work/diag/evidence/<ts>/boot/luce_stage1_boot.txt`
-
-### S4 — Driver extraction (I2C/MCP/LCD)
-- Move:
-  - i2c bus init/probe/scan and MCP/LCD constants/functions into
-    `src/luce/drivers/*`.
-- Add:
-  - `src/luce/drivers/mcp23017.cpp`, `src/luce/drivers/i2c_bus.cpp`, `src/luce/drivers/lcd2004.cpp`.
-- No behavior changes.
-- Validate:
-  - stages 2/3/4 startup command smoke:
-    - `i2c_scan`, `mcp_read`, `buttons`, `status`, `help`.
-- Evidence:
-  - build matrix
-  - `docs/work/diag/evidence/<ts>/30_unit/unit_native.txt`
-  - `docs/work/diag/evidence/<ts>/60_e2e/stage2_i2c_cli.txt` (if hardware available)
-
-### S5 — CLI parser/dispatch extraction
-- Move:
-  - `parse_u32_with_base`, `tokenize_cli_line`, command table/dispatcher into
-    `src/luce/cli/cli_parser.cpp` + `include/luce/cli/cli_parser.h`.
-- Preserve command strings and argument semantics exactly.
-- Validate:
-  - full matrix
-  - host tests (if touched parser unit functions): `pio test -e luce_test_native`
-- Evidence:
-  - build matrix
-  - unit outputs under `docs/work/diag/evidence/<ts>/unit/cli_parser_stage_task0.md`
-
-### S6 — Serial CLI task extraction
-- Move:
-  - UART setup/read loop and serial dispatch loop into `src/luce/cli/cli_serial.cpp`.
-- Keep command handlers in module contracts; `main.cpp` owns startup timing.
-- Validate:
-  - stage4 `help/status` and relay-safe command checks unchanged.
-- Evidence:
-  - build matrix + boot/e2e command transcript.
-
-### S7 — Network module extraction (Wi-Fi + NTP + mDNS + MQTT + HTTP + TCP CLI)
-- Move each stack into its own module and header:
-  - `src/luce/net/wifi.cpp`, `ntp.cpp`, `mdns.cpp`, `mqtt.cpp`, `http.cpp`, `cli_tcp.cpp`.
-- Keep event-handler wiring localized per module.
-- Add only stage-gated startup calls in `main.cpp`.
-- Validate:
-  - stage5..10 matrix
-  - `docs/work/diag/evidence/<ts>/60_e2e/` for `wifi.status`, `time.status`,
-    `mdns.status`, `mqtt.status`, `http.status`, TCP CLI auth + readonly commands.
-- Evidence:
-  - full matrix for stages 0..10
-  - minimum network e2e artifacts per active stage.
-
-### S8 — Final orchestrator simplification (`main.cpp`)
-- Move orchestration to direct startup sequence:
-  - feature initialization order + task creation only.
-- Remove all in-file subsystem logic except:
-  - task handle declarations
-  - stage-gated startup path selection
-  - watchdog-safe perpetual wait path.
-- Validate:
-  - full matrix
-  - at least stage0 boot evidence + stage10 smoke evidence.
-- Evidence:
-  - `docs/work/diag/evidence/<ts>/20_build/build_luce_stage10.txt`
-  - `docs/work/diag/evidence/<ts>/50_boot/boot_stage10.txt`
-
-## Per-slice required verification commands
-
-- Matrix build:
-  - `python3 -m platformio run -e luce_stage0`
-  - `python3 -m platformio run -e luce_stage1`
-  - `python3 -m platformio run -e luce_stage2`
-  - `python3 -m platformio run -e luce_stage3`
-  - `python3 -m platformio run -e luce_stage4`
-  - `python3 -m platformio run -e luce_stage5`
-  - `python3 -m platformio run -e luce_stage6`
-  - `python3 -m platformio run -e luce_stage7`
-  - `python3 -m platformio run -e luce_stage8`
-  - `python3 -m platformio run -e luce_stage9`
-  - `python3 -m platformio run -e luce_stage10`
-- Host tests (if parser/NVS/diagnostics modules modified):
-  - `python3 -m platformio test -e luce_test_native`
-- Boot/E2E smoke checks for gated milestones:
-  - `pio run -t upload -e luce_stage0 && capture boot`
-  - `pio run -t upload -e luce_stage10 && capture boot/status/help`
-
-## Evidence plan (expected)
-
-- Every major slice:
-  - `docs/work/diag/evidence/<timestamp>/00_index.md`
-  - `docs/work/diag/evidence/<timestamp>/90_summary.md`
-- Slice-by-slice evidence path convention:
-  - `docs/work/diag/evidence/<timestamp>/split/s0_<name>.md`
-  - include command set, build command list, and PASS/FAIL plus signatures.
-
-## Risk notes
-
-- Heavy ESP headers in public headers:
-  - Prevent by using opaque types / forward declarations and only moving types required by module APIs.
-- Compile-time exclusion drift:
-  - Never move `#if LUCE_HAS_*` behavior into runtime `if` gates only.
-  - Keep stage compile-time stubs for disabled features.
-- Hidden coupling through globals:
-  - Replace broad `extern` usage with explicit accessors in headers where practical.
-  - Keep ownership of critical state close to domain module.
-- Linker/ODR collisions:
-- No duplicate TU-local symbols after extraction.
-  - Keep all helper implementations single-definition in module translation units.
-- Command path changes:
-  - Keep command parser output and logging verbatim until behavior lock-in slice.
-- CMake globs:
-  - current `src/*.*` glob should continue to compile new subfolder files without edits.
-
-## Minimal-risk sequence order (recommendation)
-
-1. S1 -> S2 -> S3 (low risk, no ESP task behavior change)
-2. S5 -> S6 (parser + serial command determinism)
-3. S4 -> S7 (drivers/networks), then
-4. S8 last (orchestrator cleanup)
-
-## Completion criteria
-
-- `src/main.cpp` becomes orchestration-only plus thin wrappers.
-- No stage behavior change observed in stage0..10 boot/e2e smoke checks.
-- Stage-gated compile-time surfaces remain unchanged (`LUCE_STAGE=0..10`).
-- Immediate follow-up can execute code refactor slices against this plan with incremental commits.
+## AGENTS layout check
+1. Plan docs live under `docs/work/plan/` as required.
+2. Source stays under `src/`; headers remain under `include/luce` and `include/`.
+3. No stable-root files are modified by this planning task.
