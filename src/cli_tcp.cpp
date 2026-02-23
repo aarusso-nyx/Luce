@@ -5,13 +5,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 
 #if LUCE_HAS_TCP_CLI
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/errno.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
@@ -30,6 +33,8 @@ constexpr std::size_t kTokenMax = 8;
 constexpr std::size_t kTaskStackWords = 3072;
 constexpr std::uint32_t kDefaultPort = 2323;
 constexpr std::uint32_t kDefaultIdleTimeoutS = 120;
+constexpr std::uint32_t kNetStackWaitMs = 250;
+constexpr std::uint8_t kNetStackMaxWaitAttempts = 80;
 
 struct CliNetConfig {
   bool enabled = false;
@@ -236,6 +241,50 @@ void stop_listener() {
   }
 }
 
+bool ensure_tcp_stack_ready() {
+  for (std::uint8_t attempt = 0; attempt < kNetStackMaxWaitAttempts; ++attempt) {
+    const esp_err_t err = esp_netif_init();
+    if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
+      return true;
+    }
+    ESP_LOGW(kTag, "[CLI_NET] esp_netif_init retry=%u err=%s", static_cast<unsigned>(attempt + 1), esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(kNetStackWaitMs));
+  }
+  ESP_LOGE(kTag, "[CLI_NET] tcp stack not ready after %u attempts", static_cast<unsigned>(kNetStackMaxWaitAttempts));
+  return false;
+}
+
+int open_listener_socket(std::uint16_t port) {
+  int listener = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+  if (listener < 0) {
+    const int socket_err = errno;
+    ESP_LOGW(kTag, "[CLI_NET] socket() failed port=%u errno=%d", static_cast<unsigned>(port), socket_err);
+    return -1;
+  }
+
+  const int reuse = 1;
+  setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+  sockaddr_in local = {};
+  local.sin_family = AF_INET;
+  local.sin_addr.s_addr = htonl(INADDR_ANY);
+  local.sin_port = htons(port);
+
+  if (bind(listener, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
+    const int bind_err = errno;
+    close(listener);
+    ESP_LOGW(kTag, "[CLI_NET] bind failed port=%u errno=%d", static_cast<unsigned>(port), bind_err);
+    return -1;
+  }
+  if (listen(listener, 1) != 0) {
+    const int listen_err = errno;
+    close(listener);
+    ESP_LOGW(kTag, "[CLI_NET] listen failed port=%u errno=%d", static_cast<unsigned>(port), listen_err);
+    return -1;
+  }
+  return listener;
+}
+
 void cli_net_task(void*) {
   load_cli_net_config();
   ESP_LOGI(kTag, "[CLI_NET] enabled=%d port=%u", g_cfg.enabled ? 1 : 0, g_cfg.port);
@@ -248,35 +297,19 @@ void cli_net_task(void*) {
     }
   }
 
-  g_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-  if (g_listener < 0) {
-    ESP_LOGW(kTag, "[CLI_NET] socket() failed");
+  if (!ensure_tcp_stack_ready()) {
     while (true) {
       vTaskDelay(pdMS_TO_TICKS(1000));
     }
   }
 
-  const int reuse = 1;
-  setsockopt(g_listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-  sockaddr_in local = {};
-  local.sin_family = AF_INET;
-  local.sin_addr.s_addr = htonl(INADDR_ANY);
-  local.sin_port = htons(g_cfg.port);
-
-  if (bind(g_listener, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
-    ESP_LOGW(kTag, "[CLI_NET] bind failed");
-    stop_listener();
-    while (true) {
-      vTaskDelay(pdMS_TO_TICKS(1000));
+  while (true) {
+    g_listener = open_listener_socket(g_cfg.port);
+    if (g_listener >= 0) {
+      break;
     }
-  }
-  if (listen(g_listener, 1) != 0) {
-    ESP_LOGW(kTag, "[CLI_NET] listen failed");
-    stop_listener();
-    while (true) {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+    ESP_LOGW(kTag, "[CLI_NET] retrying listener setup");
+    vTaskDelay(pdMS_TO_TICKS(kNetStackWaitMs));
   }
   g_session.port = g_cfg.port;
   ESP_LOGI(kTag, "[CLI_NET] listener started on port=%u", g_cfg.port);
