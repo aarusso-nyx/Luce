@@ -80,3 +80,52 @@ Acceptance criteria:
 - `reboot` command triggers clean software reset.
 - Stage4 CLI and diagnostics tasks run together (no blocking stage_main) and each command logs parsed args and result status.
 - `nvs_dump`, `i2c_scan`, and control commands are optional-by-gate (`LUCE_HAS_NVS`, `LUCE_HAS_I2C`) with explicit warnings when disabled.
+
+## Stage5 - Wi-Fi Lifecycle
+- Add compile-time gated Wi-Fi lifecycle with bounded backoff and non-rebooting failure handling.
+- Network parameters read from NVS namespace `net`:
+  - `ssid`, `pass`, `hostname`, `enabled`, `max_retries`, `backoff_min_ms`, `backoff_max_ms`.
+- CLI provides read-only network inspection:
+  - `wifi.status`, `wifi.scan`.
+- Wi-Fi state transitions and snapshots are emitted with `[WIFI]` log tags:
+  - `INIT`, `CONNECTING`, `GOT_IP`, `BACKOFF`, `STOPPED`.
+
+## Stage6 - Time Sync
+- SNTP service compiles with `LUCE_HAS_NTP` and starts from Stage6 runtime order.
+- Runtime sync state is explicit and command-visible via `time.status`.
+- NTP sync is logged as lifecycle state transitions and failures; no hard failure loops.
+- `luce_build.h` stage gates remain source-of-truth for include decisions.
+
+## Stage7 - mDNS + Discovery
+- Add optional mDNS publish on `_luce._tcp` when Wi-Fi IP is present and `mdns/enabled=1`.
+- Continue direct-task startup style; no service manager introduced.
+- Add CLI/diagnostic line:
+  - `mdns.status`.
+- Guard all mDNS code with `LUCE_HAS_MDNS`.
+
+## Stage8 - TCP CLI
+- Add TCP CLI transport behind `LUCE_HAS_TCP_CLI` (Stage8+).
+- Keep UART0 CLI behavior unchanged.
+- TCP session exposes same read-only command set used by serial CLI.
+- Add lifecycle logging for listener/task/session lifecycle.
+
+## Stage9 - MQTT Publish Telemetry
+- Add publish-only MQTT status telemetry with bounded reconnect backoff.
+- No topic subscriptions in this stage.
+- Add command surface:
+  - `mqtt.status`, `mqtt.pubtest`.
+- Gate config with `LUCE_HAS_MQTT`, defaults in `mqtt` NVS namespace.
+
+## Stage10 - HTTPS Read-only API
+- Add read-only HTTPS surface behind `LUCE_HAS_HTTP`.
+- Keep write operations disabled/unsupported in this stage.
+- Endpoints: `/api/health`, `/api/info`, `/api/state` with bearer token checks where required.
+- Add `[HTTP]` lifecycle/request diagnostics and explicit startup disabled-by-default evidence.
+
+## Next-Stage Completion Plan
+- Stage order for next execution: 7 → 8 → 9 → 10.
+- For each stage boundary, require:
+  - matrix build for every environment in `platformio.ini` (or at least through new stage),
+  - boot evidence capture on `/dev/cu.usbserial-40110`,
+  - CLI/TCP/MQTT/HTTP command evidence matching feature surface,
+  - scorecard update in `docs/governance/compliance/`.
