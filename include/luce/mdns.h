@@ -4,6 +4,8 @@
 
 void mdns_startup();
 void mdns_status_for_cli();
+bool mdns_is_enabled();
+bool mdns_is_running();
 
 #if LUCE_HAS_MDNS
 const char* mdns_state_name();

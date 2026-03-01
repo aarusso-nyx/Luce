@@ -17,6 +17,7 @@
 
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
+#include "luce/led_status.h"
 #include "luce/i2c_io.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
@@ -26,6 +27,7 @@
 #if LUCE_HAS_TCP_CLI
 #include "luce/cli_tcp.h"
 #endif
+#include "luce/task_budgets.h"
 #if LUCE_HAS_MQTT
 #include "luce/mqtt.h"
 #endif
@@ -33,8 +35,94 @@
 #include "luce/http_server.h"
 #endif
 constexpr const char* kTag = "luce_boot";
-constexpr std::size_t kCliTaskStackWords = 6144;
 constexpr std::size_t kCliLineBuffer = 128;
+
+using CliCommandHandler = int (*)(int argc, char* argv[]);
+
+struct CliCommandInfo {
+  const char* name;
+  bool mutating;
+  bool tcp_readonly;
+  const char* usage;
+  CliCommandHandler execute;
+};
+
+void cli_cmd_status();
+void cli_cmd_nvs_dump();
+void cli_cmd_i2c_scan();
+void cli_cmd_mcp_read(const char* port);
+void cli_cmd_relay_set(int channel, int on_off);
+void cli_cmd_relay_mask(std::uint32_t value);
+void cli_cmd_buttons();
+void cli_cmd_lcd_print(const char* text);
+
+int cli_handle_help(int, char*[]);
+int cli_handle_status(int, char*[]);
+int cli_handle_nvs_dump(int, char*[]);
+int cli_handle_i2c_scan(int, char*[]);
+int cli_handle_mcp_read(int, char*[]);
+int cli_handle_relay_set(int, char*[]);
+int cli_handle_relay_mask(int, char*[]);
+int cli_handle_buttons(int, char*[]);
+int cli_handle_lcd_print(int, char*[]);
+int cli_handle_reboot(int, char*[]);
+int cli_handle_wifi_status(int, char*[]);
+int cli_handle_wifi_scan(int, char*[]);
+int cli_handle_time_status(int, char*[]);
+#if LUCE_HAS_MDNS
+int cli_handle_mdns_status(int, char*[]);
+#endif
+#if LUCE_HAS_TCP_CLI
+int cli_handle_cli_net_status(int, char*[]);
+#endif
+#if LUCE_HAS_MQTT
+int cli_handle_mqtt_status(int, char*[]);
+int cli_handle_mqtt_pubtest(int, char*[]);
+#endif
+#if LUCE_HAS_HTTP
+int cli_handle_http_status(int, char*[]);
+#endif
+
+constexpr CliCommandInfo kCliCommands[] = {
+    {"help", false, true, "help", cli_handle_help},
+    {"status", false, true, "status", cli_handle_status},
+    {"nvs_dump", false, false, "nvs_dump", cli_handle_nvs_dump},
+    {"i2c_scan", false, true, "i2c_scan", cli_handle_i2c_scan},
+    {"mcp_read", false, true, "mcp_read <gpioa|gpiob>", cli_handle_mcp_read},
+    {"relay_set", true, false, "relay_set <0..7> <0|1>", cli_handle_relay_set},
+    {"relay_mask", true, false, "relay_mask <hex>", cli_handle_relay_mask},
+    {"buttons", false, true, "buttons", cli_handle_buttons},
+    {"lcd_print", false, false, "lcd_print <text>", cli_handle_lcd_print},
+    {"reboot", true, false, "reboot", cli_handle_reboot},
+    {"wifi.status", false, true, "wifi.status", cli_handle_wifi_status},
+    {"wifi.scan", false, true, "wifi.scan", cli_handle_wifi_scan},
+    {"time.status", false, true, "time.status", cli_handle_time_status},
+#if LUCE_HAS_MDNS
+    {"mdns.status", false, true, "mdns.status", cli_handle_mdns_status},
+#endif
+#if LUCE_HAS_TCP_CLI
+    {"cli_net.status", false, false, "cli_net.status", cli_handle_cli_net_status},
+#endif
+#if LUCE_HAS_MQTT
+    {"mqtt.status", false, true, "mqtt.status", cli_handle_mqtt_status},
+    {"mqtt.pubtest", true, false, "mqtt.pubtest", cli_handle_mqtt_pubtest},
+#endif
+#if LUCE_HAS_HTTP
+    {"http.status", false, true, "http.status", cli_handle_http_status},
+#endif
+};
+
+const CliCommandInfo* find_command(const char* command) {
+  if (!command || !*command) {
+    return nullptr;
+  }
+  for (const auto& entry : kCliCommands) {
+    if (std::strcmp(entry.name, command) == 0) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
 
 std::size_t tokenize_cli_line(char* line, char* argv[], std::size_t max_args) {
   std::size_t argc = 0;
@@ -84,40 +172,197 @@ bool parse_u32_with_base(const char* text, int base, std::uint32_t* value, char*
   return true;
 }
 
+void append_argv_tokens(int argc, char* argv[], int start, char* out, std::size_t out_size) {
+  out[0] = '\0';
+  std::size_t len = 0;
+  for (int i = start; i < argc; ++i) {
+    const std::size_t next_len = std::strlen(argv[i]);
+    if (len > 0) {
+      if (len + 1 >= out_size) {
+        ESP_LOGW(kTag, "CLI command requires truncation due to output limit");
+        break;
+      }
+      out[len] = ' ';
+      ++len;
+      out[len] = '\0';
+    }
+    if (len >= out_size) {
+      break;
+    }
+    const std::size_t available = out_size - len - 1;
+    if (next_len >= available) {
+      std::strncpy(&out[len], argv[i], available);
+      out[out_size - 1] = '\0';
+      ESP_LOGW(kTag, "CLI command text truncated due to output limit");
+      break;
+    }
+    std::strncpy(&out[len], argv[i], available);
+    len += next_len;
+    out[len] = '\0';
+  }
+}
+
 void cli_print_help() {
-  ESP_LOGI(kTag, "CLI commands: help, status, nvs_dump, i2c_scan, mcp_read, relay_set, relay_mask, buttons, lcd_print, reboot");
-  ESP_LOGI(kTag, "  - wifi.status");
-  ESP_LOGI(kTag, "  - wifi.scan");
-  ESP_LOGI(kTag, "  - time.status");
-#if LUCE_HAS_MDNS
-  ESP_LOGI(kTag, "  - mdns.status");
-#endif
-#if LUCE_HAS_TCP_CLI
-  ESP_LOGI(kTag, "  - cli_net.status");
-#endif
-#if LUCE_HAS_MQTT
-  ESP_LOGI(kTag, "  - mqtt.status");
-  ESP_LOGI(kTag, "  - mqtt.pubtest");
-#endif
-#if LUCE_HAS_HTTP
-  ESP_LOGI(kTag, "  - http.status");
-#endif
-  ESP_LOGI(kTag, "  - relay_set <0..7> <0|1>");
-  ESP_LOGI(kTag, "  - relay_mask <hex>");
-  ESP_LOGI(kTag, "  - mcp_read <gpioa|gpiob>");
-  ESP_LOGI(kTag, "  - buttons");
-  ESP_LOGI(kTag, "  - i2c_scan");
-  ESP_LOGI(kTag, "  - lcd_print <text>");
-  ESP_LOGI(kTag, "  - reboot");
+  for (const auto& entry : kCliCommands) {
+    if (entry.usage != nullptr) {
+      ESP_LOGI(kTag, "  - %s", entry.usage);
+    } else {
+      ESP_LOGI(kTag, "  - %s", entry.name);
+    }
+  }
 }
 
 bool cli_command_is_mutating(const char* command) {
-  if (!command || !*command) {
-    return false;
-  }
-  return std::strcmp(command, "relay_set") == 0 || std::strcmp(command, "relay_mask") == 0 ||
-         std::strcmp(command, "reboot") == 0 || std::strcmp(command, "mqtt.pubtest") == 0;
+  const CliCommandInfo* const cmd = find_command(command);
+  return cmd != nullptr && cmd->mutating;
 }
+
+bool cli_command_is_readonly(const char* command) {
+  const CliCommandInfo* const cmd = find_command(command);
+  return cmd != nullptr && !cmd->mutating && cmd->tcp_readonly;
+}
+
+int cli_handle_help(int, char*[]) {
+  cli_print_help();
+  return 0;
+}
+
+int cli_handle_status(int, char*[]) {
+  cli_cmd_status();
+  return 0;
+}
+
+int cli_handle_nvs_dump(int, char*[]) {
+  cli_cmd_nvs_dump();
+  return 0;
+}
+
+int cli_handle_i2c_scan(int, char*[]) {
+  cli_cmd_i2c_scan();
+  return 0;
+}
+
+int cli_handle_mcp_read(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command mcp_read usage: mcp_read <gpioa|gpiob>");
+    return 1;
+  }
+  if (std::strcmp(argv[1], "gpioa") != 0 && std::strcmp(argv[1], "a") != 0 &&
+      std::strcmp(argv[1], "gpiob") != 0 && std::strcmp(argv[1], "b") != 0) {
+    ESP_LOGW(kTag, "CLI command mcp_read: invalid port '%s'", argv[1]);
+    return 1;
+  }
+  cli_cmd_mcp_read(argv[1]);
+  return 0;
+}
+
+int cli_handle_relay_set(int argc, char* argv[]) {
+  if (argc != 3) {
+    ESP_LOGW(kTag, "CLI command relay_set usage: relay_set <0..7> <0|1>");
+    return 1;
+  }
+  std::uint32_t channel = 0;
+  std::uint32_t value = 0;
+  char channel_text[32] = {0};
+  char value_text[32] = {0};
+  const bool ok1 = parse_u32_with_base(argv[1], 10, &channel, channel_text);
+  const bool ok2 = parse_u32_with_base(argv[2], 10, &value, value_text);
+  if (!ok1 || !ok2 || value > 1 || channel > 7) {
+    ESP_LOGW(kTag, "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)", channel_text, value_text);
+    return 1;
+  }
+  cli_cmd_relay_set(static_cast<int>(channel), static_cast<int>(value));
+  return 0;
+}
+
+int cli_handle_relay_mask(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command relay_mask usage: relay_mask <hex>");
+    return 1;
+  }
+  std::uint32_t value = 0;
+  char tmp[32] = {0};
+  if (!parse_u32_with_base(argv[1], 16, &value, tmp) || value > 0xFF) {
+    ESP_LOGW(kTag, "CLI command relay_mask: parse error for '%s'", tmp);
+    return 1;
+  }
+  cli_cmd_relay_mask(value);
+  return 0;
+}
+
+int cli_handle_buttons(int, char*[]) {
+  cli_cmd_buttons();
+  return 0;
+}
+
+int cli_handle_lcd_print(int argc, char* argv[]) {
+  if (argc < 2) {
+    ESP_LOGW(kTag, "CLI command lcd_print usage: lcd_print <text>");
+    return 1;
+  }
+  char text[kCliLineBuffer] = {0};
+  append_argv_tokens(argc, argv, 1, text, sizeof(text));
+  if (text[0] == '\0') {
+    return 1;
+  }
+  cli_cmd_lcd_print(text);
+  return 0;
+}
+
+int cli_handle_reboot(int, char*[]) {
+  ESP_LOGW(kTag, "CLI command reboot: restarting");
+  vTaskDelay(pdMS_TO_TICKS(100));
+  esp_restart();
+  return 0;
+}
+
+int cli_handle_wifi_status(int, char*[]) {
+  wifi_status_for_cli();
+  return 0;
+}
+
+int cli_handle_wifi_scan(int, char*[]) {
+  wifi_scan_for_cli();
+  return 0;
+}
+
+int cli_handle_time_status(int, char*[]) {
+  ntp_status_for_cli();
+  return 0;
+}
+
+#if LUCE_HAS_MDNS
+int cli_handle_mdns_status(int, char*[]) {
+  mdns_status_for_cli();
+  return 0;
+}
+#endif
+
+#if LUCE_HAS_TCP_CLI
+int cli_handle_cli_net_status(int, char*[]) {
+  cli_net_status_for_cli();
+  return 0;
+}
+#endif
+
+#if LUCE_HAS_MQTT
+int cli_handle_mqtt_status(int, char*[]) {
+  mqtt_status_for_cli();
+  return 0;
+}
+
+int cli_handle_mqtt_pubtest(int, char*[]) {
+  mqtt_pubtest_for_cli();
+  return 0;
+}
+#endif
+
+#if LUCE_HAS_HTTP
+int cli_handle_http_status(int, char*[]) {
+  http_status_for_cli();
+  return 0;
+}
+#endif
 
 void cli_cmd_status() {
   luce_log_status_health();
@@ -192,117 +437,21 @@ void cli_cmd_lcd_print(const char* text) {
 
 int cli_execute_command(int argc, char* argv[]) {
   if (argc <= 0 || !argv || !argv[0]) {
+    led_status_notify_user_error();
     return 1;
   }
 
-  int rc = 0;
-  if (std::strcmp(argv[0], "help") == 0) {
-    cli_print_help();
-  } else if (std::strcmp(argv[0], "status") == 0) {
-    cli_cmd_status();
-  } else if (std::strcmp(argv[0], "nvs_dump") == 0) {
-    cli_cmd_nvs_dump();
-  } else if (std::strcmp(argv[0], "i2c_scan") == 0) {
-    cli_cmd_i2c_scan();
-  } else if (std::strcmp(argv[0], "mcp_read") == 0) {
-    if (argc != 2) {
-      ESP_LOGW(kTag, "CLI command mcp_read usage: mcp_read <gpioa|gpiob>");
-      rc = 1;
-    } else if (std::strcmp(argv[1], "gpioa") == 0 || std::strcmp(argv[1], "a") == 0 ||
-               std::strcmp(argv[1], "gpiob") == 0 || std::strcmp(argv[1], "b") == 0) {
-      cli_cmd_mcp_read(argv[1]);
-    } else {
-      ESP_LOGW(kTag, "CLI command mcp_read: invalid port '%s'", argv[1]);
-      rc = 1;
-    }
-  } else if (std::strcmp(argv[0], "relay_set") == 0) {
-    if (argc != 3) {
-      ESP_LOGW(kTag, "CLI command relay_set usage: relay_set <0..7> <0|1>");
-      rc = 1;
-    } else {
-      std::uint32_t channel = 0;
-      std::uint32_t value = 0;
-      char channel_text[32] = {0};
-      char value_text[32] = {0};
-      const bool ok1 = parse_u32_with_base(argv[1], 10, &channel, channel_text);
-      const bool ok2 = parse_u32_with_base(argv[2], 10, &value, value_text);
-      if (!ok1 || !ok2 || value > 1 || channel > 7) {
-        ESP_LOGW(kTag,
-                 "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)", channel_text,
-                 value_text);
-        rc = 1;
-      } else {
-        cli_cmd_relay_set(static_cast<int>(channel), static_cast<int>(value));
-      }
-    }
-  } else if (std::strcmp(argv[0], "relay_mask") == 0) {
-    if (argc != 2) {
-      ESP_LOGW(kTag, "CLI command relay_mask usage: relay_mask <hex>");
-      rc = 1;
-    } else {
-      std::uint32_t value = 0;
-      char tmp[32] = {0};
-      if (!parse_u32_with_base(argv[1], 16, &value, tmp) || value > 0xFF) {
-        ESP_LOGW(kTag, "CLI command relay_mask: parse error for '%s'", tmp);
-        rc = 1;
-      } else {
-        cli_cmd_relay_mask(value);
-      }
-    }
-  } else if (std::strcmp(argv[0], "buttons") == 0) {
-    cli_cmd_buttons();
-  } else if (std::strcmp(argv[0], "lcd_print") == 0) {
-    if (argc < 2) {
-      ESP_LOGW(kTag, "CLI command lcd_print usage: lcd_print <text>");
-      rc = 1;
-    } else {
-      char text[kCliLineBuffer] = {0};
-      snprintf(text, sizeof(text), "%s", argv[1]);
-      for (int i = 2; i < argc; ++i) {
-        const std::size_t used = std::strlen(text);
-        const std::size_t next_len = std::strlen(argv[i]);
-        if (used + 1 + next_len >= sizeof(text)) {
-          ESP_LOGW(kTag, "CLI command lcd_print: truncated due to output length limit");
-          break;
-        }
-        text[used] = ' ';
-        text[used + 1] = '\0';
-        std::strncat(text, argv[i], sizeof(text) - std::strlen(text) - 1);
-      }
-      cli_cmd_lcd_print(text);
-    }
-  } else if (std::strcmp(argv[0], "reboot") == 0) {
-    ESP_LOGW(kTag, "CLI command reboot: restarting");
-    vTaskDelay(pdMS_TO_TICKS(100));
-    esp_restart();
-  } else if (std::strcmp(argv[0], "wifi.status") == 0) {
-    wifi_status_for_cli();
-  } else if (std::strcmp(argv[0], "wifi.scan") == 0) {
-    wifi_scan_for_cli();
-  } else if (std::strcmp(argv[0], "time.status") == 0) {
-    ntp_status_for_cli();
-#if LUCE_HAS_MDNS
-  } else if (std::strcmp(argv[0], "mdns.status") == 0) {
-    mdns_status_for_cli();
-#endif
-#if LUCE_HAS_TCP_CLI
-  } else if (std::strcmp(argv[0], "cli_net.status") == 0) {
-    cli_net_status_for_cli();
-#endif
-#if LUCE_HAS_MQTT
-  } else if (std::strcmp(argv[0], "mqtt.status") == 0) {
-    mqtt_status_for_cli();
-  } else if (std::strcmp(argv[0], "mqtt.pubtest") == 0) {
-    mqtt_pubtest_for_cli();
-#endif
-#if LUCE_HAS_HTTP
-  } else if (std::strcmp(argv[0], "http.status") == 0) {
-    http_status_for_cli();
-#endif
-  } else {
+  const CliCommandInfo* const command = find_command(argv[0]);
+  if (!command || command->execute == nullptr) {
     ESP_LOGW(kTag, "CLI unknown command '%s'", argv[0]);
     cli_print_help();
-    rc = 1;
+    led_status_notify_user_error();
+    return 1;
+  }
+  led_status_notify_user_input();
+  const int rc = command->execute(argc, argv);
+  if (rc != 0) {
+    led_status_notify_user_error();
   }
   return rc;
 }
@@ -312,9 +461,11 @@ int cli_execute_command_readonly(int argc, char* argv[], bool* denied_mutation) 
     *denied_mutation = false;
   }
   if (argc <= 0 || !argv || !argv[0]) {
+    led_status_notify_user_error();
     return 1;
   }
   if (cli_command_is_mutating(argv[0])) {
+    led_status_notify_user_error();
     if (denied_mutation) {
       *denied_mutation = true;
     }
@@ -396,7 +547,7 @@ void cli_task(void*) {
 }
 
 void cli_startup() {
-  if (xTaskCreate(cli_task, "cli", kCliTaskStackWords, nullptr, 2, nullptr) != pdPASS) {
+  if (!luce::start_task(cli_task, luce::task_budget::kTaskCli)) {
     ESP_LOGW(kTag, "CLI task create failed");
   }
 }

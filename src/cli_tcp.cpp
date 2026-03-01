@@ -23,6 +23,9 @@
 #include "luce/cli.h"
 #include "luce/net_wifi.h"
 #include "luce_build.h"
+#include "luce/task_budgets.h"
+#include "luce/nvs_helpers.h"
+#include "luce/led_status.h"
 
 namespace {
 
@@ -30,7 +33,6 @@ constexpr const char* kTag = "[CLI_NET]";
 constexpr const char* kCliNetNs = "cli_net";
 constexpr std::size_t kLineMax = 255;
 constexpr std::size_t kTokenMax = 8;
-constexpr std::size_t kTaskStackWords = 3072;
 constexpr std::uint32_t kDefaultPort = 2323;
 constexpr std::uint32_t kDefaultIdleTimeoutS = 120;
 constexpr std::uint32_t kNetStackWaitMs = 250;
@@ -60,6 +62,10 @@ bool is_auth_line(int argc, char* argv[]) {
   return argc >= 2 && (std::strcmp(argv[0], "AUTH") == 0 || std::strcmp(argv[0], "auth") == 0);
 }
 
+const char* session_peer_or_na() {
+  return g_session.peer[0] != '\0' ? g_session.peer : "n/a";
+}
+
 void load_cli_net_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   g_cfg.enabled = false;
@@ -74,27 +80,23 @@ void load_cli_net_config() {
   }
 
   std::uint8_t enabled = 0;
-  std::uint32_t timeout = 0;
-  size_t needed = 0;
-  if (nvs_get_u8(nvs_handle, "enabled", &enabled) == ESP_OK) {
+  std::uint16_t port = kDefaultPort;
+  std::uint32_t timeout = kDefaultIdleTimeoutS;
+  if (luce::nvs::read_u8(nvs_handle, "enabled", enabled, 0)) {
     g_cfg.enabled = (enabled != 0);
   }
 
-  if (nvs_get_u16(nvs_handle, "port", &g_cfg.port) != ESP_OK || g_cfg.port == 0) {
-    g_cfg.port = kDefaultPort;
+  if (luce::nvs::read_u16(nvs_handle, "port", port, kDefaultPort) && port != 0) {
+    g_cfg.port = port;
   }
-  if (nvs_get_u32(nvs_handle, "idle_timeout_s", &timeout) == ESP_OK) {
-    if (timeout == 0 || timeout > 1800) {
-      timeout = kDefaultIdleTimeoutS;
+
+  if (luce::nvs::read_u32(nvs_handle, "idle_timeout_s", timeout, kDefaultIdleTimeoutS)) {
+    if (timeout > 0 && timeout <= 1800) {
+      g_cfg.idle_timeout_s = timeout;
     }
-    g_cfg.idle_timeout_s = timeout;
   }
-  if (nvs_get_str(nvs_handle, "token", nullptr, &needed) == ESP_OK && needed > 0) {
-    if (needed >= sizeof(g_cfg.token)) {
-      needed = sizeof(g_cfg.token) - 1;
-    }
-    nvs_get_str(nvs_handle, "token", g_cfg.token, &needed);
-  }
+
+  (void)luce::nvs::read_string(nvs_handle, "token", g_cfg.token, sizeof(g_cfg.token), "luce-cli");
   nvs_close(nvs_handle);
 }
 
@@ -133,55 +135,13 @@ bool line_contains_printable(char ch) {
   return ch >= 32 && ch <= 126;
 }
 
-std::size_t tokenize_line(char* line, char* argv[]) {
-  std::size_t argc = 0;
-  char* token = strtok(line, " \t");
-  while (token && argc < kTokenMax) {
-    argv[argc++] = token;
-    token = strtok(nullptr, " \t");
-  }
-  return argc;
-}
-
 bool command_allowed_readonly(const char* cmd) {
-  if (!cmd) {
-    return false;
-  }
-  if (std::strcmp(cmd, "help") == 0) {
-    return true;
-  }
-  if (std::strcmp(cmd, "status") == 0) {
-    return true;
-  }
-  if (std::strcmp(cmd, "wifi.status") == 0) {
-    return true;
-  }
-  if (std::strcmp(cmd, "time.status") == 0) {
-    return true;
-  }
-#if LUCE_HAS_MDNS
-  if (std::strcmp(cmd, "mdns.status") == 0) {
-    return true;
-  }
-#endif
-  if (std::strcmp(cmd, "i2c_scan") == 0) {
-    return true;
-  }
-  if (std::strcmp(cmd, "mcp_read") == 0) {
-    return true;
-  }
-  if (std::strcmp(cmd, "buttons") == 0) {
-    return true;
-  }
-  if (std::strcmp(cmd, "cli_net.status") == 0) {
-    return true;
-  }
-  return false;
+  return cli_command_is_readonly(cmd);
 }
 
 void handle_command(int sock, char* line_buffer) {
   char* argv[kTokenMax] = {nullptr};
-  const std::size_t argc = tokenize_line(line_buffer, argv);
+  const std::size_t argc = tokenize_cli_line(line_buffer, argv, kTokenMax);
   if (argc == 0) {
     send_line(sock, "ERR");
     return;
@@ -189,35 +149,42 @@ void handle_command(int sock, char* line_buffer) {
 
   if (!g_session.authed) {
     if (!is_auth_line(static_cast<int>(argc), argv)) {
+      led_status_notify_user_error();
       send_line(sock, "AUTH required");
       return;
     }
     if (argv[1] == nullptr || std::strcmp(argv[1], g_cfg.token) != 0) {
+      led_status_notify_user_error();
       ++g_session.fail_count;
-      ESP_LOGW(kTag, "[CLI_NET] auth fail ip=%s", g_session.peer[0] != '\0' ? g_session.peer : "n/a");
+      ESP_LOGW(kTag, "[CLI_NET] auth fail ip=%s", session_peer_or_na());
       send_line(sock, "auth fail");
       if (g_session.fail_count >= 3) {
         send_line(sock, "session aborted");
-        ESP_LOGW(kTag, "[CLI_NET] session aborted ip=%s", g_session.peer[0] != '\0' ? g_session.peer : "n/a");
+        ESP_LOGW(kTag, "[CLI_NET] session aborted ip=%s", session_peer_or_na());
         g_session.running = false;
       }
       return;
     }
     g_session.authed = true;
     g_session.fail_count = 0;
-    ESP_LOGI(kTag, "[CLI_NET] auth ok ip=%s", g_session.peer[0] != '\0' ? g_session.peer : "n/a");
+    ESP_LOGI(kTag, "[CLI_NET] auth ok ip=%s", session_peer_or_na());
     send_line(sock, "AUTH ok");
     return;
   }
 
   if (!command_allowed_readonly(argv[0])) {
+    led_status_notify_user_error();
     send_cmd_denied(sock, argv[0]);
-    ESP_LOGW(kTag, "[CLI_NET] cmd ip=%s cmd=\"%s\" rc=2 denied", g_session.peer[0] != '\0' ? g_session.peer : "n/a",
-             argv[0]);
+    ESP_LOGW(kTag, "[CLI_NET] cmd ip=%s cmd=\"%s\" rc=2 denied", session_peer_or_na(), argv[0]);
     return;
   }
 
   int rc = cli_execute_command(static_cast<int>(argc), argv);
+  if (rc == 0) {
+    led_status_notify_user_input();
+  } else {
+    led_status_notify_user_error();
+  }
   if (rc == 0) {
     send_ok(sock, "OK");
   } else if (rc == 1) {
@@ -360,7 +327,7 @@ void cli_net_task(void*) {
         char ch[2] = {0};
         const int read = recv(session, ch, 1, 0);
         if (read <= 0) {
-          ESP_LOGW(kTag, "[CLI_NET] session closed ip=%s", g_session.peer);
+          ESP_LOGW(kTag, "[CLI_NET] session closed ip=%s", session_peer_or_na());
           break;
         }
         last_activity = now;
@@ -396,7 +363,7 @@ void cli_net_task(void*) {
       const TickType_t age_ms = (now - last_activity) * 1000 / configTICK_RATE_HZ;
       if (age_ms >= g_cfg.idle_timeout_s * 1000ULL) {
         send_line(session, "session timeout");
-        ESP_LOGW(kTag, "[CLI_NET] session timeout ip=%s", g_session.peer);
+        ESP_LOGW(kTag, "[CLI_NET] session timeout ip=%s", session_peer_or_na());
         break;
       }
     }
@@ -414,17 +381,33 @@ void cli_net_task(void*) {
 
 void cli_net_startup() {
   if (g_task == nullptr) {
-    xTaskCreate(cli_net_task, "cli_net", kTaskStackWords, nullptr, 2, &g_task);
+    (void)luce::start_task_once(g_task, cli_net_task, luce::task_budget::kTaskCliNet);
   }
+}
+
+bool cli_net_is_enabled() {
+  return g_cfg.enabled;
+}
+
+bool cli_net_is_listening() {
+  return g_listener >= 0;
 }
 
 void cli_net_status_for_cli() {
   ESP_LOGI(kTag, "cli_net.status enabled=%d running=%d authed=%d session=%d port=%u peer=%s",
            g_cfg.enabled ? 1 : 0, g_listener >= 0 ? 1 : 0, g_session.authed ? 1 : 0, g_session.running ? 1 : 0,
-           g_session.port, g_session.peer[0] != '\0' ? g_session.peer : "n/a");
+           g_session.port, session_peer_or_na());
 }
 
 #else
+
+bool cli_net_is_enabled() {
+  return false;
+}
+
+bool cli_net_is_listening() {
+  return false;
+}
 
 void cli_net_startup() {}
 void cli_net_status_for_cli() {}

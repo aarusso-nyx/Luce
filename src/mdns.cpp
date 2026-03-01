@@ -22,7 +22,10 @@
 #include "nvs.h"
 
 #include "luce/net_wifi.h"
+#include "luce/nvs_helpers.h"
 #include "luce_build.h"
+#include "luce/runtime_state.h"
+#include "luce/task_budgets.h"
 
 namespace {
 
@@ -31,8 +34,6 @@ constexpr const char* kMdnsNs = "mdns";
 constexpr const char* kNetNs = "net";
 constexpr const char* kDefaultInstance = "Luce Strategy";
 constexpr const char* kDefaultHostnameFallback = "luce-";
-constexpr const char* kMdnsTaskName = "mdns";
-constexpr std::size_t kMdnsTaskStackWords = 4096;
 constexpr std::uint32_t kPollPeriodMs = 1000;
 constexpr std::uint16_t kDefaultPort = 80;
 constexpr std::size_t kTxtFieldMax = 64;
@@ -81,12 +82,7 @@ const char* mdns_state_name_impl() {
 }
 
 void set_state(MdnsState next, const char* reason = nullptr) {
-  g_state = next;
-  if (reason && *reason) {
-    ESP_LOGI(kTag, "[mDNS] state=%s reason=%s", state_name(g_state), reason);
-  } else {
-    ESP_LOGI(kTag, "[mDNS] state=%s", state_name(g_state));
-  }
+  luce::runtime::set_state(g_state, next, state_name, "[mDNS]", reason);
 }
 
 void refresh_mdns_txt_fields() {
@@ -114,18 +110,6 @@ void mdns_service_txt_cb(mdns_service* service, void* /*txt_userdata*/) {
   }
 }
 
-bool has_wifi_ipv4() {
-  esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-  if (!netif) {
-    return false;
-  }
-  esp_netif_ip_info_t ip_info {};
-  if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) {
-    return false;
-  }
-  return ip_info.ip.addr != 0;
-}
-
 netif* get_lwip_sta() {
   esp_netif_t* esp_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
   if (!esp_netif) {
@@ -143,13 +127,8 @@ void load_hostname(char* out, std::size_t out_size) {
 
   nvs_handle_t handle = 0;
   if (nvs_open(kNetNs, NVS_READONLY, &handle) == ESP_OK) {
-    std::size_t needed = 0;
-    if (nvs_get_str(handle, "hostname", nullptr, &needed) == ESP_OK && needed > 0) {
-      if (needed < out_size) {
-        if (nvs_get_str(handle, "hostname", out, &needed) == ESP_OK) {
-          got_name = (out[0] != '\0');
-        }
-      }
+    if (luce::nvs::read_string(handle, "hostname", out, out_size, "")) {
+      got_name = (out[0] != '\0');
     }
     nvs_close(handle);
   }
@@ -183,18 +162,11 @@ void load_mdns_config() {
   }
 
   std::uint8_t enabled = 0;
-  if (nvs_get_u8(handle, "enabled", &enabled) == ESP_OK) {
-    g_cfg.enabled = (enabled != 0);
-  }
-  std::size_t needed = 0;
-  if (nvs_get_str(handle, "instance", nullptr, &needed) == ESP_OK && needed > 0) {
-    if (needed >= sizeof(g_cfg.instance)) {
-      needed = sizeof(g_cfg.instance) - 1;
-    }
-    nvs_get_str(handle, "instance", g_cfg.instance, &needed);
-  }
+  (void)luce::nvs::read_u8(handle, "enabled", enabled, 0);
+  g_cfg.enabled = (enabled != 0);
+  (void)luce::nvs::read_string(handle, "instance", g_cfg.instance, sizeof(g_cfg.instance), kDefaultInstance);
   std::uint16_t configured_port = kDefaultPort;
-  (void)nvs_get_u16(handle, "port", &configured_port);
+  (void)luce::nvs::read_u16(handle, "port", configured_port, kDefaultPort);
   nvs_close(handle);
 
   g_port = configured_port != 0 ? configured_port : kDefaultPort;
@@ -215,7 +187,7 @@ void start_mdns_service() {
     return;
   }
 
-  if (!has_wifi_ipv4()) {
+  if (!wifi_is_ip_ready()) {
     set_state(MdnsState::kInit, "waiting_ip");
     return;
   }
@@ -295,10 +267,18 @@ const char* mdns_state_name() {
   return mdns_state_name_impl();
 }
 
+bool mdns_is_enabled() {
+  return g_cfg.enabled;
+}
+
+bool mdns_is_running() {
+  return g_registered;
+}
+
 void mdns_startup() {
   load_mdns_config();
   if (g_task_handle == nullptr) {
-    xTaskCreate(mdns_task, kMdnsTaskName, kMdnsTaskStackWords, nullptr, 2, &g_task_handle);
+    (void)luce::start_task_once(g_task_handle, mdns_task, luce::task_budget::kTaskMdns);
   }
 }
 
@@ -318,6 +298,14 @@ void mdns_status_for_cli() {
 }
 
 #else
+
+bool mdns_is_enabled() {
+  return false;
+}
+
+bool mdns_is_running() {
+  return false;
+}
 
 void mdns_startup() {}
 void mdns_status_for_cli() {}

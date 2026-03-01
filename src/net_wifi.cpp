@@ -1,6 +1,9 @@
 // Stage5 Wi-Fi lifecycle implementation.
 // Compiled only when LUCE_HAS_WIFI is set.
 #include "luce/net_wifi.h"
+#include "luce/task_budgets.h"
+#include "luce/nvs_helpers.h"
+#include "luce/runtime_state.h"
 
 #include <array>
 #include <cinttypes>
@@ -24,11 +27,11 @@
 namespace {
 
 constexpr const char* kTag = "[WIFI]";
+constexpr const char* kNvsTag = "[WIFI][NVS]";
 constexpr const char* kWifiNs = "wifi";
 constexpr const char* kDefaultHostname = "luce-esp32";
 constexpr const char* kDefaultSsid = "NYXK";
 constexpr const char* kDefaultPass = "It's$14.99!";
-constexpr std::size_t kWifiTaskStackWords = 4096;
 constexpr TickType_t kStatusLogPeriodMs = 3000;
 constexpr TickType_t kStoppedLogPeriodMs = 10000;
 constexpr TickType_t kBackoffLogPeriodMs = 5000;
@@ -69,16 +72,6 @@ TickType_t g_last_backoff_tick = 0;
 uint16_t g_last_disconnect_reason = 0;
 bool g_have_ip = false;
 
-std::uint32_t clamp_u32(std::uint32_t value, std::uint32_t min_val, std::uint32_t max_val) {
-  if (value < min_val) {
-    return min_val;
-  }
-  if (value > max_val) {
-    return max_val;
-  }
-  return value;
-}
-
 const char* wifi_state_name(WifiState state) {
   switch (state) {
     case WifiState::kDisabled:
@@ -98,31 +91,12 @@ const char* wifi_state_name(WifiState state) {
   }
 }
 
-const char* wifi_reject_reason_name(std::uint16_t reason) {
-  if (reason == 0) {
-    return "NONE";
-  }
-  if (reason == WIFI_REASON_UNSPECIFIED || reason == WIFI_REASON_AUTH_EXPIRE || reason == WIFI_REASON_AUTH_LEAVE ||
-      reason == WIFI_REASON_ASSOC_EXPIRE || reason == WIFI_REASON_ASSOC_TOOMANY || reason == WIFI_REASON_ASSOC_LEAVE ||
-      reason == WIFI_REASON_DISASSOC_PWRCAP_BAD || reason == WIFI_REASON_INVALID_PMKID ||
-      reason == WIFI_REASON_NO_AP_FOUND || reason == WIFI_REASON_AUTH_FAIL || reason == WIFI_REASON_HANDSHAKE_TIMEOUT ||
-      reason == WIFI_REASON_CONNECTION_FAIL || reason == WIFI_REASON_TIMEOUT) {
-    return "WIFI_ERROR";
-  }
-  return "OTHER";
-}
-
 const char* mask_password() {
   return "********";
 }
 
-void log_state_change(WifiState next, const char* reason) {
-  g_state = next;
-  if (reason && *reason) {
-    ESP_LOGI(kTag, "[WIFI][LIFECYCLE] state=%s reason=%s", wifi_state_name(g_state), reason);
-  } else {
-    ESP_LOGI(kTag, "[WIFI][LIFECYCLE] state=%s", wifi_state_name(g_state));
-  }
+void set_state(WifiState next, const char* reason) {
+  luce::runtime::set_state(g_state, next, wifi_state_name, "[WIFI][LIFECYCLE]", reason);
 }
 
 std::uint32_t next_backoff_ms() {
@@ -132,7 +106,7 @@ std::uint32_t next_backoff_ms() {
   }
   std::uint32_t max_allowed = g_cfg.backoff_max_ms ? g_cfg.backoff_max_ms : 1;
   std::uint32_t next = g_cfg.backoff_min_ms << exponent;
-  return clamp_u32(next, g_cfg.backoff_min_ms, max_allowed);
+  return luce::runtime::clamp_u32(next, g_cfg.backoff_min_ms, max_allowed);
 }
 
 void schedule_backoff(const char* reason) {
@@ -140,50 +114,13 @@ void schedule_backoff(const char* reason) {
   g_next_backoff_ms = next_backoff_ms();
   g_next_retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(g_next_backoff_ms);
   g_last_backoff_tick = xTaskGetTickCount();
-  log_state_change(WifiState::kBackoff, reason);
+  set_state(WifiState::kBackoff, reason);
   ESP_LOGW(kTag, "[WIFI][BACKOFF] delay_ms=%lu", static_cast<unsigned long>(g_next_backoff_ms));
 }
 
-std::uint32_t active_retries_remaining() {
-  if (g_cfg.max_retries == 0) {
-    return 0xFFFFFFFFu;
-  }
-  if (g_retry_count >= g_cfg.max_retries) {
-    return 0u;
-  }
-  return g_cfg.max_retries - g_retry_count;
-}
-
-void log_nvs_u8(const char* key, std::uint8_t value, bool found, std::uint8_t fallback) {
-  if (found) {
-    ESP_LOGI(kTag, "[WIFI][NVS] key=%s value=%u", key, static_cast<unsigned>(value));
-  } else {
-    ESP_LOGW(kTag, "[WIFI][NVS] key=%s missing; using default=%u", key, static_cast<unsigned>(fallback));
-  }
-}
-
-void log_nvs_u32(const char* key, std::uint32_t value, bool found, std::uint32_t fallback) {
-  if (found) {
-    ESP_LOGI(kTag, "[WIFI][NVS] key=%s value=%lu", key, static_cast<unsigned long>(value));
-  } else {
-    ESP_LOGW(kTag, "[WIFI][NVS] key=%s missing; using default=%lu", key, static_cast<unsigned long>(fallback));
-  }
-}
-
 void log_nvs_str(const char* key, const char* value, bool found, const char* fallback) {
-  if (found) {
-    if (std::strcmp(key, "pass") == 0) {
-      ESP_LOGI(kTag, "[WIFI][NVS] key=%s value=%s", key, mask_password());
-      return;
-    }
-    ESP_LOGI(kTag, "[WIFI][NVS] key=%s value='%s'", key, value);
-    return;
-  }
-  if (std::strcmp(key, "pass") == 0) {
-    ESP_LOGW(kTag, "[WIFI][NVS] key=%s missing; using default=%s", key, mask_password());
-  } else {
-    ESP_LOGW(kTag, "[WIFI][NVS] key=%s missing; using default='%s'", key, fallback);
-  }
+  const bool mask = (std::strcmp(key, "pass") == 0);
+  luce::nvs::log_nvs_string(kNvsTag, key, value, found, fallback, !mask, mask);
 }
 
 void load_wifi_config() {
@@ -210,86 +147,43 @@ void load_wifi_config() {
     return;
   }
 
-  std::uint8_t value_u8 = 0;
-  std::uint32_t value_u32 = 0;
-  std::size_t needed = 0;
-
-  auto read_u8 = [&](const char* key, std::uint8_t default_value, std::uint8_t& out, bool& found_flag) {
-    if (nvs_get_u8(nvs_handle, key, &value_u8) == ESP_OK) {
-      out = value_u8;
-      found_flag = true;
-    } else {
-      out = default_value;
-      found_flag = false;
-    }
-  };
-
-  auto read_u32 = [&](const char* key, std::uint32_t default_value, std::uint32_t& out, bool& found_flag) {
-    if (nvs_get_u32(nvs_handle, key, &value_u32) == ESP_OK) {
-      out = value_u32;
-      found_flag = true;
-    } else {
-      out = default_value;
-      found_flag = false;
-    }
-  };
-
-  auto read_string =
-      [&](const char* key, char* out, std::size_t out_size, const char* fallback, bool& found_flag) {
-        if (nvs_get_str(nvs_handle, key, nullptr, &needed) == ESP_OK && needed > 0) {
-          if (needed > out_size) {
-            needed = out_size;
-          }
-          if (nvs_get_str(nvs_handle, key, out, &needed) == ESP_OK) {
-            found_flag = true;
-            return;
-          }
-        }
-        found_flag = false;
-        std::snprintf(out, out_size, "%s", fallback);
-      };
-
   bool found_flag = false;
-  read_u8("enabled", 1, value_u8, found_flag);
+  std::uint8_t value_u8 = 0;
+  if (!luce::nvs::read_u8(nvs_handle, "enabled", value_u8, 1)) {
+    found_flag = false;
+  } else {
+    found_flag = true;
+  }
   g_cfg.enabled = (value_u8 != 0);
-  log_nvs_u8("enabled", value_u8, found_flag, 1);
+  luce::nvs::log_nvs_u8(kNvsTag, "enabled", value_u8, found_flag, 1);
 
   bool found_ssid = false;
-  read_string("ssid", g_cfg.ssid, sizeof(g_cfg.ssid), kDefaultSsid, found_ssid);
+  found_ssid = luce::nvs::read_string(nvs_handle, "ssid", g_cfg.ssid, sizeof(g_cfg.ssid), kDefaultSsid);
   log_nvs_str("ssid", g_cfg.ssid, found_ssid, "");
 
   bool found_pass = false;
-  read_string("pass", g_cfg.pass, sizeof(g_cfg.pass), kDefaultPass, found_pass);
+  found_pass = luce::nvs::read_string(nvs_handle, "pass", g_cfg.pass, sizeof(g_cfg.pass), kDefaultPass);
   log_nvs_str("pass", g_cfg.pass, found_pass, "");
 
   bool found_hostname = false;
-  read_string("hostname", g_cfg.hostname, sizeof(g_cfg.hostname), kDefaultHostname, found_hostname);
+  found_hostname = luce::nvs::read_string(nvs_handle, "hostname", g_cfg.hostname, sizeof(g_cfg.hostname), kDefaultHostname);
   log_nvs_str("hostname", g_cfg.hostname, found_hostname, kDefaultHostname);
 
   bool found_max_retries = false;
-  read_u32("max_retries", 6, value_u32, found_max_retries);
-  g_cfg.max_retries = value_u32;
-  log_nvs_u32("max_retries", value_u32, found_max_retries, 6);
+  std::uint32_t value_u32 = 0;
+  found_max_retries = luce::nvs::read_u32(nvs_handle, "max_retries", value_u32, 6);
+  g_cfg.max_retries = luce::runtime::clamp_u32(value_u32, 0u, 600u);
+  luce::nvs::log_nvs_u32(kNvsTag, "max_retries", value_u32, found_max_retries, 6);
 
   bool found_backoff_min = false;
-  read_u32("backoff_min_ms", 500, value_u32, found_backoff_min);
-  g_cfg.backoff_min_ms = clamp_u32(value_u32, 250, 300000);
-  log_nvs_u32("backoff_min_ms", value_u32, found_backoff_min, g_cfg.backoff_min_ms);
+  found_backoff_min = luce::nvs::read_u32(nvs_handle, "backoff_min_ms", value_u32, 500);
+  g_cfg.backoff_min_ms = luce::runtime::clamp_u32(value_u32, 250u, 300000u);
+  luce::nvs::log_nvs_u32(kNvsTag, "backoff_min_ms", value_u32, found_backoff_min, g_cfg.backoff_min_ms);
 
   bool found_backoff_max = false;
-  read_u32("backoff_max_ms", 8000, value_u32, found_backoff_max);
-  g_cfg.backoff_max_ms = clamp_u32(value_u32, g_cfg.backoff_min_ms, 300000);
-  log_nvs_u32("backoff_max_ms", value_u32, found_backoff_max, g_cfg.backoff_max_ms);
-
-  if (g_cfg.max_retries > 600) {
-    g_cfg.max_retries = 600;
-  }
-  if (g_cfg.backoff_min_ms < 250) {
-    g_cfg.backoff_min_ms = 250;
-  }
-  if (g_cfg.backoff_max_ms < g_cfg.backoff_min_ms) {
-    g_cfg.backoff_max_ms = g_cfg.backoff_min_ms;
-  }
+  found_backoff_max = luce::nvs::read_u32(nvs_handle, "backoff_max_ms", value_u32, 8000);
+  g_cfg.backoff_max_ms = luce::runtime::clamp_u32(value_u32, g_cfg.backoff_min_ms, 300000u);
+  luce::nvs::log_nvs_u32(kNvsTag, "backoff_max_ms", value_u32, found_backoff_max, g_cfg.backoff_max_ms);
 
   nvs_close(nvs_handle);
 
@@ -323,7 +217,7 @@ void apply_wifi_config() {
 
 void connect_wifi(const char* reason) {
   if (!g_cfg.enabled) {
-    log_state_change(WifiState::kDisabled, reason);
+    set_state(WifiState::kDisabled, reason);
     return;
   }
   if (*g_cfg.ssid == '\0') {
@@ -350,7 +244,7 @@ void connect_wifi(const char* reason) {
   ++g_retry_count;
   g_last_disconnect_reason = 0;
   g_next_backoff_ms = 0;
-  log_state_change(WifiState::kConnecting, reason ? reason : "connect");
+    set_state(WifiState::kConnecting, reason ? reason : "connect");
 }
 
 void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
@@ -367,13 +261,13 @@ void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
     }
     g_have_ip = false;
     if (!g_cfg.enabled) {
-      log_state_change(WifiState::kDisabled, "disabled");
+      set_state(WifiState::kDisabled, "disabled");
       return;
     }
     if (g_cfg.max_retries != 0 && g_retry_count >= g_cfg.max_retries) {
       g_retry_count = 0;
       g_backoff_count = 0;
-      log_state_change(WifiState::kStopped, "max_retries_exceeded");
+      set_state(WifiState::kStopped, "max_retries_exceeded");
       return;
     }
     schedule_backoff("disconnected");
@@ -386,7 +280,7 @@ void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
     g_backoff_count = 0;
     g_next_backoff_ms = 0;
     g_last_disconnect_reason = 0;
-    log_state_change(WifiState::kGotIp, "got_ip");
+    set_state(WifiState::kGotIp, "got_ip");
     return;
   }
 
@@ -421,7 +315,7 @@ void initialize_wifi_stack() {
     return;
   }
 
-  log_state_change(WifiState::kInit, "stack_initialized");
+  set_state(WifiState::kInit, "stack_initialized");
 }
 
 void wifi_task(void*) {
@@ -430,7 +324,7 @@ void wifi_task(void*) {
 
     if (!g_cfg.enabled) {
       if (g_state != WifiState::kDisabled) {
-        log_state_change(WifiState::kDisabled, "runtime_disabled");
+        set_state(WifiState::kDisabled, "runtime_disabled");
       }
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
@@ -470,13 +364,13 @@ void wifi_startup() {
   load_wifi_config();
 
   if (!g_cfg.enabled) {
-    log_state_change(WifiState::kDisabled, "cfg_disabled");
+    set_state(WifiState::kDisabled, "cfg_disabled");
     return;
   }
 
   initialize_wifi_stack();
   if (g_wifi_task == nullptr) {
-    xTaskCreate(wifi_task, "wifi", kWifiTaskStackWords, nullptr, 2, &g_wifi_task);
+    (void)luce::start_task_once(g_wifi_task, wifi_task, luce::task_budget::kTaskWifi);
   }
 }
 
@@ -534,8 +428,16 @@ bool wifi_is_enabled() {
   return g_cfg.enabled;
 }
 
+bool wifi_is_connecting() {
+  return g_cfg.enabled && (g_state == WifiState::kConnecting || g_state == WifiState::kBackoff);
+}
+
 bool wifi_is_ip_ready() {
   return g_have_ip;
+}
+
+bool wifi_is_connected() {
+  return g_cfg.enabled && (g_state == WifiState::kGotIp) && g_have_ip;
 }
 
 void wifi_get_ssid(char* out, std::size_t out_size) {
@@ -583,7 +485,15 @@ bool wifi_is_enabled() {
   return false;
 }
 
+bool wifi_is_connecting() {
+  return false;
+}
+
 bool wifi_is_ip_ready() {
+  return false;
+}
+
+bool wifi_is_connected() {
   return false;
 }
 

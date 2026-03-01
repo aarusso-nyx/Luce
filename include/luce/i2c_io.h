@@ -45,11 +45,10 @@ InitPathResult run_i2c_scan_flow(I2cScanResult& scan, const char* context, bool 
 
 esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks = pdMS_TO_TICKS(20));
 esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value);
-uint8_t relay_mask_for_channel(int channel);
 esp_err_t set_relay_mask_safe(uint8_t mask);
 uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask);
 bool read_button_inputs(uint8_t* value);
 void configure_int_pin();
-void run_i2c_diagnostics();
+void io_startup();
 
 bool i2c_lcd_write_text(const char* text);

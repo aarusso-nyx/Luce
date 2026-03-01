@@ -22,15 +22,17 @@
 #include "luce/i2c_io.h"
 #include "luce/ntp.h"
 #include "luce_build.h"
+#include "luce/nvs_helpers.h"
+#include "luce/runtime_state.h"
+#include "luce/task_budgets.h"
 
 namespace {
 
 constexpr const char* kTag = "[HTTP]";
 constexpr const char* kHttpNs = "http";
-constexpr const char* kHttpTaskName = "http_server";
-constexpr std::uint32_t kTaskStackWords = 4096;
 constexpr std::uint16_t kDefaultHttpPort = 443;
 constexpr const char* kDefaultToken = "luce-token";
+constexpr const char* kUnauthorizedPayload = "{\"error\":\"unauthorized\"}";
 
 enum class HttpState : std::uint8_t {
   kDisabled = 0,
@@ -80,28 +82,7 @@ const char* http_state_name_impl() {
 }
 
 void set_state(HttpState next, const char* reason = nullptr) {
-  g_state = next;
-  if (reason && *reason) {
-    ESP_LOGI(kTag, "[HTTP] state=%s reason=%s", state_name(g_state), reason);
-  } else {
-    ESP_LOGI(kTag, "[HTTP] state=%s", state_name(g_state));
-  }
-}
-
-void read_string_nvs(nvs_handle_t handle, const char* key, char* out, std::size_t out_size, const char* fallback) {
-  std::size_t needed = 0;
-  if (!out || out_size == 0) {
-    return;
-  }
-  if (nvs_get_str(handle, key, nullptr, &needed) == ESP_OK && needed > 0) {
-    if (needed >= out_size) {
-      needed = out_size - 1;
-    }
-    if (nvs_get_str(handle, key, out, &needed) == ESP_OK) {
-      return;
-    }
-  }
-  std::snprintf(out, out_size, "%s", fallback);
+  luce::runtime::set_state(g_state, next, state_name, "[HTTP]", reason);
 }
 
 void load_http_config() {
@@ -121,19 +102,23 @@ void load_http_config() {
   std::uint8_t enabled = 0;
   std::uint8_t tls = 0;
   std::uint16_t port = kDefaultHttpPort;
-  if (nvs_get_u8(handle, "enabled", &enabled) == ESP_OK) {
+  if (luce::nvs::read_u8(handle, "enabled", enabled, 0)) {
     g_cfg.enabled = (enabled != 0);
   }
-  if (nvs_get_u16(handle, "port", &port) == ESP_OK && port != 0) {
+  if (luce::nvs::read_u16(handle, "port", port, kDefaultHttpPort) && port != 0) {
     g_cfg.port = port;
   }
-  if (nvs_get_u8(handle, "tls_dev_mode", &tls) == ESP_OK) {
+  if (luce::nvs::read_u8(handle, "tls_dev_mode", tls, 0)) {
     g_cfg.tls_dev_mode = (tls != 0);
   }
-  read_string_nvs(handle, "token", g_cfg.token, sizeof(g_cfg.token), kDefaultToken);
+  (void)luce::nvs::read_string(handle, "token", g_cfg.token, sizeof(g_cfg.token), kDefaultToken);
   nvs_close(handle);
   set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled, g_cfg.enabled ? "config_enabled" : "config_disabled");
   ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls=%d", g_cfg.enabled ? 1 : 0, g_cfg.port, g_cfg.tls_dev_mode ? 1 : 0);
+}
+
+const char* as_n_a(const char* value) {
+  return (value != nullptr && value[0] != '\0') ? value : "n/a";
 }
 
 esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size_t payload_len = 0) {
@@ -148,6 +133,11 @@ esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size
     payload_len = std::strlen(payload);
   }
   return httpd_resp_send(req, payload, payload_len);
+}
+
+esp_err_t send_unauthorized(httpd_req_t* req) {
+  ESP_LOGW(kTag, "[HTTP] auth fail");
+  return send_json(req, 401, kUnauthorizedPayload, 0);
 }
 
 bool validate_auth(httpd_req_t* req) {
@@ -171,10 +161,10 @@ esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
   std::snprintf(out, out_size,
-               "{\"service\":\"luce\",\"strategy\":\"%s\",\"status\":\"ok\",\"build\":\"%s\",\"sha\":\"%s\","
-               "\"uptime_s\":%lld,\"wifi_ip\":\"%s\"}",
-               LUCE_STRATEGY_NAME, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
-               ip[0] != '\0' ? ip : "n/a");
+                "{\"service\":\"luce\",\"strategy\":\"%s\",\"status\":\"ok\",\"build\":\"%s\",\"sha\":\"%s\","
+                "\"uptime_s\":%lld,\"wifi_ip\":\"%s\"}",
+                LUCE_STRATEGY_NAME, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
+                as_n_a(ip));
   return ESP_OK;
 }
 
@@ -186,23 +176,21 @@ esp_err_t route_health(httpd_req_t* req) {
 
 esp_err_t route_info(httpd_req_t* req) {
   if (!validate_auth(req)) {
-    ESP_LOGW(kTag, "[HTTP] auth fail");
-    return send_json(req, 401, "{\"error\":\"unauthorized\"}", 0);
+    return send_unauthorized(req);
   }
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
   char payload[256] = {0};
   std::snprintf(payload, sizeof(payload),
                "{\"service\":\"luce\",\"strategy\":\"%s\",\"wifi_ip\":\"%s\",\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,\"uptime_s\":%lld}",
-               LUCE_STRATEGY_NAME, ip[0] != '\0' ? ip : "n/a", g_cfg.enabled ? "true" : "false", g_cfg.port,
+               LUCE_STRATEGY_NAME, as_n_a(ip), g_cfg.enabled ? "true" : "false", g_cfg.port,
                g_cfg.tls_dev_mode ? 1 : 0, (long long)(esp_timer_get_time() / 1000000ULL));
   return send_json(req, 200, payload, 0);
 }
 
 esp_err_t route_state(httpd_req_t* req) {
   if (!validate_auth(req)) {
-    ESP_LOGW(kTag, "[HTTP] auth fail");
-    return send_json(req, 401, "{\"error\":\"unauthorized\"}", 0);
+    return send_unauthorized(req);
   }
   char payload[384] = {0};
   char ip[16] = {0};
@@ -210,7 +198,7 @@ esp_err_t route_state(httpd_req_t* req) {
   std::snprintf(payload, sizeof(payload),
                "{\"state\":\"running\",\"wifi_ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"requests\":1,\"unauth\":0,"
                "\"service\":\"luce\",\"strategy\":\"%s\",\"ntp_state\":0}",
-               ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
+               as_n_a(ip), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
                LUCE_STRATEGY_NAME);
   return send_json(req, 200, payload, 0);
 }
@@ -313,13 +301,21 @@ const char* http_state_name() {
   return http_state_name_impl();
 }
 
+bool http_is_enabled() {
+  return g_cfg.enabled;
+}
+
+bool http_is_running() {
+  return g_httpd != nullptr;
+}
+
 void http_startup() {
   load_http_config();
   if (!g_cfg.enabled) {
     return;
   }
   if (g_task == nullptr) {
-    xTaskCreate(http_loop, kHttpTaskName, kTaskStackWords, nullptr, 2, &g_task);
+    (void)luce::start_task_once(g_task, http_loop, luce::task_budget::kTaskHttp);
   }
 }
 
@@ -328,6 +324,14 @@ void http_status_for_cli() {
 }
 
 #else
+
+bool http_is_enabled() {
+  return false;
+}
+
+bool http_is_running() {
+  return false;
+}
 
 void http_startup() {}
 void http_status_for_cli() {}
