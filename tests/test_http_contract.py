@@ -171,6 +171,79 @@ def test_ota_lifecycle_progress_after_manual_check(http_requester, luce_host, lu
 
 @pytest.mark.contract
 @pytest.mark.net
+def test_ota_failure_class_mapping_with_invalid_url(http_requester, luce_host, luce_http_token):
+    require_token(luce_http_token, "--luce-http-token")
+    headers = _json_headers(luce_http_token)
+
+    before = http_requester("GET", f"{luce_host}/api/ota", headers=headers)
+    assert before.status == 200
+    before_payload = before.json()
+    before_fail = int(before_payload.get("fail", 0))
+    before_enabled = bool(before_payload.get("enabled", False))
+
+    trigger = http_requester(
+        "POST",
+        f"{luce_host}/api/ota/check",
+        headers={**headers, "Content-Type": "text/plain"},
+        data=b"not-a-valid-url",
+    )
+    assert trigger.status == 202
+
+    deadline = time.monotonic() + 10.0
+    snapshots = []
+    while time.monotonic() < deadline:
+        current = http_requester("GET", f"{luce_host}/api/ota", headers=headers)
+        assert current.status == 200
+        payload = current.json()
+        snapshots.append(payload)
+        if int(payload.get("fail", 0)) > before_fail:
+            break
+        time.sleep(0.4)
+
+    assert snapshots
+    final = snapshots[-1]
+    if before_enabled:
+        assert int(final.get("fail", 0)) >= before_fail
+        assert str(final.get("state", "")) in {"FAILED", "INVALID_CONFIG", "NO_PARTITION", "CHECKING", "IDLE", "SUCCESS"}
+        assert isinstance(final.get("last_error", ""), str)
+        assert final.get("last_error", "") != ""
+    else:
+        assert bool(final.get("enabled", False)) is False
+        assert int(final.get("fail", 0)) == before_fail
+
+
+@pytest.mark.contract
+@pytest.mark.net
+def test_ota_periodic_cadence_when_configured(http_requester, luce_host, luce_http_token):
+    require_token(luce_http_token, "--luce-http-token")
+    headers = _json_headers(luce_http_token)
+
+    before = http_requester("GET", f"{luce_host}/api/ota", headers=headers)
+    assert before.status == 200
+    before_payload = before.json()
+
+    if not bool(before_payload.get("enabled", False)):
+        pytest.skip("OTA disabled")
+
+    interval_s = int(before_payload.get("interval_s", 0))
+    if interval_s <= 0:
+        pytest.skip("periodic OTA disabled by config (interval_s=0)")
+    if interval_s > 60:
+        pytest.skip(f"periodic OTA interval too long for contract run ({interval_s}s)")
+
+    before_checks = int(before_payload.get("checks", 0))
+    deadline = time.monotonic() + interval_s + 8.0
+    while time.monotonic() < deadline:
+        current = http_requester("GET", f"{luce_host}/api/ota", headers=headers)
+        assert current.status == 200
+        if int(current.json().get("checks", 0)) > before_checks:
+            return
+        time.sleep(0.5)
+    pytest.fail(f"expected periodic OTA check increment within {interval_s + 8}s")
+
+
+@pytest.mark.contract
+@pytest.mark.net
 def test_led_routes_and_validation(http_requester, luce_host, luce_http_token):
     require_token(luce_http_token, "--luce-http-token")
 

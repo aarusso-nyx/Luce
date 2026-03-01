@@ -12,10 +12,24 @@ Use the test suite to spawn a temporary Python broker (no Docker):
 python3 scripts/test_layers.py --layers mqtt --spawn-test-mqtt-broker --mqtt-topic luce/net1
 ```
 
+Note: MQTT reconnect/backoff coverage requires managed broker mode (`--spawn-test-mqtt-broker`) so tests can control broker outage/recovery.
+
 Run all tests through the layered entrypoint:
 
 ```bash
 python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
+```
+
+Layer model:
+
+- Runner-native layers: `build`, `boot`
+- Pytest layers: `http`, `tcp`, `ws`, `mqtt`, `serial`
+- Direct `pytest` invocation does not run `build` or `boot`.
+
+Run serial lifecycle/parser coverage layer:
+
+```bash
+python3 scripts/test_layers.py --layers serial --host https://<device-ip> --http-token <token> --monitor-port /dev/cu.usbserial-40110
 ```
 
 Run only critical network contract layers:

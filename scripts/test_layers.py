@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Sequence
 
 
-LAYERS = ("build", "boot", "http", "tcp", "ws", "mqtt")
+LAYERS = ("build", "boot", "http", "tcp", "ws", "mqtt", "serial")
 LAYER_GROUPS = {
     "critical": ("http", "tcp", "ws", "mqtt"),
 }
@@ -180,6 +180,7 @@ def pytest_cmd_for_layer(args: argparse.Namespace, repo_root: Path, out_dir: Pat
         "tcp": "tests/test_tcp_cli_contract.py",
         "ws": "tests/test_ws_contract.py",
         "mqtt": "tests/test_mqtt_contract.py",
+        "serial": "tests/test_serial_cli_contract.py",
     }
     junit = out_dir / f"junit-{layer}.xml"
     cmd = [
@@ -217,7 +218,15 @@ def pytest_cmd_for_layer(args: argparse.Namespace, repo_root: Path, out_dir: Pat
         args.mqtt_password,
         "--luce-env",
         args.env,
+        "--luce-serial-port",
+        args.monitor_port,
+        "--luce-serial-baud",
+        "115200",
+        "--luce-serial-reboot-capture-s",
+        str(max(15, int(args.boot_duration))),
     ]
+    if getattr(args, "test_mqtt_broker_pid", 0):
+        cmd.extend(["--luce-test-mqtt-broker-pid", str(args.test_mqtt_broker_pid)])
     if args.ws_tls:
         cmd.append("--luce-ws-tls")
     cmd.extend(args.pytest_arg)
@@ -394,11 +403,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
               tcp    : pytest TCP CLI auth/readonly checks.
               ws     : pytest WebSocket /ws handshake + payload checks.
               mqtt   : pytest MQTT compatibility + LED readback checks.
+              serial : pytest serial CLI parser + lifecycle reboot checks.
 
             Selection:
               --layers all
               --layers critical
-              --layers build,boot,http,tcp,ws,mqtt
+              --layers build,boot,http,tcp,ws,mqtt,serial
               --layers http,ws
 
             Output layout:
@@ -517,6 +527,7 @@ def main(argv: Sequence[str]) -> int:
         "tcp": lambda: run_pytest_layer(args, repo_root, out_dir, "tcp"),
         "ws": lambda: run_pytest_layer(args, repo_root, out_dir, "ws"),
         "mqtt": lambda: run_pytest_layer(args, repo_root, out_dir, "mqtt"),
+        "serial": lambda: run_pytest_layer(args, repo_root, out_dir, "serial"),
     }
 
     try:
@@ -525,6 +536,7 @@ def main(argv: Sequence[str]) -> int:
                 spawned_broker = spawn_test_mqtt_broker(args, out_dir)
                 args.mqtt_host = spawned_broker.host
                 args.mqtt_port = spawned_broker.port
+                args.test_mqtt_broker_pid = int(spawned_broker.proc.pid)
                 print(f"test-mqtt-broker: RUNNING ({spawned_broker.host}:{spawned_broker.port})")
             except RuntimeError as exc:
                 results.append(

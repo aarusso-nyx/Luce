@@ -53,12 +53,20 @@ Dependencies:
 
 Modules in the suite:
 
-- `build` layer (PlatformIO compile for selected env)
-- `boot` layer (upload + serial capture + marker assertions)
+- Runner-native layers:
+  - `build` (PlatformIO compile for selected env)
+  - `boot` (upload + serial capture + marker assertions)
+- Pytest contract layers:
 - `tests/test_http_contract.py` (auth/method/payload + LED + OTA-check routes)
 - `tests/test_tcp_cli_contract.py` (AUTH, fail-limit disconnect, readonly enforcement)
 - `tests/test_ws_contract.py` (`/ws` handshake + snapshot payload contract)
-- `tests/test_mqtt_contract.py` (compat unsupported responses + LED readback topics)
+- `tests/test_mqtt_contract.py` (compat unsupported responses, control paths, config persistence/reconnect scenarios)
+- `tests/test_serial_cli_contract.py` (serial lifecycle reboot markers + serial CLI parser matrix)
+
+Notes:
+
+- `build` and `boot` are executed by `scripts/test_layers.py`; they are not pytest modules.
+- Running `pytest` alone validates contract layers only.
 
 Outputs:
 

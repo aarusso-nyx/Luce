@@ -9,6 +9,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,26 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--luce-mqtt-topic", action="store", default=os.getenv("LUCE_MQTT_BASE_TOPIC", "luce/net1"))
     parser.addoption("--luce-mqtt-username", action="store", default=os.getenv("LUCE_MQTT_USERNAME", ""))
     parser.addoption("--luce-mqtt-password", action="store", default=os.getenv("LUCE_MQTT_PASSWORD", ""))
+    parser.addoption(
+        "--luce-test-mqtt-broker-pid",
+        action="store",
+        type=int,
+        default=int(os.getenv("LUCE_TEST_MQTT_BROKER_PID", "0")),
+    )
+    parser.addoption("--luce-serial-port", action="store", default=os.getenv("LUCE_MONITOR_PORT", ""))
+    parser.addoption("--luce-serial-baud", action="store", type=int, default=int(os.getenv("LUCE_SERIAL_BAUD", "115200")))
+    parser.addoption(
+        "--luce-serial-reboot-capture-s",
+        action="store",
+        type=float,
+        default=float(os.getenv("LUCE_SERIAL_REBOOT_CAPTURE_S", "35.0")),
+    )
+    parser.addoption(
+        "--luce-serial-reopen-timeout-s",
+        action="store",
+        type=float,
+        default=float(os.getenv("LUCE_SERIAL_REOPEN_TIMEOUT_S", "20.0")),
+    )
     parser.addoption("--luce-env", action="store", default=os.getenv("LUCE_ENV", "net1"))
     parser.addoption("--luce-duration", action="store", type=int, default=int(os.getenv("LUCE_TEST_DURATION", "45")))
     parser.addoption("--luce-run-build", action="store_true", default=os.getenv("LUCE_RUN_BUILD", "0") == "1")
@@ -80,6 +101,7 @@ def mqtt_config(pytestconfig: pytest.Config) -> dict[str, Any]:
         "base_topic": str(pytestconfig.getoption("--luce-mqtt-topic")),
         "username": str(pytestconfig.getoption("--luce-mqtt-username")),
         "password": str(pytestconfig.getoption("--luce-mqtt-password")),
+        "managed_broker_pid": int(pytestconfig.getoption("--luce-test-mqtt-broker-pid")),
     }
 
 
@@ -138,6 +160,150 @@ def recv_line(sock: socket.socket, timeout: float = 3.0) -> str:
 
 def send_line(sock: socket.socket, text: str) -> None:
     sock.sendall(text.encode("utf-8") + b"\r\n")
+
+
+def _import_pyserial() -> Any:
+    try:
+        import serial  # type: ignore
+    except ModuleNotFoundError:
+        return None
+    return serial
+
+
+@pytest.fixture(scope="session")
+def serial_config(pytestconfig: pytest.Config) -> dict[str, Any]:
+    return {
+        "port": str(pytestconfig.getoption("--luce-serial-port")),
+        "baud": int(pytestconfig.getoption("--luce-serial-baud")),
+        "reboot_capture_s": float(pytestconfig.getoption("--luce-serial-reboot-capture-s")),
+        "reopen_timeout_s": float(pytestconfig.getoption("--luce-serial-reopen-timeout-s")),
+    }
+
+
+def require_serial(serial_config: dict[str, Any]) -> Any:
+    if not serial_config.get("port"):
+        pytest.skip("missing serial port; provide --luce-serial-port or LUCE_MONITOR_PORT")
+    serial_mod = _import_pyserial()
+    if serial_mod is None:
+        pytest.skip("pyserial not installed")
+    return serial_mod
+
+
+def open_serial(serial_config: dict[str, Any], timeout: float = 0.25) -> Any:
+    serial_mod = require_serial(serial_config)
+    return serial_mod.Serial(
+        port=str(serial_config["port"]),
+        baudrate=int(serial_config["baud"]),
+        timeout=timeout,
+        bytesize=serial_mod.EIGHTBITS,
+        parity=serial_mod.PARITY_NONE,
+        stopbits=serial_mod.STOPBITS_ONE,
+        xonxoff=False,
+        rtscts=False,
+        dsrdtr=False,
+    )
+
+
+def serial_send_line(serial_handle: Any, text: str) -> None:
+    serial_handle.write(text.encode("utf-8") + b"\r\n")
+    serial_handle.flush()
+
+
+def serial_collect_lines(serial_handle: Any, timeout_s: float) -> list[str]:
+    deadline = time.monotonic() + timeout_s
+    lines: list[str] = []
+    while time.monotonic() < deadline:
+        raw = serial_handle.readline()
+        if not raw:
+            continue
+        lines.append(raw.decode("utf-8", errors="replace").strip())
+    return lines
+
+
+def serial_command_expect(
+    serial_config: dict[str, Any],
+    command: str,
+    expected_substrings: list[str],
+    timeout_s: float = 8.0,
+) -> list[str]:
+    with open_serial(serial_config, timeout=0.2) as ser:
+        ser.reset_input_buffer()
+        serial_send_line(ser, command)
+        lines = serial_collect_lines(ser, timeout_s=timeout_s)
+    text = "\n".join(lines)
+    for needle in expected_substrings:
+        assert needle in text, f"missing '{needle}' after serial command '{command}'"
+    return lines
+
+
+def serial_reboot_and_capture(serial_config: dict[str, Any]) -> list[str]:
+    capture_s = float(serial_config["reboot_capture_s"])
+    reopen_timeout_s = float(serial_config["reopen_timeout_s"])
+
+    try:
+        with open_serial(serial_config, timeout=0.2) as ser:
+            ser.reset_input_buffer()
+            serial_send_line(ser, "reboot")
+    except Exception:
+        # If command send fails due transient USB reset, still proceed to capture loop.
+        pass
+
+    time.sleep(0.8)
+    deadline = time.monotonic() + reopen_timeout_s
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with open_serial(serial_config, timeout=0.25) as ser:
+                return serial_collect_lines(ser, timeout_s=capture_s)
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.5)
+    raise AssertionError(f"failed to reopen serial port after reboot: {last_error}")
+
+
+@pytest.fixture(scope="session")
+def managed_mqtt_broker_pid(mqtt_config: dict[str, Any]) -> int:
+    return int(mqtt_config.get("managed_broker_pid", 0))
+
+
+def spawn_local_amqtt_broker(host: str, port: int) -> subprocess.Popen[str]:
+    try:
+        import amqtt  # noqa: F401
+    except ModuleNotFoundError:
+        pytest.skip("amqtt not installed")
+    script = tempfile.NamedTemporaryFile("w", delete=False, suffix="_luce_test_broker.py")
+    try:
+        script.write(
+            (
+                "import asyncio\n"
+                "import signal\n"
+                "from amqtt.broker import Broker\n"
+                f"HOST = {host!r}\n"
+                f"PORT = {int(port)!r}\n"
+                "CONFIG = {\n"
+                "  'listeners': {'default': {'type': 'tcp', 'bind': f'{HOST}:{PORT}'}},\n"
+                "  'sys_interval': 0,\n"
+                "  'topic-check': {'enabled': False},\n"
+                "  'auth': {'allow-anonymous': True},\n"
+                "}\n"
+                "async def main():\n"
+                "  broker = Broker(CONFIG)\n"
+                "  await broker.start()\n"
+                "  stop = asyncio.Event()\n"
+                "  loop = asyncio.get_running_loop()\n"
+                "  for sig in (signal.SIGTERM, signal.SIGINT):\n"
+                "    loop.add_signal_handler(sig, stop.set)\n"
+                "  await stop.wait()\n"
+                "  await broker.shutdown()\n"
+                "asyncio.run(main())\n"
+            )
+        )
+        script.flush()
+    finally:
+        script.close()
+
+    proc = subprocess.Popen(["python3", script.name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+    return proc
 
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"

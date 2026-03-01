@@ -68,6 +68,21 @@ Publishes legacy compatibility aliases under the base topic:
 
 Additional: `leds/state` and `leds/state/<idx>` can be queried as compatibility read-back topics.
 
+## Contract Coverage Status
+
+This document describes implemented MQTT behavior. Automated contract enforcement currently covers a representative subset:
+
+- Enforced by tests:
+  - deterministic unsupported-topic responses on `compat/unsupported`
+  - `leds/state` readback behavior
+  - relay/night/threshold control-path effects visible via HTTP state
+  - supported vs unsupported `config/*` routing
+  - reconnect behavior when broker is intentionally restarted (managed test broker mode)
+  - reboot persistence verification for `config/http/token`
+- Partially enforced:
+  - broader `config/*` key matrix is implemented but not exhaustively reboot-verified for every key in a single automated run
+  - reconnect/backoff timing characteristics are validated functionally (disconnect/reconnect), not with strict timing bounds
+
 Unsupported legacy control topics now produce deterministic compatibility responses under:
 - `compat/unsupported`
   - JSON payload:
