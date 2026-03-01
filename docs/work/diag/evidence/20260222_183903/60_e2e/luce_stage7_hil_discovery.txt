@@ -51,3 +51,51 @@ Timestamp     A/R    Flags  if Domain               Service Type         Instanc
 
 # command: python-runner dns-sd -G v4v6 luce-esp32.local (timeout 8s)
 RESULT=TIMEOUT
+DATE: ---Mon 23 Feb 2026---
+ 6:19:18.091  Add        2   1 .                    _udp.local.          _asquic
+12:37:39.777  Add        3  26 .                    _tcp.local.          _ssh
+12:37:39.777  Add        3  26 .                    _tcp.local.          _sftp-ssh
+12:37:39.777  Add        2  26 .                    _tcp.local.          _rfb
+12:37:39.982  Add        3  26 .                    _tcp.local.          _smb
+12:37:39.982  Add        3  26 .                    _tcp.local.          _companion-link
+12:37:39.982  Add        3  26 .                    _tcp.local.          _airplay
+12:37:39.982  Add        3  26 .                    _tcp.local.          _raop
+12:37:39.982  Add        3  26 .                    _udp.local.          _asquic
+12:37:39.982  Add        3  27 .                    _tcp.local.          _ssh
+12:37:39.982  Add        3  27 .                    _tcp.local.          _sftp-ssh
+12:37:39.982  Add        3  27 .                    _tcp.local.          _rfb
+12:37:39.982  Add        3  27 .                    _tcp.local.          _smb
+12:37:39.982  Add        3  27 .                    _tcp.local.          _companion-link
+12:37:39.982  Add        3  27 .                    _tcp.local.          _airplay
+12:37:39.982  Add        3  27 .                    _tcp.local.          _raop
+12:37:39.982  Add        2  27 .                    _udp.local.          _asquic
+12:37:40.849  Add        3  26 .                    _tcp.local.          _remoted
+12:37:40.849  Add        2  26 .                    _tcp.local.          _rdlink
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _ssh
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _sftp-ssh
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _rfb
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _smb
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _companion-link
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _airplay
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _raop
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _ssh
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _sftp-ssh
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _rfb
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _smb
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _companion-link
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _airplay
+12:50:06.758  Rmv        1  27 .                    _tcp.local.          _raop
+12:50:06.758  Rmv        1  26 .                    _udp.local.          _asquic
+12:50:06.758  Rmv        1  27 .                    _udp.local.          _asquic
+12:50:06.758  Rmv        1  26 .                    _tcp.local.          _remoted
+12:50:06.758  Rmv        0  26 .                    _tcp.local.          _rdlink
+13:07:31.905  Add        2   6 .                    _tcp.local.          _dacp
+13:07:31.955  Add        2  12 .                    _tcp.local.          _dacp
+13:51:23.417  Rmv        0   1 .                    _udp.local.          _asquic
+14:42:32.894  Rmv        1   6 .                    _tcp.local.          _dacp
+14:42:32.894  Rmv        0  12 .                    _tcp.local.          _dacp
+19:18:44.799  Add        2   6 .                    _tcp.local.          _FC9F5ED42C8A
+19:18:44.936  Add        2  12 .                    _tcp.local.          _FC9F5ED42C8A
+20:44:11.290  Rmv        0   6 .                    _tcp.local.          _FC9F5ED42C8A
+20:48:16.100  Rmv        0  12 .                    _tcp.local.          _FC9F5ED42C8A
+21:10:59.082  Add        2   1 .                    _udp.local.          _asquic

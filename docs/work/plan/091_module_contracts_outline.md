@@ -3,9 +3,9 @@
 ## Ownership and module responsibilities
 - Diagnostics and startup logs: `boot_diagnostics`
 - Boot/NVS persistence: `boot_state`
-- I2C/MCP/LCD/stage2 runtime: `stage2_io`
+- I2C/MCP/LCD runtime: `i2c_io`
 - CLI parser/command task: `cli`
-- Orchestration: `main_runtime` and `app_main`
+- Orchestration: `src/main.cpp`
 
 ## `include/luce/runtime.h`
 - Purpose: entrypoint contract for orchestration.
@@ -43,8 +43,8 @@
 - Gating:
 - API functions are compiled only when `LUCE_HAS_NVS` is true.
 
-## `include/luce/stage2_io.h`
-- Purpose: I2C bus scan, MCP23017 control, LCD status rendering, and Stage2 diagnostics.
+## `include/luce/i2c_io.h`
+- Purpose: I2C bus scan, MCP23017 control, LCD status rendering, and I/O diagnostics.
 - API:
 - `enum class InitPathStatus : uint8_t { kUnknown = 0, kSuccess, kFailure };`
 - `struct InitPathResult { bool ok; esp_err_t error; InitPathStatus status; };`
@@ -77,11 +77,11 @@
 - State ownership:
 - `g_i2c_initialized`, `g_mcp_available`, `g_relay_mask`, `g_button_mask`, `g_lcd_present`.
 - Includes:
-- `Pcf8574Hd44780` driver class and internal helpers (`write_pcf`, `pulse_en`, `write_nibble`, `send_byte`, `send_command`, `set_cursor`, `write_line`, `write_text_line`, `write_status_lines`) currently implemented inside `src/stage2_io.cpp`.
+- `Pcf8574Hd44780` driver class and internal helpers (`write_pcf`, `pulse_en`, `write_nibble`, `send_byte`, `send_command`, `set_cursor`, `write_line`, `write_text_line`, `write_status_lines`) currently implemented inside `src/i2c_io.cpp`.
 - No separate module is created at this stage for LCD/MCP/IO internals.
 - Gating:
 - Entire file is active only under `LUCE_HAS_I2C`.
-- LCD-related symbols are additionally gated by `LUCE_HAS_LCD` and `LUCE_STAGE4_LCD`.
+- LCD-related symbols are additionally gated by `LUCE_HAS_LCD` and `LUCE_STRATEGY=CORE_LCD`.
 
 ## `include/luce/cli.h`
 - Purpose: CLI startup.
@@ -120,19 +120,19 @@
 
 ## Slice acceptance commands
 - Always run from `platformio.ini` env list:
-- `pio run -e luce_stage0`
-- `pio run -e luce_stage1`
-- `pio run -e luce_stage2`
-- `pio run -e luce_stage3`
-- `pio run -e luce_stage4`
-- `pio run -e luce_stage5`
-- `pio run -e luce_stage6`
-- `pio run -e luce_stage7`
-- `pio run -e luce_stage8`
-- `pio run -e luce_stage9`
-- `pio run -e luce_stage10`
-- `pio run -e luce_test_native` (if applicable)
-- `pio test -e luce_test_native` (UNAVAILABLE if no runnable tests).
+- `pio run -e luce_core`
+- `pio run -e luce_core`
+- `pio run -e luce_core`
+- `pio run -e luce_core`
+- `pio run -e luce_core`
+- `pio run -e luce_net0`
+- `pio run -e luce_net0`
+- `pio run -e luce_net0`
+- `pio run -e luce_net0`
+- `pio run -e luce_net1`
+- `pio run -e luce_net1`
+- `pio run -e luce_net1` (if applicable)
+- `scripts/test_firmware_stage10.sh` (UNAVAILABLE if no runnable tests).
 
 ## Plan note for execution
 - Stage gate constants and future feature macro comments remain in `include/luce_build.h`.

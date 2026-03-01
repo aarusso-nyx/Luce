@@ -130,7 +130,7 @@ Use this connector when validating I2C scan and LCD behavior.
 
 - Use `scripts/collect_logs.sh` for each run:
   - `scripts/collect_logs.sh <env> <tag> <duration_seconds>`
-  - Example: `./scripts/collect_logs.sh luce_stage4 stage4-smoke 180`
+  - Example: `./scripts/collect_logs.sh luce_core stage4-smoke 180`
 - Logs are stored as `docs/work/diag/<timestamp>/boot/<env>_<tag>.txt`.
 
 ## 7) How to capture boot evidence
@@ -142,9 +142,9 @@ Examples:
   - `mkdir -p docs/work/diag/$(date +%Y%m%d_%H%M%S)/boot`
   - `python3 scripts/capture_serial.py --port /dev/cu.usbserial-40110 --baud 115200 --seconds 20 --output docs/work/diag/20260222_boot_stage0.txt`
 - Run a full runner-style capture with upload + fixed serial window:
-  - `source ~/.zshrc && ./scripts/collect_logs.sh luce_stage4 stage4_boot 60 --upload-port /dev/cu.usbserial-0001 --monitor-port /dev/cu.usbserial-40110`
+  - `source ~/.zshrc && ./scripts/collect_logs.sh luce_core stage4_boot 60 --upload-port /dev/cu.usbserial-0001 --monitor-port /dev/cu.usbserial-40110`
 - Optional wrapper for deterministic output filenames:
-  - `source ~/.zshrc && ./scripts/collect_logs.sh luce_stage0 stage0_boot 30 --upload-port /dev/cu.usbserial-0001 --monitor-port /dev/cu.usbserial-40110`
+  - `source ~/.zshrc && ./scripts/collect_logs.sh luce_core stage0_boot 30 --upload-port /dev/cu.usbserial-0001 --monitor-port /dev/cu.usbserial-40110`
 
 Capture script behavior:
 - Reads bytes for the requested duration and writes to the requested file.

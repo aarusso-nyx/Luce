@@ -6,7 +6,7 @@ Status: Baseline captured (disabled-by-default CLI path)
 
 ## Hardware
 
-- ESP32 with `luce_stage10` firmware.
+- ESP32 with `luce_net1` firmware.
 - Serial monitor/USB to capture boot and lifecycle lines.
 - LAN with HTTPS client access to DUT IP.
 
@@ -25,7 +25,7 @@ Status: Baseline captured (disabled-by-default CLI path)
 - PREREQ_MISSING:
   - `http/enabled=0`, token absent for protected checks, or no reachable HTTPS path
   - capture explicit skip in:
-    - `docs/work/diag/<timestamp>/60_e2e/luce_stage10_prereq_missing.txt`
+    - `docs/work/diag/<timestamp>/60_e2e/luce_net1_prereq_missing.txt`
 
 ## Test commands
 
@@ -34,7 +34,7 @@ Status: Baseline captured (disabled-by-default CLI path)
   - `http/port` (default `443`)
   - `http/token` (for protected endpoints)
 2. Capture boot:
-  - `scripts/capture_serial.py --port <port> --baud 115200 --seconds 60 --output docs/work/diag/20260222_204547/50_boot/luce_stage10_boot.txt`
+  - `scripts/capture_serial.py --port <port> --baud 115200 --seconds 60 --output docs/work/diag/20260222_204547/50_boot/luce_net1_boot.txt`
 3. Verify disabled startup:
   - `http/enabled=0` on DUT
   - verify `[HTTP] enabled=0` and no start message.
@@ -48,19 +48,19 @@ Status: Baseline captured (disabled-by-default CLI path)
 5. PREREQ_MISSING control path:
    - if required endpoint/client prerequisites are missing, mark skip and include one-line reason.
    - Artifact:
-     - `docs/work/diag/<timestamp>/60_e2e/luce_stage10_prereq_missing.txt`
+     - `docs/work/diag/<timestamp>/60_e2e/luce_net1_prereq_missing.txt`
      - required line: `SKIPPED: <reason>`
 
 ## Output transcript requirements
 
-  - `docs/work/diag/20260222_204547/60_e2e/luce_stage10_cli_http_status.txt`
-  - `docs/work/diag/<timestamp>/60_e2e/luce_stage10_hil_curl.txt` *(pending network-enabled validation)*
+  - `docs/work/diag/20260222_204547/60_e2e/luce_net1_cli_http_status.txt`
+  - `docs/work/diag/<timestamp>/60_e2e/luce_net1_hil_curl.txt` *(pending network-enabled validation)*
 
 ## Captured evidence
 
-- `docs/work/diag/20260222_204547/50_boot/luce_stage10_boot.txt`
-- `docs/work/diag/20260222_204547/60_e2e/luce_stage10_cli_http_status.txt`
-- `docs/work/diag/<timestamp>/60_e2e/luce_stage10_prereq_missing.txt`
+- `docs/work/diag/20260222_204547/50_boot/luce_net1_boot.txt`
+- `docs/work/diag/20260222_204547/60_e2e/luce_net1_cli_http_status.txt`
+- `docs/work/diag/<timestamp>/60_e2e/luce_net1_prereq_missing.txt`
 
 ## Minimum expected lines in boot transcript
 

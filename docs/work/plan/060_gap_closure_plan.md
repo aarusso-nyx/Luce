@@ -10,8 +10,8 @@ Current blockers are concentrated in three classes:
 
 | Gap | Root cause | Owner prompt | Acceptance | Evidence file path |
 |---|---|---|---|---|
-| Stage4 lint/build instability | `platformio check`/build failures and toolchain/codemodel/C++ check tool errors on stage4 runs | Platform owner: resolve stage4 build toolchain path and re-run matrix | Stage4 check+build complete cleanly (or documented acceptable warnings) with identical source signature; no stage-regression diagnostics | `docs/work/diag/evidence/20260222_153914/build/luce_stage4.txt`, `docs/work/diag/evidence/20260222_153914/lint/platformio_check_stage4.txt`, updated evidence `docs/work/diag/evidence/<timestamp>/build` |
-| Stage0/host lint check unavailable due missing/failed cppcheck | Static check depends on external checker not producing output | Tooling owner: install/align cppcheck in environment and add reproducible preflight for check-only runs | `platformio check -e luce_stage0` completes with expected exit code and captured output | `docs/work/diag/evidence/<timestamp>/lint/platformio_check_stage0.txt`, `docs/work/diag/evidence/90_summary.md` |
+| Stage4 lint/build instability | `platformio check`/build failures and toolchain/codemodel/C++ check tool errors on stage4 runs | Platform owner: resolve stage4 build toolchain path and re-run matrix | Stage4 check+build complete cleanly (or documented acceptable warnings) with identical source signature; no stage-regression diagnostics | `docs/work/diag/evidence/20260222_153914/build/luce_core.txt`, `docs/work/diag/evidence/20260222_153914/lint/platformio_check_stage4.txt`, updated evidence `docs/work/diag/evidence/<timestamp>/build` |
+| Stage0/host lint check unavailable due missing/failed cppcheck | Static check depends on external checker not producing output | Tooling owner: install/align cppcheck in environment and add reproducible preflight for check-only runs | `platformio check -e luce_core` completes with expected exit code and captured output | `docs/work/diag/evidence/<timestamp>/lint/platformio_check_stage0.txt`, `docs/work/diag/evidence/90_summary.md` |
 | Unit tests not implemented | `pio test` reports nothing to build | Test owner: create host test harness and baseline tests (bitmask/CLI/state formatting/debounce if extractable) | Unit suite runnable with explicit pass/fail report for at least required unit list | `docs/work/diag/evidence/<timestamp>/unit/<date>_pure_logic_*.md` |
 | Boot/e2e telemetry blocked by terminal capture failure (`termios`) | Serial monitor path/TTY capture incompatibility in environment | Evidence owner: re-run boot+CLI using compatible capture path and produce transcripts | `docs/work/diag/evidence/90_summary.md` updated from `FAIL` to at least `PASS` for `boot` and `e2e`; `docs/work/diag/evidence/50_boot/`, `docs/work/diag/evidence/60_e2e/` updated |
 | Stage4 runtime crash signature in CLI transcript (`tlsf_free` assert) | Heap/free assertion observed before stable session | Runtime owner: diagnose/mitigate heap corruption path and confirm no repeat in cleaned stage4 CLI capture | `docs/work/diag/evidence/20260222_153914/cli/stage4_cli_transcript.txt`, renewed `docs/work/diag/evidence/60_e2e/..._cli_*.md` |
@@ -32,7 +32,7 @@ Current blockers are concentrated in three classes:
 4. Normalize evidence naming and ensure each run has a dated index file and update `docs/work/diag/evidence/00_index.md`.
 
 ### 2) Stabilize stage4
-1. Investigate and resolve remaining stage4 build failures (`build/luce_stage4.txt`, `platformio_check_stage4.txt`).
+1. Investigate and resolve remaining stage4 build failures (`build/luce_core.txt`, `platformio_check_stage4.txt`).
 2. Rebuild clean matrix stage0..4 after stage4 stabilization.
 3. Validate stage4 upload and immediate reboot path is stable:
    - collect upload log and CLI boot transcript without crash.

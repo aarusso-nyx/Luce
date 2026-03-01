@@ -26,7 +26,7 @@ envs=()
 for e in "${raw_envs[@]}"; do
   e="${e#env:}"
   case "${e}" in
-    luce_stage0|luce_stage1|luce_stage2|luce_stage3|luce_stage4|luce_stage5|luce_stage6|luce_stage7|luce_stage8|luce_stage9|luce_stage10)
+    luce_core|luce_net0|luce_net1)
       envs+=("${e}")
       ;;
   esac

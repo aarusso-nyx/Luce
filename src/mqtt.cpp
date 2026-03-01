@@ -1,4 +1,4 @@
-// Stage9 MQTT publish telemetry implementation.
+// MQTT publish telemetry implementation.
 #include "luce/mqtt.h"
 
 #include <cinttypes>
@@ -18,7 +18,7 @@
 #include "nvs.h"
 
 #include "luce/net_wifi.h"
-#include "luce/stage2_io.h"
+#include "luce/i2c_io.h"
 #include "luce_build.h"
 
 namespace {
@@ -84,6 +84,10 @@ const char* state_name(MqttState state) {
   }
 }
 
+const char* mqtt_state_name_impl() {
+  return state_name(g_state);
+}
+
 std::uint32_t clamp_u32(std::uint32_t value, std::uint32_t min_v, std::uint32_t max_v) {
   if (value < min_v) {
     return min_v;
@@ -129,7 +133,7 @@ void read_string_nvs(nvs_handle_t handle, const char* key, char* out, std::size_
 void load_mqtt_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   std::snprintf(g_cfg.uri, sizeof(g_cfg.uri), "mqtt://localhost:1883");
-  std::snprintf(g_cfg.base_topic, sizeof(g_cfg.base_topic), "luce/stage9");
+  std::snprintf(g_cfg.base_topic, sizeof(g_cfg.base_topic), "luce/net1");
   g_cfg.qos = 0;
   g_cfg.keepalive_s = 120;
   g_cfg.enabled = false;
@@ -151,7 +155,7 @@ void load_mqtt_config() {
 
   read_string_nvs(handle, "uri", g_cfg.uri, sizeof(g_cfg.uri), "mqtt://localhost:1883");
   read_string_nvs(handle, "client_id", g_cfg.client_id, sizeof(g_cfg.client_id), "");
-  read_string_nvs(handle, "base_topic", g_cfg.base_topic, sizeof(g_cfg.base_topic), "luce/stage9");
+  read_string_nvs(handle, "base_topic", g_cfg.base_topic, sizeof(g_cfg.base_topic), "luce/net1");
   read_string_nvs(handle, "username", g_cfg.username, sizeof(g_cfg.username), "");
   read_string_nvs(handle, "password", g_cfg.password, sizeof(g_cfg.password), "");
   read_string_nvs(handle, "ca_pem_source", g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "embedded");
@@ -266,9 +270,9 @@ void publish_state() {
   wifi_get_rssi(&wifi_rssi);
 
   std::snprintf(payload, sizeof(payload),
-               "{\"fw\":\"%s\",\"stage\":%d,\"ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"wifi_rssi\":%d,"
+               "{\"fw\":\"%s\",\"strategy\":\"%s\",\"ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"wifi_rssi\":%d,"
                "\"connected\":true}",
-               LUCE_PROJECT_VERSION, LUCE_STAGE, ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(g_relay_mask),
+               LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(g_relay_mask),
                static_cast<unsigned>(g_button_mask), wifi_rssi);
   char topic[128] = {0};
   std::snprintf(topic, sizeof(topic), "%s/telemetry/state", g_cfg.base_topic);
@@ -330,6 +334,10 @@ void mqtt_loop(void*) {
 }
 
 }  // namespace
+
+const char* mqtt_state_name() {
+  return mqtt_state_name_impl();
+}
 
 void mqtt_startup() {
   load_mqtt_config();

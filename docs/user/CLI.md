@@ -1,6 +1,6 @@
 # Luce CLI (legacy launcher)
 
-This page is a legacy pointer for LUCE Stage4+ CLI usage.
+This page is a legacy pointer for LUCE CORE+ CLI usage.
 
 **Authoritative CLI contract:** `docs/user/cli-contract.md`
 

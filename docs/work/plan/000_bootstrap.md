@@ -7,7 +7,7 @@ Establish a clean, deterministic baseline for Luce firmware development with gov
 
 ## Key Decisions
 - Standardized all operator workflows on `scripts/build.sh`, `scripts/flash.sh`, and `scripts/monitor.sh`.
-- `LUCE_STAGE` is the stage selector (`dev` default); scripts build stage-matched envs when present, otherwise all declared envs.
+- `LUCE_STRATEGY` is the strategy selector (`CORE` default); scripts build strategy-matched envs when present, otherwise all declared envs.
 - Governance evidence is canonical under `docs/governance/{audit,health,compliance}`.
 - Temporary investigation/diagnostics/planning artifacts are constrained to `docs/work/{inv,diag,plan}`.
 

@@ -1,4 +1,4 @@
-# LUCE SNTP (Stage6)
+# LUCE SNTP (NET0+)
 
 Date: 2026-02-23
 
@@ -39,7 +39,7 @@ Missing namespace or missing keys are treated as disabled/missing defaults and l
   - UTC string
   - explicit not-synced reason when unavailable
 
-## Logging
+# Logging
 
 Typical tags:
 

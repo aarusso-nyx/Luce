@@ -10,7 +10,8 @@ else
   exit 1
 fi
 
-stage="${LUCE_STAGE:-dev}"
+strategy="${LUCE_STRATEGY:-}"
+strategy_lc="${strategy,,}"
 mapfile -t all_envs < <(awk -F'[][]' '/^\[env:/{print $2}' platformio.ini)
 
 if [ "${#all_envs[@]}" -eq 0 ]; then
@@ -18,14 +19,22 @@ if [ "${#all_envs[@]}" -eq 0 ]; then
   exit 1
 fi
 
-mapfile -t stage_envs < <(printf '%s\n' "${all_envs[@]}" | rg -E "(^|[-_])${stage}($|[-_])" || true)
+if [ -n "${strategy}" ]; then
+  mapfile -t matched_envs < <(printf '%s\n' "${all_envs[@]}" | rg -F "luce_${strategy_lc}" || true)
+else
+  matched_envs=()
+fi
 
-if [ "${#stage_envs[@]}" -gt 0 ]; then
-  targets=("${stage_envs[@]}")
-  echo "LUCE_STAGE=${stage}: building stage-matched environments"
+if [ "${#matched_envs[@]}" -gt 0 ]; then
+  targets=("${matched_envs[@]}")
+  echo "LUCE_STRATEGY=${strategy}: building strategy-matched environments"
 else
   targets=("${all_envs[@]}")
-  echo "LUCE_STAGE=${stage}: no stage-matched environments found; building all environments"
+  if [ -n "${strategy}" ]; then
+    echo "LUCE_STRATEGY=${strategy}: no matching environments found; building all environments"
+  else
+    echo "LUCE_STRATEGY not set: building all environments"
+  fi
 fi
 
 for env in "${targets[@]}"; do

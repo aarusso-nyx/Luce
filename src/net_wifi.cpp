@@ -26,6 +26,8 @@ namespace {
 constexpr const char* kTag = "[WIFI]";
 constexpr const char* kWifiNs = "wifi";
 constexpr const char* kDefaultHostname = "luce-esp32";
+constexpr const char* kDefaultSsid = "NYXK";
+constexpr const char* kDefaultPass = "It's$14.99!";
 constexpr std::size_t kWifiTaskStackWords = 4096;
 constexpr TickType_t kStatusLogPeriodMs = 3000;
 constexpr TickType_t kStoppedLogPeriodMs = 10000;
@@ -152,34 +154,6 @@ std::uint32_t active_retries_remaining() {
   return g_cfg.max_retries - g_retry_count;
 }
 
-void log_status_snapshot() {
-  char ip_line[32] = "n/a";
-  char gw_line[32] = "n/a";
-  char mask_line[32] = "n/a";
-  int8_t rssi = 0;
-
-  if (g_have_ip && g_sta_if != nullptr) {
-    esp_netif_ip_info_t info {};
-    if (esp_netif_get_ip_info(g_sta_if, &info) == ESP_OK) {
-      ip4addr_ntoa_r(reinterpret_cast<const ip4_addr_t*>(&info.ip), ip_line, sizeof(ip_line));
-      ip4addr_ntoa_r(reinterpret_cast<const ip4_addr_t*>(&info.gw), gw_line, sizeof(gw_line));
-      ip4addr_ntoa_r(reinterpret_cast<const ip4_addr_t*>(&info.netmask), mask_line, sizeof(mask_line));
-    }
-  }
-
-  wifi_ap_record_t ap {};
-  if (g_have_ip && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-    rssi = ap.rssi;
-  }
-
-  ESP_LOGI(
-      kTag,
-      "[WIFI][STATUS] state=%s enabled=%d attempts=%lu remaining=%lu backoff_ms=%lu rssi=%d ip=%s gw=%s mask=%s reason=%s",
-      wifi_state_name(g_state), g_cfg.enabled ? 1 : 0, static_cast<unsigned long>(g_retry_count),
-      static_cast<unsigned long>(active_retries_remaining()), static_cast<unsigned long>(g_next_backoff_ms),
-      static_cast<int>(rssi), ip_line, gw_line, mask_line, wifi_reject_reason_name(g_last_disconnect_reason));
-}
-
 void log_nvs_u8(const char* key, std::uint8_t value, bool found, std::uint8_t fallback) {
   if (found) {
     ESP_LOGI(kTag, "[WIFI][NVS] key=%s value=%u", key, static_cast<unsigned>(value));
@@ -215,6 +189,9 @@ void log_nvs_str(const char* key, const char* value, bool found, const char* fal
 void load_wifi_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   std::snprintf(g_cfg.hostname, sizeof(g_cfg.hostname), "%s", kDefaultHostname);
+  std::snprintf(g_cfg.ssid, sizeof(g_cfg.ssid), "%s", kDefaultSsid);
+  std::snprintf(g_cfg.pass, sizeof(g_cfg.pass), "%s", kDefaultPass);
+  g_cfg.enabled = true;
   g_cfg.max_retries = 6;
   g_cfg.backoff_min_ms = 500;
   g_cfg.backoff_max_ms = 8000;
@@ -222,8 +199,7 @@ void load_wifi_config() {
   nvs_handle_t nvs_handle {};
   if (nvs_open(kWifiNs, NVS_READONLY, &nvs_handle) != ESP_OK) {
     ESP_LOGW(kTag, "[WIFI][NVS] namespace '%s' not found; defaults active", kWifiNs);
-    g_cfg.enabled = false;
-    ESP_LOGW(kTag, "[WIFI][NVS] key=enabled missing; using default=0");
+    ESP_LOGW(kTag, "[WIFI][NVS] key=enabled missing; using default=1");
     ESP_LOGI(
         kTag,
         "[WIFI][NVS] config summary ssid='%s' pass=%s hostname='%s' enabled=%d max_retries=%lu backoff_min_ms=%lu "
@@ -274,16 +250,16 @@ void load_wifi_config() {
       };
 
   bool found_flag = false;
-  read_u8("enabled", 0, value_u8, found_flag);
+  read_u8("enabled", 1, value_u8, found_flag);
   g_cfg.enabled = (value_u8 != 0);
-  log_nvs_u8("enabled", value_u8, found_flag, 0);
+  log_nvs_u8("enabled", value_u8, found_flag, 1);
 
   bool found_ssid = false;
-  read_string("ssid", g_cfg.ssid, sizeof(g_cfg.ssid), "", found_ssid);
+  read_string("ssid", g_cfg.ssid, sizeof(g_cfg.ssid), kDefaultSsid, found_ssid);
   log_nvs_str("ssid", g_cfg.ssid, found_ssid, "");
 
   bool found_pass = false;
-  read_string("pass", g_cfg.pass, sizeof(g_cfg.pass), "", found_pass);
+  read_string("pass", g_cfg.pass, sizeof(g_cfg.pass), kDefaultPass, found_pass);
   log_nvs_str("pass", g_cfg.pass, found_pass, "");
 
   bool found_hostname = false;
@@ -411,7 +387,6 @@ void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
     g_next_backoff_ms = 0;
     g_last_disconnect_reason = 0;
     log_state_change(WifiState::kGotIp, "got_ip");
-    log_status_snapshot();
     return;
   }
 
@@ -450,7 +425,6 @@ void initialize_wifi_stack() {
 }
 
 void wifi_task(void*) {
-  log_status_snapshot();
   while (true) {
     const TickType_t now = xTaskGetTickCount();
 
@@ -484,7 +458,6 @@ void wifi_task(void*) {
          g_state == WifiState::kInit) &&
         now - g_last_status_tick > pdMS_TO_TICKS(kStatusLogPeriodMs)) {
       g_last_status_tick = now;
-      log_status_snapshot();
     }
 
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -508,7 +481,6 @@ void wifi_startup() {
 }
 
 void wifi_status_for_cli() {
-  log_status_snapshot();
 }
 
 void wifi_scan_for_cli() {
@@ -566,6 +538,13 @@ bool wifi_is_ip_ready() {
   return g_have_ip;
 }
 
+void wifi_get_ssid(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  std::snprintf(out, out_size, "%s", (g_cfg.ssid[0] != '\0') ? g_cfg.ssid : "n/a");
+}
+
 void wifi_copy_ip_str(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
     return;
@@ -606,6 +585,13 @@ bool wifi_is_enabled() {
 
 bool wifi_is_ip_ready() {
   return false;
+}
+
+void wifi_get_ssid(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  std::snprintf(out, out_size, "n/a");
 }
 
 void wifi_copy_ip_str(char* out, std::size_t out_size) {

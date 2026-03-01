@@ -2,7 +2,7 @@
 
 ## Namespace `wifi`
 
-Used by Stage5 (`LUCE_STAGE >= 5`), read by `wifi_startup()` in `src/net_wifi.cpp`.
+Used by NET0 (`LUCE_STRATEGY = NET0`), read by `wifi_startup()` in `src/net_wifi.cpp`.
 
 | Key | Type | Default | Purpose |
 | --- | ---- | ------- | ------- |
@@ -16,7 +16,7 @@ Used by Stage5 (`LUCE_STAGE >= 5`), read by `wifi_startup()` in `src/net_wifi.cp
 
 ## Namespace `ntp`
 
-Used by Stage6 (`LUCE_STAGE >= 6`), read by `ntp_startup()` in `src/ntp.cpp`.
+Used by NET0 (`LUCE_STRATEGY = NET0`), read by `ntp_startup()` in `src/ntp.cpp`.
 
 | Key | Type | Default | Purpose |
 | --- | ---- | ------- | ------- |

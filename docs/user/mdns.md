@@ -1,16 +1,16 @@
-# LUCE mDNS (Stage7/8)
+# LUCE mDNS (NET0+)
 
-Date: 2026-02-23
+Date: 2026-02-28
 
 ## Activation
 
-Compiled in when `LUCE_STAGE` is `7` or `8`.
+Compiled in when `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`.
 Configured by namespace `mdns` plus fallback hostname from `net/hostname`.
 
 ## NVS schema (`mdns` and `net`)
 
 - `mdns/enabled` (u8, default `0`)
-- `mdns/instance` (string, default `Luce Stage`)
+- `mdns/instance` (string, default `Luce Strategy`)
 - `net/hostname` (string, fallback deterministic `luce-xxxx` from MAC)
 
 ## Runtime behavior
@@ -18,7 +18,7 @@ Configured by namespace `mdns` plus fallback hostname from `net/hostname`.
 - Only starts when Wi-Fi IP is present.
 - TXT records include:
   - `fw`
-  - `stage`
+  - `strategy`
   - `device`
   - `build`
 - Advertised service: `_luce._tcp` at port `80`.
@@ -36,5 +36,5 @@ Configured by namespace `mdns` plus fallback hostname from `net/hostname`.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
+- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
 - Evidence SHA: `2a3b9df`

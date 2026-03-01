@@ -1,18 +1,18 @@
 # LUCE CLI Contract
 
-Date: 2026-02-23
+Date: 2026-02-28
 
 ## Transport and format
 
-Serial CLI is available when `LUCE_STAGE >= 4`.
+Serial CLI is available when `LUCE_STRATEGY >= LUCE_STRATEGY_CORE`.
 Commands are UTF-8 text lines ending in CR/LF over UART0 at 115200.
 Commands are parsed from whitespace-separated tokens.
 
-Stage8 adds read-only TCP transport:
-- Listener `LUCE_STAGE >= 8`
+NET0 adds read-only TCP transport:
+- Listener `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`
 - Default port: `2323`
 - First command sequence requires `AUTH <token>`
-- Command execution is command-line compatible with serial parser subset
+- Command execution is command-line compatible with the serial parser subset
 
 ## Common commands
 
@@ -26,14 +26,14 @@ Stage8 adds read-only TCP transport:
 - `buttons`
 - `lcd_print <text>`
 - `reboot`
-- `wifi.status` (Stage5+)
-- `wifi.scan` (Stage5+)
-- `time.status` (Stage6+)
-- `mdns.status` (Stage7+)
-- `mqtt.status` (Stage9+)
-- `mqtt.pubtest` (Stage9+)
-- `http.status` (Stage10+)
-- `cli_net.status` (Stage8+)
+- `wifi.status` (NET0+)
+- `wifi.scan` (NET0+)
+- `time.status` (NET0+)
+- `mdns.status` (NET0+)
+- `mqtt.status` (NET1+)
+- `mqtt.pubtest` (NET1+)
+- `http.status` (NET1+)
+- `cli_net.status` (NET0+)
 - `sensors` (supported as unavailable placeholder in current firmware)
 
 ## Parsing and errors
@@ -44,7 +44,7 @@ Stage8 adds read-only TCP transport:
 - `relay_set` rejects channel out-of-range and non-binary values.
 - `relay_mask` rejects values above `0xFF`.
 
-## Networking command policy (Stage8+)
+## Networking command policy (NET0+)
 
 - Serial CLI remains full read/write.
 - TCP CLI enforces read-only execution list:
@@ -55,10 +55,10 @@ Stage8 adds read-only TCP transport:
 
 - `AUTH <token>` required before command execution.
 - Max auth failures: 3 before disconnect.
-- Idle timeout default is configurable from `cli_net/idle_timeout_s`.
+- Idle timeout is configurable from `cli_net/idle_timeout_s`.
 - Session emits command response lines including `cmd=<name> rc=<code>`.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
+- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
 - Evidence SHA: `2a3b9df`

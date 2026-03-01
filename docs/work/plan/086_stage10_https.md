@@ -5,7 +5,7 @@ Status: Completed
 
 ## Scope and constraints
 
-- Add HTTPS server support in `luce_stage10` with `-DLUCE_STAGE=10`.
+- Add HTTPS server support in `luce_net1` with `-DLUCE_STRATEGY=NET1`.
 - Read-only HTTP interface only; no write endpoints.
 - No insecure HTTP server mode.
 - No additional stage2+ services beyond stage10 scope.
@@ -78,7 +78,7 @@ Status: Completed
 
 ## Acceptance criteria
 
-- `pio run -e luce_stage10` succeeds.
+- `pio run -e luce_net1` succeeds.
 - TLS startup is stable from boot with Wi-Fi connected.
 - No command-line API mutations are accepted from HTTP.
 - `cli` command `http.status` present and deterministic.
@@ -86,13 +86,13 @@ Status: Completed
 
 ## Evidence artifacts (required)
 
-- `docs/work/diag/20260222_204547/10_lint/lint_luce_stage10.txt`
-- `docs/work/diag/20260222_204547/20_build/build_luce_stage10.txt`
+- `docs/work/diag/20260222_204547/10_lint/lint_luce_net1.txt`
+- `docs/work/diag/20260222_204547/20_build/build_luce_net1.txt`
 - `docs/work/diag/20260222_204547/30_unit/unit_native.txt`
-- `docs/work/diag/evidence/20260222_204547/40_upload/upload_luce_stage10.txt` (if hardware available)
-- `docs/work/diag/evidence/20260222_204547/50_boot/luce_stage0_boot.txt`
-- `docs/work/diag/evidence/20260222_204547/50_boot/luce_stage10_boot.txt`
-- `docs/work/diag/evidence/20260222_204547/60_e2e/luce_stage10_cli_http_status.txt`
+- `docs/work/diag/evidence/20260222_204547/40_upload/upload_luce_net1.txt` (if hardware available)
+- `docs/work/diag/evidence/20260222_204547/50_boot/luce_core_boot.txt`
+- `docs/work/diag/evidence/20260222_204547/50_boot/luce_net1_boot.txt`
+- `docs/work/diag/evidence/20260222_204547/60_e2e/luce_net1_cli_http_status.txt`
 - `docs/work/diag/template_stage10_expected_boot.txt`
 - `docs/work/diag/template_stage10_cli_time_status.txt`
 - `docs/work/diag/evidence/20260222_204547/90_summary.md`

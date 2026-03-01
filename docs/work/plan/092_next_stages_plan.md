@@ -28,8 +28,8 @@ Date: 2026-02-23
 - CLI command:
   - `mdns.status`
 - Validation:
-  - `pio run -e luce_stage7`
-  - `pio run -e luce_stage7 -t size`
+- `pio run -e luce_net0`
+- `pio run -e luce_net0 -t size`
   - boot evidence shows mDNS gated by Wi-Fi/`mdns/enabled`
 
 ## Stage8: TCP CLI
@@ -45,7 +45,7 @@ Date: 2026-02-23
 - Logging:
   - `[CLI_NET]` and session accept/close lines.
 - Validation:
-  - `pio run -e luce_stage8` and size
+- `pio run -e luce_net0` and size
   - evidence transcript for socket connect and `help`/`status`/`wifi.status`
 
 ## Stage9: MQTT
@@ -65,7 +65,7 @@ Date: 2026-02-23
 - Logging:
   - `[MQTT]` state/connected/error/pub` lines.
 - Validation:
-  - `pio run -e luce_stage9` and size
+- `pio run -e luce_net1` and size
   - e2e script for `mqtt.status` with Wi-Fi disabled path as PASS if logs show skip behavior.
 
 ## Stage10: HTTPS Read-only API
@@ -84,12 +84,12 @@ Date: 2026-02-23
 - Logging:
   - `[HTTP] enabled`, `[HTTP] request` (method/path/status/duration/source)`.
 - Validation:
-  - `pio run -e luce_stage10` and size
+- `pio run -e luce_net1` and size
   - scripted GET attempts against `/api/health` and token-gated endpoints
 
 ## Cross-Stage Invariants
 - Keep compile-time gates in `luce_build.h` as source of truth.
-- Preserve direct task model in `src/app_main.cpp`/runtime entry.
+- Preserve direct task model in `src/main.cpp` entry.
 - Continue to keep no service-manager/supervisor reducer style; startup is explicit stage blocks.
 - Keep docs in `docs/user/*` synced when adding feature contracts.
 - Update stage acceptance checklist in `docs/work/plan/010_stage_plan.md` once modules are stable.
@@ -102,8 +102,8 @@ Date: 2026-02-23
 5. Stage10 HTTPS API + endpoint authorization evidence.
 
 ## Validation commands (mandatory for each finished slice)
-- `pio run -e <env>` for all envs covered by that stage (`luce_stage0`..`luce_stage10`)
+- `pio run -e <env>` for all envs covered by that stage (`luce_core`, `luce_net0`, `luce_net1`)
 - `pio run -e <env> -t size`
-- `pio test -e luce_test_native`
+- `scripts/test_firmware_stage10.sh`
 - if Wi-Fi hardware available: `pio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001`
 - boot + monitor transcripts on `/dev/cu.usbserial-40110`

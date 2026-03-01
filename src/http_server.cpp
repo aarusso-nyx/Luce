@@ -1,4 +1,4 @@
-// Stage10 HTTPS-only read-only server.
+// HTTPS-only read-only server.
 #include "luce/http_server.h"
 
 #include <cinttypes>
@@ -19,7 +19,7 @@
 #include "nvs.h"
 
 #include "luce/net_wifi.h"
-#include "luce/stage2_io.h"
+#include "luce/i2c_io.h"
 #include "luce/ntp.h"
 #include "luce_build.h"
 
@@ -73,6 +73,10 @@ const char* state_name(HttpState state) {
     default:
       return "UNKNOWN";
   }
+}
+
+const char* http_state_name_impl() {
+  return state_name(g_state);
 }
 
 void set_state(HttpState next, const char* reason = nullptr) {
@@ -167,9 +171,9 @@ esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
   std::snprintf(out, out_size,
-               "{\"service\":\"luce\",\"stage\":%d,\"status\":\"ok\",\"build\":\"%s\",\"sha\":\"%s\","
+               "{\"service\":\"luce\",\"strategy\":\"%s\",\"status\":\"ok\",\"build\":\"%s\",\"sha\":\"%s\","
                "\"uptime_s\":%lld,\"wifi_ip\":\"%s\"}",
-               LUCE_STAGE, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
+               LUCE_STRATEGY_NAME, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
                ip[0] != '\0' ? ip : "n/a");
   return ESP_OK;
 }
@@ -189,8 +193,8 @@ esp_err_t route_info(httpd_req_t* req) {
   wifi_copy_ip_str(ip, sizeof(ip));
   char payload[256] = {0};
   std::snprintf(payload, sizeof(payload),
-               "{\"service\":\"luce\",\"stage\":%d,\"wifi_ip\":\"%s\",\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,\"uptime_s\":%lld}",
-               LUCE_STAGE, ip[0] != '\0' ? ip : "n/a", g_cfg.enabled ? "true" : "false", g_cfg.port,
+               "{\"service\":\"luce\",\"strategy\":\"%s\",\"wifi_ip\":\"%s\",\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,\"uptime_s\":%lld}",
+               LUCE_STRATEGY_NAME, ip[0] != '\0' ? ip : "n/a", g_cfg.enabled ? "true" : "false", g_cfg.port,
                g_cfg.tls_dev_mode ? 1 : 0, (long long)(esp_timer_get_time() / 1000000ULL));
   return send_json(req, 200, payload, 0);
 }
@@ -205,9 +209,9 @@ esp_err_t route_state(httpd_req_t* req) {
   wifi_copy_ip_str(ip, sizeof(ip));
   std::snprintf(payload, sizeof(payload),
                "{\"state\":\"running\",\"wifi_ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"requests\":1,\"unauth\":0,"
-               "\"service\":\"luce\",\"stage\":%d,\"ntp_state\":0}",
+               "\"service\":\"luce\",\"strategy\":\"%s\",\"ntp_state\":0}",
                ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
-               LUCE_STAGE);
+               LUCE_STRATEGY_NAME);
   return send_json(req, 200, payload, 0);
 }
 
@@ -304,6 +308,10 @@ void http_loop(void*) {
 }
 
 }  // namespace
+
+const char* http_state_name() {
+  return http_state_name_impl();
+}
 
 void http_startup() {
   load_http_config();

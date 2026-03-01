@@ -23,6 +23,7 @@ struct I2cScanResult {
   bool mcp = false;
   bool lcd = false;
   int found_count = 0;
+  char addresses[64] = {0};
 };
 
 struct Mcp23017State {

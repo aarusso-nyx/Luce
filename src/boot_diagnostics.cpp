@@ -17,7 +17,7 @@
 #include "freertos/task.h"
 
 #if LUCE_HAS_I2C
-#include "luce/stage2_io.h"
+#include "luce/i2c_io.h"
 #endif
 
 constexpr const char* kTag = "luce_boot";
@@ -64,7 +64,7 @@ std::size_t luce_init_path_reset_reason_line(char* out, std::size_t out_size,
 }
 
 void luce_log_heap_integrity(const char* context) {
-#if LUCE_DEBUG_STAGE4_DIAG
+#if LUCE_HAS_CLI
   if (!context) {
     context = "unknown";
   }
@@ -79,7 +79,7 @@ void luce_log_startup_banner() {
   char reason_line[48];
   luce_init_path_reset_reason_line(reason_line, sizeof(reason_line), esp_reset_reason());
 
-  ESP_LOGI(kTag, "LUCE STAGE%d", LUCE_STAGE);
+  ESP_LOGI(kTag, "LUCE STRATEGY=%s", LUCE_STRATEGY_NAME);
   ESP_LOGI(kTag, "Build timestamp: %s %s", __DATE__, __TIME__);
   ESP_LOGI(kTag, "Project version: %s", LUCE_PROJECT_VERSION);
   ESP_LOGI(kTag, "Git SHA: %s", LUCE_GIT_SHA);
@@ -151,7 +151,7 @@ void luce_log_status_health() {
   std::uint8_t button_mask = 0;
 
   luce_init_path_reset_reason_line(reason_line, sizeof(reason_line), esp_reset_reason());
-  ESP_LOGI(kTag, "status: stage=%d reset=%s uptime=%llus", LUCE_STAGE, reason_line,
+  ESP_LOGI(kTag, "status: strategy=%s reset=%s uptime=%llus", LUCE_STRATEGY_NAME, reason_line,
            static_cast<long long>(esp_timer_get_time() / 1000000ULL));
   ESP_LOGI(kTag, "status: heap_free=%u min_free=%u",
            heap_caps_get_free_size(MALLOC_CAP_8BIT),

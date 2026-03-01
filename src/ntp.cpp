@@ -70,6 +70,10 @@ const char* ntp_state_name(NtpState state) {
   }
 }
 
+const char* ntp_state_name_current_impl() {
+  return ntp_state_name(g_state);
+}
+
 void set_state(NtpState next, const char* reason) {
   g_state = next;
   g_state_tick = xTaskGetTickCount();
@@ -344,6 +348,10 @@ void ntp_task(void*) {
 }
 
 }  // namespace
+
+const char* ntp_state_name_current() {
+  return ntp_state_name_current_impl();
+}
 
 void ntp_startup() {
   if (g_task == nullptr) {

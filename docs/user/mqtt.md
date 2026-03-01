@@ -1,6 +1,6 @@
-# LUCE MQTT (Stage9)
+# LUCE MQTT (NET1)
 
-Date: 2026-02-23
+Date: 2026-02-28
 
 ## Role
 
@@ -11,7 +11,7 @@ Publish-only telemetry client with TLS optional and deterministic reconnect beha
 - `mqtt/enabled` (u8, default `0`)
 - `mqtt/uri` (string, default `mqtt://localhost:1883`)
 - `mqtt/client_id` (string, optional)
-- `mqtt/base_topic` (string, default `luce/stage9`)
+- `mqtt/base_topic` (string, default `luce/net1`)
 - `mqtt/username` (string, optional)
 - `mqtt/password` (string, optional)
 - `mqtt/tls_enabled` (u8, default `0`)
@@ -24,7 +24,7 @@ Publish-only telemetry client with TLS optional and deterministic reconnect beha
 - Enabled only when `mqtt/enabled = 1`.
 - If no IP yet, service remains in backoff state.
 - Connect/reconnect with exponential backoff.
-- No subscriptions are created in Stage9 implementation.
+- No subscriptions are created in NET1 implementation.
 - Telemetry payload includes basic firmware, network, relay/button state and timestamp fields.
 
 ## CLI
@@ -40,5 +40,5 @@ Publish-only telemetry client with TLS optional and deterministic reconnect beha
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
+- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
 - Evidence SHA: `2a3b9df`

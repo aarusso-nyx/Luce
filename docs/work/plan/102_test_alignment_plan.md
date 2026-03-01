@@ -4,7 +4,7 @@ Date: 2026-02-23
 
 ## Current test inventory (from evidence)
 
-Host unit: `pio test -e luce_test_native` -> PASS. Host unit case count: 8. Artifact: `docs/work/diag/evidence/20260222_214039/30_unit/unit_luce_test_native.txt`.
+Firmware smoke: `scripts/test_firmware_stage10.sh` -> requires connected hardware; validates stage10 boot markers from serial logs.
 On-device captures: boot capture stage0 and stage10 -> `docs/work/diag/evidence/20260222_214039/50_boot/`; e2e CLI transcript -> `docs/work/diag/evidence/20260222_214039/60_e2e/`.
 
 ## Missing or incomplete tests
@@ -13,13 +13,13 @@ On-device captures: boot capture stage0 and stage10 -> `docs/work/diag/evidence/
 Scope: TCP command path only, include deny path and lockout reason.  
 Evidence target: `docs/work/diag/evidence/<ts>/60_e2e/cli_stage8_tcp_auth.csv` (planned).  
 Acceptance: `AUTH` rejects wrong token, mutating command on TCP returns denied code, lockout occurs after repeated failed auth.
-2. Host parser edge cases.  
-Scope: empty lines, extreme token count, malformed UTF-8 token handling.  
-Evidence target: `docs/work/diag/evidence/<ts>/30_unit/unit_pure_parser.txt` (planned).  
-Acceptance: 100% deterministic outputs for whitespace handling.
+2. CLI parser edge cases on firmware path.  
+Scope: empty lines and extreme token count through CLI transport behavior.  
+Evidence target: `docs/work/diag/evidence/<ts>/60_e2e/cli_parser_edges_stage10.txt` (planned).  
+Acceptance: deterministic command responses and no crash/reset.
 3. MQTT payload schema validation.  
 Scope: status payload fields and MQTT topic naming.  
-Evidence target: `docs/work/diag/evidence/<ts>/30_unit/unit_mqtt_schema.txt` or host-side script logs.  
+Evidence target: `docs/work/diag/evidence/<ts>/60_e2e/mqtt_stage9_schema.txt` (planned).  
 Acceptance: deterministic JSON keys and non-empty topic.
 4. HTTP route auth and status enforcement.  
 Scope: `/api/health`, `/api/info`, `/api/state` auth behavior.  
@@ -32,7 +32,7 @@ Acceptance: deterministic mask output and graceful unavailable logs when MCP abs
 
 ## Stage coverage map
 
-1. Unit: Stage4+ parser helpers.
+1. Firmware smoke: Stage10 boot markers and feature flags.
 2. Component: Stage2 and Stage3 hardware commands.
 3. E2E: Stage4 `help/status/i2c_scan/mcp_read/buttons`.
 4. E2E: Stage5+ `wifi.status`.

@@ -1,4 +1,4 @@
-// Stage7 mDNS responder implementation.
+// mDNS responder implementation.
 #include "luce/mdns.h"
 
 #include <cinttypes>
@@ -29,7 +29,7 @@ namespace {
 constexpr const char* kTag = "[mDNS]";
 constexpr const char* kMdnsNs = "mdns";
 constexpr const char* kNetNs = "net";
-constexpr const char* kDefaultInstance = "Luce Stage";
+constexpr const char* kDefaultInstance = "Luce Strategy";
 constexpr const char* kDefaultHostnameFallback = "luce-";
 constexpr const char* kMdnsTaskName = "mdns";
 constexpr std::size_t kMdnsTaskStackWords = 4096;
@@ -57,7 +57,7 @@ TaskHandle_t g_task_handle = nullptr;
 bool g_registered = false;
 s8_t g_service_slot = -1;
 char g_txt_fw[kTxtFieldMax] = {};
-char g_txt_stage[kTxtFieldMax] = {};
+char g_txt_strategy[kTxtFieldMax] = {};
 char g_txt_device[kTxtFieldMax] = {};
 char g_txt_build[kTxtFieldMax] = {};
 
@@ -76,6 +76,10 @@ const char* state_name(MdnsState state) {
   }
 }
 
+const char* mdns_state_name_impl() {
+  return state_name(g_state);
+}
+
 void set_state(MdnsState next, const char* reason = nullptr) {
   g_state = next;
   if (reason && *reason) {
@@ -87,7 +91,7 @@ void set_state(MdnsState next, const char* reason = nullptr) {
 
 void refresh_mdns_txt_fields() {
   std::snprintf(g_txt_fw, sizeof(g_txt_fw), "fw=%s", LUCE_PROJECT_VERSION);
-  std::snprintf(g_txt_stage, sizeof(g_txt_stage), "stage=%d", LUCE_STAGE);
+  std::snprintf(g_txt_strategy, sizeof(g_txt_strategy), "strategy=%s", LUCE_STRATEGY_NAME);
   std::snprintf(g_txt_device, sizeof(g_txt_device), "device=%s", g_hostname[0] != '\0' ? g_hostname : "luce-device");
   std::snprintf(g_txt_build, sizeof(g_txt_build), "build=%s", __DATE__ " " __TIME__);
 }
@@ -99,8 +103,8 @@ void mdns_service_txt_cb(mdns_service* service, void* /*txt_userdata*/) {
   if (g_txt_fw[0] != '\0') {
     mdns_resp_add_service_txtitem(service, g_txt_fw, static_cast<uint8_t>(std::strlen(g_txt_fw)));
   }
-  if (g_txt_stage[0] != '\0') {
-    mdns_resp_add_service_txtitem(service, g_txt_stage, static_cast<uint8_t>(std::strlen(g_txt_stage)));
+  if (g_txt_strategy[0] != '\0') {
+    mdns_resp_add_service_txtitem(service, g_txt_strategy, static_cast<uint8_t>(std::strlen(g_txt_strategy)));
   }
   if (g_txt_device[0] != '\0') {
     mdns_resp_add_service_txtitem(service, g_txt_device, static_cast<uint8_t>(std::strlen(g_txt_device)));
@@ -287,6 +291,10 @@ void mdns_task(void*) {
 
 }  // namespace
 
+const char* mdns_state_name() {
+  return mdns_state_name_impl();
+}
+
 void mdns_startup() {
   load_mdns_config();
   if (g_task_handle == nullptr) {
@@ -303,10 +311,10 @@ void mdns_status_for_cli() {
   }
 
   ESP_LOGI(kTag,
-           "mdns.status state=%s enabled=%d hostname=%s instance=%s service=%s wifi_ip=%s fw=%s stage=%d",
+           "mdns.status state=%s enabled=%d hostname=%s instance=%s service=%s wifi_ip=%s fw=%s strategy=%s",
            state_name(g_state), g_cfg.enabled ? 1 : 0, g_hostname[0] != '\0' ? g_hostname : "(unset)",
            g_cfg.instance[0] != '\0' ? g_cfg.instance : kDefaultInstance,
-           g_registered ? "1" : "0", wifi_ip, LUCE_PROJECT_VERSION, LUCE_STAGE);
+           g_registered ? "1" : "0", wifi_ip, LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME);
 }
 
 #else

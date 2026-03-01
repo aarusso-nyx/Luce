@@ -12,7 +12,7 @@ Phase 2 advances platform capabilities in deterministic compile-time slices:
 
 ```mermaid
 flowchart TD
-  A[LUCE_STAGE=0] --> B[LUCE_HAS_NVS]
+  A[LUCE_STRATEGY=CORE] --> B[LUCE_HAS_NVS]
   B --> C[LUCE_HAS_I2C]
   C --> D[LUCE_HAS_LCD]
   D --> E[LUCE_HAS_CLI]
@@ -24,5 +24,5 @@ flowchart TD
 ## Notes
 
 - Stage5 and Stage6 are first-class networking milestones in this branch.
-- Stage6 must never compile or run when `LUCE_STAGE < 6`.
+- NET0/NET1 features must never compile or run when `LUCE_STRATEGY = CORE`.
 - Any network command extensions stay CLI-only in this phase.

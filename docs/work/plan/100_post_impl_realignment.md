@@ -27,7 +27,7 @@ Evidence SHA used for narrative: `2a3b9df` (historical), latest anchor above
 - Lint/static: `PASS`
 - Build matrix: `PASS` (stages 0..10)
 - Unit tests: `PASS` (8 tests)
-- Build-native test matrix entry: `PASS` for `luce_test_native` (host build + `pio test`)
+- Firmware smoke path: `scripts/test_firmware_stage10.sh` (real device required)
 - Upload/boot: `SKIPPED` (hardware not attached in this evidence run)
 - E2E: `PREREQ_MISSING` for stages 8/9/10 (reason logged)
 - Hardware status: unavailable for this run; PREREQ_MISSING e2e artifacts captured.

@@ -1,10 +1,10 @@
 # LUCE Wi-Fi Lifecycle
 
-Date: 2026-02-23
+Date: 2026-02-28
 
 ## Activation
 
-Wi-Fi is compiled in from `LUCE_STAGE >= 5`.
+Wi-Fi is compiled in from `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`.
 Runtime reads settings from NVS namespace `wifi`:
 
 - `enabled` (u8, 0/1)
@@ -38,12 +38,12 @@ Missing keys use safe defaults and are logged.
   - `[WIFI][NVS]`
   - `[WIFI]`
 
-## Stage dependency notes
+## Strategy dependency notes
 
-- Stage5+ services:
-  - Stage5: Wi-Fi status and scan commands
-  - Stage6+: SNTP requires IP before sync
-  - Stage7/8/9/10: network services start or resume only when IP is available
+- NET0+ services:
+  - NET0: Wi-Fi status and scan commands
+  - NET0+: SNTP requires IP before sync
+  - NET0+/NET1: network services start or resume only when IP is available
 
 ## Verification
 

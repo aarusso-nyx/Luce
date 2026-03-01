@@ -7,30 +7,28 @@ ESP32 firmware project built with PlatformIO + ESP-IDF.
 Use the repository scripts for deterministic local workflows:
 
 ```bash
-./scripts/build.sh                 # build all stage environments
-./scripts/flash.sh luce_stage0     # flash a specific environment
-./scripts/monitor.sh luce_stage0   # serial monitor with timestamps
+./scripts/build.sh                 # build all strategy environments
+./scripts/flash.sh luce_core        # flash a specific environment
+./scripts/monitor.sh luce_core      # serial monitor with timestamps
 ```
 
 You can also call PlatformIO directly:
 
 ```bash
-pio run -e luce_stage0
-pio run -e luce_stage0 -t upload
-pio device monitor -e luce_stage0 --timestamp
+pio run -e luce_core
+pio run -e luce_core -t upload
+pio device monitor -e luce_core --timestamp
 ```
 
-## LUCE_STAGE
+## LUCE_STRATEGY
 
-`LUCE_STAGE` is the integer stage gate used across build targets:
+`LUCE_STRATEGY` selects one of the compile-time strategy gates passed to `build_flags` as `LUCE_STRATEGY=<value>`.
 
-- `0` → Stage0 (UART diagnostics only)
-- `1` → Stage1 (+NVS)
-- `2` → Stage2 (+I2C/MCP diagnostics)
-- `3` → Stage3 (+LCD)
-- `4` → Stage4 (+CLI)
+- `CORE` (`LUCE_STRATEGY=LUCE_STRATEGY_CORE`) — NVS, I2C, LCD, Serial CLI
+- `NET0` (`LUCE_STRATEGY=LUCE_STRATEGY_NET0`) — CORE + Wi-Fi + NTP + mDNS + TCP CLI
+- `NET1` (`LUCE_STRATEGY=LUCE_STRATEGY_NET1`) — NET0 + MQTT + HTTP
 
-In `scripts/build.sh`, `LUCE_STAGE` can be used to build matching environments.
+In `scripts/build.sh`, `LUCE_STRATEGY` can be used to build matching environments (`luce_core`, `luce_net0`, `luce_net1`).
 If no matching env exists, all declared environments are built.
 
 Ports used by bootstrap scripts:

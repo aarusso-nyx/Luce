@@ -11,12 +11,11 @@ Item: `PASS_WITH_WAIVER` was resolved by initializing `WifiEvent evt` in `src/ma
 Evidence: `docs/work/diag/20260222_214039/10_lint/lint_run.log`.
 Acceptance: lint matrix reports strict PASS with no waived findings.
 
-2. Native matrix image for `luce_test_native`.  
-Severity: Medium. Owner type: code/tests. Evidence: `docs/work/diag/<timestamp>/20_build/build_luce_test_native.txt` and `30_unit/unit_luce_test_native.txt` (PASS).  
+2. Firmware-only test policy migration.  
+Severity: Medium. Owner type: code/tests. Evidence: `platformio.ini`, `scripts/test_firmware_stage10.sh`, `docs/governance/health/build-status.md`.  
 Status: DONE  
-Item: native matrix previously failed because `src/main.cpp` compiled in native mode; now excluded via `build_src_filter` in `platformio.ini`.  
-Evidence: `docs/work/diag/20260222_214039/20_build/build_luce_test_native.txt`, `docs/work/diag/20260222_214039/30_unit/unit_luce_test_native.txt`.
-Acceptance: `pio run -e luce_test_native` and `pio test -e luce_test_native` pass.
+Item: retired native test matrix and stub artifacts; canonical test path is on-device stage10 smoke.
+Acceptance: native env removed, stub removed, firmware smoke command documented and runnable with hardware.
 
 3. Stage8 e2e transport conditions.  
 Severity: Low. Owner type: tests. Evidence: `docs/work/diag/evidence/20260222_191336/90_summary.md` and latest evidence if reused.  

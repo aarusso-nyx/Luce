@@ -18,7 +18,7 @@
 
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
-#include "luce/stage2_io.h"
+#include "luce/i2c_io.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
 #if LUCE_HAS_MDNS

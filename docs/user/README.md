@@ -2,7 +2,7 @@
 
 Authoritative docs for implementation behavior and operations.
 
-- `architecture.md` — compile-time stage architecture and observability model
+- `architecture.md` — compile-time strategy architecture and observability model
 - `cli-contract.md` — serial and TCP command contract
 - `wifi-lifecycle.md` — Wi-Fi state machine and config keys
 - `ntp.md` — SNTP service behavior and CLI
@@ -10,7 +10,8 @@ Authoritative docs for implementation behavior and operations.
 - `mqtt.md` — publish-only MQTT telemetry and config
 - `http.md` — HTTPS read-only API
 - `nvs-schema.md` — persisted configuration keys
-- `hardware-map.md` — stage hardware constants and pin mapping
+- `hardware-map.md` — strategy-independent hardware constants and pin mapping
+- `testing.md` — firmware-only hardware test workflow
 - `contract-index.md` — canonical command/transport matrix and evidence pointers
 
 Verification for these docs should use local evidence in:

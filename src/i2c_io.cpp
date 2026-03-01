@@ -1,15 +1,23 @@
-#include "luce/stage2_io.h"
+#include "luce/i2c_io.h"
 
+#include <ctime>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
 
+#include "driver/adc.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "luce/dht_sensor.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "luce/boot_diagnostics.h"
+#include "luce/http_server.h"
+#include "luce/mdns.h"
+#include "luce/mqtt.h"
+#include "luce/net_wifi.h"
+#include "luce/ntp.h"
 
 #if LUCE_HAS_I2C
 
@@ -39,9 +47,14 @@ constexpr uint8_t kRelayOffValue = kRelayActiveHigh ? 0x00 : 0xFF;
 constexpr uint8_t kI2CSampleAddressStart = 0x08;
 constexpr uint8_t kI2CSampleAddressEnd = 0x77;
 constexpr uint8_t kButtonDebounceThreshold = 3;
-constexpr TickType_t kRelayStepDelay = pdMS_TO_TICKS(250);
 constexpr TickType_t kButtonSamplePeriod = pdMS_TO_TICKS(40);
 constexpr TickType_t kIntSamplePeriod = pdMS_TO_TICKS(200);
+constexpr bool kButtonActiveLow = true;
+constexpr gpio_num_t kDhtDataPin = GPIO_NUM_4;
+constexpr adc1_channel_t kLightSensorChannel = ADC1_CHANNEL_6;
+constexpr uint16_t kLightBitThreshold = 2048;
+constexpr TickType_t kSensorReadPeriod = pdMS_TO_TICKS(10000);
+constexpr TickType_t kLcdStatusUpdateTicks = pdMS_TO_TICKS(1000);
 
 // LCD I2C backpack is fixed at 0x27 on the current hardware map and 3.3V bus-compatible.
 constexpr uint8_t kLcdAddress = 0x27;
@@ -50,6 +63,11 @@ bool g_i2c_initialized = false;
 bool g_mcp_available = false;
 uint8_t g_relay_mask = kRelayOffValue;
 uint8_t g_button_mask = 0x00;
+bool g_light_sensor_ready = false;
+float g_last_temperature_c = 0.0f;
+float g_last_humidity_percent = 0.0f;
+int g_last_light_raw = 0;
+bool g_last_dht_read_ok = false;
 #if LUCE_HAS_LCD
 bool g_lcd_present = false;
 #endif
@@ -83,14 +101,37 @@ void stage2_log_runtime_status_line(uint64_t uptime_s, bool i2c_ok, bool mcp_ok,
            mcp_ok ? "ok" : "no", mask_line);
 }
 
-void stage2_log_stack_watermarks(const char* context) {
-  if (!context) {
-    context = "unknown";
+void init_light_sensor() {
+  if (g_light_sensor_ready) {
+    return;
   }
-  const UBaseType_t cli = 0;
-  const UBaseType_t diag = 0;
-  const UBaseType_t now = uxTaskGetStackHighWaterMark(nullptr);
-  ESP_LOGI(kTag, "Stack watermark (%s): cli=%u diag=%u current=%u", context, cli, diag, now);
+  adc1_config_width(ADC_WIDTH_BIT_12);
+  const esp_err_t atten_rc = adc1_config_channel_atten(kLightSensorChannel, ADC_ATTEN_DB_12);
+  if (atten_rc == ESP_OK) {
+    g_light_sensor_ready = true;
+  } else {
+    ESP_LOGW(kTag, "Light sensor ADC config failed: %s", esp_err_to_name(atten_rc));
+  }
+}
+
+void log_sensor_readings() {
+  init_light_sensor();
+  int light_raw = 0;
+  if (g_light_sensor_ready) {
+    light_raw = adc1_get_raw(kLightSensorChannel);
+  }
+  float humidity = 0.0f;
+  float temperature = 0.0f;
+  g_last_light_raw = light_raw;
+  if (dht21_22_read_with_retries(kDhtDataPin, temperature, humidity)) {
+    g_last_dht_read_ok = true;
+    g_last_temperature_c = temperature;
+    g_last_humidity_percent = humidity;
+    ESP_LOGI(kTag, "DHT21/22 temp=%.1fC hum=%.1f%% light=%d", temperature, humidity, light_raw);
+  } else {
+    g_last_dht_read_ok = false;
+    ESP_LOGW(kTag, "DHT21/22 read failed; light=%d", light_raw);
+  }
 }
 
 #if LUCE_HAS_LCD
@@ -231,20 +272,54 @@ class Pcf8574Hd44780 {
 Pcf8574Hd44780 g_lcd(kI2CPort, kLcdAddress);
 #endif  // LUCE_HAS_LCD
 
-void update_lcd_status() {
+#if !LUCE_HAS_LCD
+void update_lcd_status() {}
+#endif
+
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
+void update_lcd_status() {
   if (!g_lcd_present) {
     return;
   }
-  if (!g_mcp_available) {
-    g_lcd.write_status_lines(kRelayOffValue, g_button_mask);
-    return;
+
+  char ssid[33] = {0};
+  char utc_line[20 + 1] = {0};
+  char line1[21] = {0};
+  char line2[21] = {0};
+  char line3[21] = {0};
+  char line4[21] = {0};
+
+  wifi_get_ssid(ssid, sizeof(ssid));
+  const char* wifi_state = wifi_is_enabled() ? (wifi_is_ip_ready() ? "ok" : "conn") : "fail";
+  std::snprintf(line1, sizeof(line1), "SSID: %s", wifi_state);
+  std::snprintf(line2, sizeof(line2), "0x%02X | 0x%02X", g_button_mask, g_relay_mask);
+
+  if (g_last_dht_read_ok) {
+    const uint8_t light_bit = g_last_light_raw >= static_cast<int>(kLightBitThreshold) ? 1u : 0u;
+    std::snprintf(line3, sizeof(line3), "DHT %.1f/%.1f L:%u", g_last_temperature_c, g_last_humidity_percent,
+                  light_bit);
+  } else {
+    std::snprintf(line3, sizeof(line3), "DHT -/- L:%u", (g_last_light_raw >= static_cast<int>(kLightBitThreshold)) ? 1u : 0u);
   }
-  g_lcd.write_status_lines(g_relay_mask, g_button_mask);
-#endif
-#endif
+
+  const std::time_t utc_now = std::time(nullptr);
+  tm gmt{};
+  const tm* gmt_ptr = std::gmtime(&utc_now);
+  if (gmt_ptr != nullptr) {
+    gmt = *gmt_ptr;
+    std::strftime(utc_line, sizeof(utc_line), "%Y-%m-%dT%H:%M:%SZ", &gmt);
+  } else {
+    std::snprintf(utc_line, sizeof(utc_line), "n/a");
+  }
+  std::snprintf(line4, sizeof(line4), "%s", utc_line);
+
+  if (!g_lcd.write_text_line(0, line1) || !g_lcd.write_text_line(1, line2) || !g_lcd.write_text_line(2, line3) ||
+      !g_lcd.write_text_line(3, line4)) {
+    ESP_LOGW(kTag, "LCD status update failed");
+  }
 }
+
+#endif  // LUCE_HAS_LCD
 
 esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks) {
   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
@@ -324,38 +399,60 @@ InitPathResult run_i2c_scan_flow(I2cScanResult& scan, const char* context, bool 
   }
 
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
   if (scan.lcd) {
     const bool lcd_present = g_lcd.begin();
     if (!lcd_present) {
       ESP_LOGW(kTag, "LCD detected at 0x%02X but initialization failed; continuing without LCD",
                kLcdAddress);
-    } else {
+  } else {
       g_lcd.set_mcp_ok(false);
       g_lcd_present = true;
       ESP_LOGI(kTag, "LCD initialized at 0x%02X", kLcdAddress);
-      g_lcd.write_status_lines(kRelayOffValue, 0x00);
+      update_lcd_status();
     }
   }
-#else
-  (void)attach_lcd;
 #endif
-#else
   (void)attach_lcd;
-#endif
   return init_result_success();
 }
 
 I2cScanResult scan_i2c_bus() {
   I2cScanResult result;
+  char list_buf[sizeof(result.addresses)] = {0};
+  std::size_t next_addr_offset = 0;
 
   for (uint8_t addr = kI2CSampleAddressStart; addr <= kI2CSampleAddressEnd; ++addr) {
     if (i2c_probe_device(addr) == ESP_OK) {
       result.found_count += 1;
       result.mcp = result.mcp || (addr == kMcpAddress);
       result.lcd = result.lcd || (addr == kLcdAddress);
+      if (next_addr_offset < sizeof(list_buf)) {
+        if (next_addr_offset != 0) {
+          const std::size_t space_left = sizeof(list_buf) - next_addr_offset - 1;
+          if (space_left > 0) {
+            list_buf[next_addr_offset++] = ',';
+            list_buf[next_addr_offset] = '\0';
+          }
+        }
+        char token[6] = {0};
+        std::snprintf(token, sizeof(token), "0x%02X", addr);
+        const std::size_t token_len = std::strlen(token);
+        const std::size_t space_left = sizeof(list_buf) - next_addr_offset - 1;
+        const std::size_t copy_len = (token_len < space_left) ? token_len : (space_left > 0 ? space_left : 0);
+        if (copy_len > 0) {
+          std::memcpy(&list_buf[next_addr_offset], token, copy_len);
+          next_addr_offset += copy_len;
+          list_buf[next_addr_offset] = '\0';
+        }
+      }
       ESP_LOGI(kTag, "I2C found 0x%02X", addr);
     }
+  }
+
+  if (next_addr_offset == 0) {
+    std::snprintf(result.addresses, sizeof(result.addresses), "none");
+  } else {
+    std::snprintf(result.addresses, sizeof(result.addresses), "%s", list_buf);
   }
 
   if (result.found_count == 0) {
@@ -497,13 +594,8 @@ void run_stage2_diagnostics() {
   bool lcd_present = false;
 
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
   g_lcd_present = scan_result.ok && g_lcd_present;
   lcd_present = g_lcd_present;
-#else
-  (void)scan;
-  (void)lcd_present;
-#endif
 #else
   (void)scan;
   (void)lcd_present;
@@ -513,32 +605,20 @@ void run_stage2_diagnostics() {
   if (!init_mcp23017(mcp_state)) {
     ESP_LOGW(kTag, "Stage2 diagnostics degraded: MCP23017 missing or unresponsive");
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
-    if (lcd_present) {
-      g_lcd.write_status_lines(kRelayOffValue, 0x00);
-    }
-#endif
+  if (lcd_present) {
+    update_lcd_status();
+  }
 #endif
     g_mcp_available = false;
     g_relay_mask = kRelayOffValue;
     g_button_mask = 0x00;
     update_lcd_status();
     while (true) {
-      static TickType_t last_status_tick = 0;
-      const TickType_t now = xTaskGetTickCount();
-      if ((now - last_status_tick) >= pdMS_TO_TICKS(2000)) {
-        last_status_tick = now;
-        const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
-        stage2_log_runtime_status_line(uptime_s, true, false, kRelayOffValue, 0x00);
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
-        if (lcd_present && !g_lcd.write_status_lines(kRelayOffValue, 0x00)) {
-          ESP_LOGW(kTag, "LCD update failed (LCD-only mode)");
-        }
-#endif
-#endif
+      if (lcd_present) {
+        update_lcd_status();
       }
-
+#endif
       vTaskDelay(pdMS_TO_TICKS(100));
     }
   }
@@ -555,41 +635,31 @@ void run_stage2_diagnostics() {
   }
 
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
   g_lcd.set_mcp_ok(scan.mcp);
   if (lcd_present) {
-    g_lcd.write_status_lines(mcp_state.relay_mask, 0x00);
+    update_lcd_status();
   }
-#endif
 #endif
 
   uint8_t debounce_counts[8] = {0};
   uint8_t debounced_buttons = 0x00;
   uint8_t last_reported_buttons = 0x00;
   uint8_t current_buttons = 0x00;
-  uint8_t channel = 0;
   uint8_t relay_mask = kRelayOffValue;
-  uint8_t button_mask = 0x00;
   bool have_button_snapshot = false;
-  TickType_t last_relay_tick = 0;
   TickType_t last_button_tick = 0;
   TickType_t last_int_tick = 0;
-  TickType_t last_status_tick = 0;
+  TickType_t last_sensor_tick = 0;
   int last_int_level = gpio_get_level(kMcpIntPin);
+#if LUCE_HAS_LCD
+  TickType_t last_lcd_tick = 0;
+#endif
 
-  ESP_LOGI(kTag, "Entering Stage2 runtime diagnostics loop (1 ch at a time relay sweep + button sample)");
+  relay_mask = g_relay_mask;
+
+  ESP_LOGI(kTag, "Entering Stage2 runtime diagnostics loop (button-toggle relay control)");
   while (true) {
     const TickType_t now = xTaskGetTickCount();
-
-    if ((now - last_relay_tick) >= kRelayStepDelay) {
-      relay_mask = relay_mask_for_channel(channel);
-      if (set_relay_mask(mcp_state, relay_mask) == ESP_OK) {
-        ESP_LOGI(kTag, "Relay channel=%d sweep mask=0x%02X", static_cast<int>(channel), relay_mask);
-        g_relay_mask = relay_mask;
-      }
-      channel = static_cast<uint8_t>((channel + 1) % 8);
-      last_relay_tick = now;
-    }
 
     if ((now - last_button_tick) >= kButtonSamplePeriod) {
       last_button_tick = now;
@@ -597,13 +667,12 @@ void run_stage2_diagnostics() {
         if (!have_button_snapshot) {
           debounced_buttons = current_buttons;
           last_reported_buttons = current_buttons;
-          button_mask = debounced_buttons;
           have_button_snapshot = true;
-          ESP_LOGI(kTag, "Button init mask: 0x%02X (1=pressed? check wiring polarity)",
-                   current_buttons);
+          ESP_LOGI(kTag, "Button init mask: 0x%02X", current_buttons);
         } else {
           bool changed = false;
           for (uint8_t bit = 0; bit < 8; ++bit) {
+            const uint8_t bit_mask = static_cast<uint8_t>(1u << bit);
             bool raw = (current_buttons & (1u << bit)) != 0;
             bool stable = (debounced_buttons & (1u << bit)) != 0;
 
@@ -613,16 +682,33 @@ void run_stage2_diagnostics() {
             }
 
             if (++debounce_counts[bit] >= kButtonDebounceThreshold) {
-              debounced_buttons ^= (1u << bit);
+              const bool prev_pressed =
+                  kButtonActiveLow ? ((debounced_buttons & bit_mask) == 0) : ((debounced_buttons & bit_mask) != 0);
+              debounced_buttons ^= bit_mask;
               debounce_counts[bit] = 0;
               changed = true;
+              const bool next_pressed =
+                  kButtonActiveLow ? ((debounced_buttons & bit_mask) == 0) : ((debounced_buttons & bit_mask) != 0);
+              if (next_pressed) {
+                const uint8_t next_relay_mask = relay_mask ^ bit_mask;
+                const bool relay_on =
+                    kRelayActiveHigh ? ((next_relay_mask & bit_mask) != 0u) : ((next_relay_mask & bit_mask) == 0u);
+                ESP_LOGI(kTag, "Toggling Relay %u %s", static_cast<unsigned>(bit), relay_on ? "ON" : "OFF");
+                if (set_relay_mask(mcp_state, next_relay_mask) == ESP_OK) {
+                  relay_mask = next_relay_mask;
+                  g_relay_mask = next_relay_mask;
+                } else {
+                  ESP_LOGW(kTag, "Button %u relay write failed", static_cast<unsigned>(bit));
+                }
+              }
             }
           }
           if (changed && debounced_buttons != last_reported_buttons) {
-            button_mask = debounced_buttons;
             g_button_mask = debounced_buttons;
-            ESP_LOGI(kTag, "Button mask change: 0x%02X", debounced_buttons);
             last_reported_buttons = debounced_buttons;
+            if (lcd_present) {
+              update_lcd_status();
+            }
           }
         }
       } else {
@@ -639,32 +725,24 @@ void run_stage2_diagnostics() {
       }
     }
 
-    if ((now - last_status_tick) >= pdMS_TO_TICKS(2000)) {
-      last_status_tick = now;
-      const uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
-      stage2_log_runtime_status_line(uptime_s, true, true, relay_mask, button_mask);
-#if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
-      if (lcd_present) {
-        if (!g_lcd.write_status_lines(relay_mask, button_mask)) {
-          ESP_LOGW(kTag, "LCD update failed");
-        }
-      }
-#endif
-#endif
+    if ((now - last_sensor_tick) >= kSensorReadPeriod) {
+      last_sensor_tick = now;
+      log_sensor_readings();
     }
 
-    stage2_log_stack_watermarks("diag_loop");
-    if ((now - last_status_tick) >= pdMS_TO_TICKS(10000)) {
-      luce_log_heap_integrity("diag_loop_health");
+#if LUCE_HAS_LCD
+    if (lcd_present && (now - last_lcd_tick) >= kLcdStatusUpdateTicks) {
+      last_lcd_tick = now;
+      update_lcd_status();
     }
+#endif
+
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 
 bool stage2_lcd_write_text(const char* text) {
 #if LUCE_HAS_LCD
-#if LUCE_STAGE4_LCD
   if (!g_lcd_present) {
     ESP_LOGW(kTag, "CLI command lcd_print: LCD not initialized or absent");
     return false;
@@ -676,10 +754,6 @@ bool stage2_lcd_write_text(const char* text) {
   const bool ok = g_lcd.write_text(0, text);
   ESP_LOGI(kTag, "CLI command lcd_print: rc=%s text='%s'", ok ? "OK" : "ERR", text);
   return ok;
-#else
-  (void)text;
-  return false;
-#endif
 #else
   (void)text;
   return false;
@@ -704,6 +778,7 @@ struct I2cScanResult {
   bool mcp = false;
   bool lcd = false;
   int found_count = 0;
+  char addresses[64] = {0};
 };
 
 struct Mcp23017State {

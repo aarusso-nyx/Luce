@@ -1,10 +1,10 @@
-# LUCE HTTPS (Stage10)
+# LUCE HTTPS (NET1)
 
-Date: 2026-02-23
+Date: 2026-02-28
 
 ## Scope
 
-Stage10 provides HTTPS read-only telemetry/info endpoints.
+NET1 provides HTTPS read-only telemetry/info endpoints.
 No plaintext HTTP modes are defined in the current firmware profile.
 
 ## NVS schema (`http`)
@@ -32,9 +32,9 @@ No plaintext HTTP modes are defined in the current firmware profile.
 ## Logging
 
 - `[HTTP] request` lines with method, path, status, duration, remote IP.
-- `[HTTP] enabled` and startup lifecycle lines.
+- `[HTTP] enabled` and lifecycle lines.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
+- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
 - Evidence SHA: `2a3b9df`
