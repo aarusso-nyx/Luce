@@ -1,22 +1,53 @@
 # Luce Governance
 
-This repository follows `AGENTS.md` as the operational contract.
+This repository is governed by the `.codex/system.md` runtime instructions and `AGENTS.md` project contract.
 
-## Canonical Governance Paths
+## Governance Authorities
 
-- Audit evidence: `docs/governance/audit/`
-- Health evidence: `docs/governance/health/`
-- Compliance evidence: `docs/governance/compliance/`
+- Canonical governance evidence:
+  - `docs/governance/audit/` (required audit traces)
+  - `docs/governance/health/` (preflight / health status)
+  - `docs/governance/compliance/` (scorecard and compliance state)
+- Authoritative docs for behavior and operations:
+  - `docs/user/`
+- Working scratch space:
+  - `docs/work/inv/`
+  - `docs/work/diag/`
+  - `docs/work/plan/`
 
-## Work Scratch Paths
+## Repository State Baseline
 
-- Planning: `docs/work/plan/`
-- Investigation: `docs/work/inv/`
-- Diagnostics: `docs/work/diag/`
+- Build system: PlatformIO + ESP-IDF
+- Canonical build environments:
+  - `luce_core` — minimal strategy (`LUCE_STRATEGY_CORE`)
+  - `luce_net0` — CORE + networking control plane (`LUCE_STRATEGY_NET0`)
+  - `luce_net1` — CORE + NET0 + telemetry plane (`LUCE_STRATEGY_NET1`)
+- Canonical sdkconfig: `sdkconfig`
+- Removed/legacy stage artifacts are intentionally deprecated:
+  - `luce_stage*` env naming in PlatformIO/docs plans
+  - duplicate stage sdkconfig variants
 
-## Bootstrap Guardrails
+## Source of Truth for Tooling
 
-- Keep `README.md` and `AGENTS.md` stable at repository root.
-- Keep canonical source trees: `src/`, `include/`, `scripts/`.
-- Use canonical HTTP routes and MQTT topics only (no `/v2` aliases).
-- Keep CLI/HTTP/MQTT behavior and documentation in sync.
+- `platformio.ini` is authoritative for environments and active SDK config mapping.
+- `scripts/build.sh` is the canonical batch build entry point.
+- `scripts/flash.sh` and `scripts/monitor.sh` are canonical deployment/monitor commands.
+- Before any PlatformIO use, load shell environment:
+
+```bash
+source ~/.zshrc
+```
+
+This ensures `pio` resolves correctly in local shells.
+
+## Required Evidence References
+
+- `docs/governance/audit/structure-conformance.md`
+- `docs/governance/compliance/scorecard-current.md`
+- `docs/governance/health/preflight.md`
+
+## Conformance Notes
+
+- Keep `AGENTS.md`, `README.md`, and root layout stable and aligned.
+- Keep CLI / networking / persistence behavior updates paired with matching updates under `docs/user/`.
+- Prefer conservative rollout and explicit diagnostics when changing strategy gates.

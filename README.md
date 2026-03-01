@@ -2,11 +2,15 @@
 
 ESP32 firmware project built with PlatformIO + ESP-IDF.
 
+> Before running any `pio` command, ensure your shell environment is initialized:
+> `source ~/.zshrc`
+
 ## Build/Flash/Monitor
 
 Use the repository scripts for deterministic local workflows:
 
 ```bash
+source ~/.zshrc
 ./scripts/build.sh                 # build all strategy environments
 ./scripts/flash.sh luce_core        # flash a specific environment
 ./scripts/monitor.sh luce_core      # serial monitor with timestamps
@@ -15,7 +19,10 @@ Use the repository scripts for deterministic local workflows:
 You can also call PlatformIO directly:
 
 ```bash
+source ~/.zshrc
 pio run -e luce_core
+pio run -e luce_net0
+pio run -e luce_net1
 pio run -e luce_core -t upload
 pio device monitor -e luce_core --timestamp
 ```
@@ -30,6 +37,9 @@ pio device monitor -e luce_core --timestamp
 
 In `scripts/build.sh`, `LUCE_STRATEGY` can be used to build matching environments (`luce_core`, `luce_net0`, `luce_net1`).
 If no matching env exists, all declared environments are built.
+
+Default PlatformIO environment is `luce_net1`.
+Canonical SDK config is a single file: `sdkconfig` (shared across all three envs).
 
 Ports used by bootstrap scripts:
 ```bash

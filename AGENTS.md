@@ -1,9 +1,11 @@
 # AGENTS
 
 ## Repository Context
-- **Path**: `/Users/aarusso/Documents/PlatformIO/Projects/Luce`
+- **Path**: `/Users/aarusso/Development/Luce`
 - **Project type**: ESP32 firmware (ESP-IDF) with PlatformIO
 - **Primary stack**: C/C++ firmware + PlatformIO + ESP-IDF
+- **Canonical environments**: `luce_core`, `luce_net0`, `luce_net1`
+- **Canonical config**: `sdkconfig` (single source for all strategy envs)
 
 ## Standards and Layout
 - Governance artifacts must stay under:
@@ -23,13 +25,27 @@
 - Source and include trees remain canonical:
   - `src/`
   - `include/`
+  - `lib/`
   - `scripts/`
+- PlatformIO strategy environment file list and flags:
+  - `luce_core`: `-DLUCE_STRATEGY=LUCE_STRATEGY_CORE`
+  - `luce_net0`: `-DLUCE_STRATEGY=LUCE_STRATEGY_NET0`
+  - `luce_net1`: `-DLUCE_STRATEGY=LUCE_STRATEGY_NET1`
+- SDK config used by all envs is `sdkconfig` via `board_build.sdkconfig`.
 
 ## Required Governance Evidence
 - `docs/governance/audit/structure-conformance.md`
 - `docs/governance/compliance/scorecard-current.md`
 - `docs/governance/health/preflight.md`
 - Evidence outputs and temporary logs may be written under `docs/work/**`.
+
+## PlatformIO Environment Hygiene
+- Always initialize shell environment before invoking `pio`:
+  - `source ~/.zshrc`
+- Prefer `python3 -m platformio` only when `pio` is not on `PATH`.
+- Canonical command targets are:
+  - `luce_core`, `luce_net0`, `luce_net1`
+- Do not revive legacy `luce_stage*` build environments in new work.
 
 ## Contributor Expectations
 - Prefer task-oriented FreeRTOS architecture and explicit state ownership.
