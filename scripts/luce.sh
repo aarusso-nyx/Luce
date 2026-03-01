@@ -49,7 +49,7 @@ Global options:
   -v, --verbose           Print command lines before execution.
   -h, --help              Show this help.
 
-Commands:
+  Commands:
   build                 Build one env (if --env set) or all envs.
   upload                Upload firmware for selected env.
   monitor               Open device monitor for selected env.
@@ -57,6 +57,7 @@ Commands:
   test                  Smoke test selected env (default: net1) using serial marker assertions.
   lint                  Run static checks. Defaults to all envs when no --env.
   health                Run quick tooling + environment preflight checks.
+  http-smoke            Run HTTP API smoke checks against a running device endpoint.
   clean                 Run PlatformIO clean for selected env(s) or all.
   all                   Convenience chain; defaults to build.
 
@@ -67,6 +68,7 @@ Common command examples:
   ./scripts/luce.sh monitor --env default
   ./scripts/luce.sh collect --env net1 --tag boot --duration 120
   ./scripts/luce.sh test --env net1 --duration 45
+  ./scripts/luce.sh http-smoke --host https://192.168.1.99 --token ABC123
   ./scripts/luce.sh lint --env net1 --min-severity medium
   ./scripts/luce.sh health --run-build
 EOF
@@ -722,6 +724,59 @@ cmd_all() {
   fi
 }
 
+cmd_http_smoke() {
+  local host="https://127.0.0.1"
+  local token="${LUCE_HTTP_TOKEN:-}"
+  local skip_unauth=0
+
+  while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+      --host)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --host requires a value" >&2
+          exit 1
+        fi
+        host="${2:-}"
+        shift 2
+        ;;
+      --token)
+        token="${2:-}"
+        shift 2
+        ;;
+      --skip-unauth)
+        skip_unauth=1
+        shift
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "error: unknown http-smoke option '${1}'" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  local out_dir
+  local log_file
+  out_dir="$(artifact_dir http-smoke "${REQUESTED_ENV:-default}")"
+  log_file="${out_dir}/http-smoke.txt"
+
+  local -a args=(
+    "--host" "${host}"
+  )
+  if [ -n "${token}" ]; then
+    args+=(--token "${token}")
+  fi
+  if [ "${skip_unauth}" -eq 1 ]; then
+    args+=(--skip-unauth)
+  fi
+
+  run_and_capture "${log_file}" bash "${SCRIPT_DIR}/http_api_smoke.sh" "${args[@]}"
+  echo "http-smoke: PASS"
+}
+
 parse_globals() {
   while [ "${#}" -gt 0 ]; do
     case "${1}" in
@@ -830,6 +885,7 @@ main() {
     test) cmd_test "$@" ;;
     lint) cmd_lint "$@" ;;
     health) cmd_health "$@" ;;
+    http-smoke) cmd_http_smoke "$@" ;;
     clean) cmd_clean "$@" ;;
     all) cmd_all "$@" ;;
     *)

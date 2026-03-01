@@ -96,11 +96,13 @@ int cli_handle_free(int, char*[]);
 int cli_handle_sensor(int, char*[]);
 int cli_handle_test(int, char*[]);
 int cli_handle_log(int, char*[]);
+int cli_handle_logpage(int, char*[]);
 int cli_handle_set(int, char*[]);
 int cli_handle_system(int, char*[]);
 int cli_handle_state(int, char*[]);
 int cli_handle_sensors(int, char*[]);
 int cli_handle_wifi_status(int, char*[]);
+int cli_handle_wifi(int, char*[]);
 int cli_handle_wifi_scan(int, char*[]);
 int cli_handle_time_status(int, char*[]);
 #if LUCE_HAS_OTA
@@ -134,6 +136,7 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"sensors", false, true, "sensors", cli_handle_sensors},
     {"set", true, false, "set <relay|mask|led> <ids>=<on|off>", cli_handle_set},
     {"log", true, false, "log [show | buffer [<size>] | console [level|format] [<val>] | logfile [level|format] [<val>]]", cli_handle_log},
+    {"logpage", true, false, "logpage <next|prev|reset|show>", cli_handle_logpage},
     {"test", true, false, "test", cli_handle_test},
     {"reset", true, false, "reset", cli_handle_reset},
     {"parts", false, true, "parts", cli_handle_parts},
@@ -147,6 +150,7 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"buttons", false, true, "buttons", cli_handle_buttons},
     {"lcd_print", false, false, "lcd_print <text>", cli_handle_lcd_print},
     {"reboot", true, false, "reboot", cli_handle_reboot},
+    {"wifi", false, true, "wifi", cli_handle_wifi},
     {"wifi.status", false, true, "wifi.status", cli_handle_wifi_status},
     {"wifi.scan", false, true, "wifi.scan", cli_handle_wifi_scan},
     {"time.status", false, true, "time.status", cli_handle_time_status},
@@ -336,8 +340,8 @@ const char* wakeup_reason_name(esp_sleep_wakeup_cause_t reason) {
       return "GPIO";
     case ESP_SLEEP_WAKEUP_UART:
       return "UART";
-    case ESP_SLEEP_WAKEUP_WIFI_FTM:
-      return "WIFI_FTM";
+    case ESP_SLEEP_WAKEUP_WIFI:
+      return "WIFI";
     case ESP_SLEEP_WAKEUP_COCPU:
       return "COCPU";
     case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG:
@@ -353,13 +357,13 @@ bool parse_bool_value(const char* token, bool* out_value) {
   if (!token || !out_value) {
     return false;
   }
-  if (std::strcmp(token, "1") == 0 || std::strcasecmp(token, "on") == 0 ||
-      std::strcasecmp(token, "true") == 0 || std::strcasecmp(token, "yes") == 0) {
+  if (std::strcmp(token, "1") == 0 || strcasecmp(token, "on") == 0 ||
+      strcasecmp(token, "true") == 0 || strcasecmp(token, "yes") == 0) {
     *out_value = true;
     return true;
   }
-  if (std::strcmp(token, "0") == 0 || std::strcasecmp(token, "off") == 0 ||
-      std::strcasecmp(token, "false") == 0 || std::strcasecmp(token, "no") == 0) {
+  if (std::strcmp(token, "0") == 0 || strcasecmp(token, "off") == 0 ||
+      strcasecmp(token, "false") == 0 || strcasecmp(token, "no") == 0) {
     *out_value = false;
     return true;
   }
@@ -423,9 +427,42 @@ int cli_handle_state(int, char*[]) {
 
 int cli_handle_sensor(int argc, char* argv[]) {
   if (argc > 1 && (std::strcmp(argv[1], "-h") == 0 || std::strcmp(argv[1], "--help") == 0)) {
-    ESP_LOGI(kTag, "CLI command sensor: reads [interval_s] [count], not stored");
+    ESP_LOGI(kTag, "CLI command sensor: reads [interval_s] [count], no interval polling in this firmware");
+    return 0;
   }
-  cli_cmd_sensor_snapshot();
+
+  if (argc == 1) {
+    cli_cmd_sensor_snapshot();
+    return 0;
+  }
+  if (argc == 2 || argc > 3) {
+    ESP_LOGW(kTag, "CLI command sensor: usage sensor [interval_s] [count]");
+    return 1;
+  }
+
+  std::uint32_t interval = 0;
+  std::uint32_t count = 1;
+  char parsed_interval[32] = {0};
+  char parsed_count[32] = {0};
+  if (!parse_u32_with_base(argv[1], 10, &interval, parsed_interval) || interval == 0) {
+    ESP_LOGW(kTag, "CLI command sensor: invalid interval '%s'", parsed_interval);
+    return 1;
+  }
+  if (interval % 2 != 0) {
+    ESP_LOGW(kTag, "CLI command sensor: interval must be multiple of 2 seconds");
+    return 1;
+  }
+  if (!parse_u32_with_base(argv[2], 10, &count, parsed_count)) {
+    ESP_LOGW(kTag, "CLI command sensor: invalid count '%s'", parsed_count);
+    return 1;
+  }
+  for (std::uint32_t i = 0; i < count; ++i) {
+    cli_cmd_sensor_snapshot();
+    if (i + 1 >= count) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(interval * 1000U));
+  }
   return 0;
 }
 
@@ -522,9 +559,9 @@ int cli_handle_set(int argc, char* argv[]) {
     return 1;
   }
 
-  const bool target_is_relay = (std::strcasecmp(mode, "relay") == 0);
-  const bool target_is_mask = (std::strcasecmp(mode, "mask") == 0);
-  const bool target_is_led = (std::strcasecmp(mode, "led") == 0);
+  const bool target_is_relay = (strcasecmp(mode, "relay") == 0);
+  const bool target_is_mask = (strcasecmp(mode, "mask") == 0);
+  const bool target_is_led = (strcasecmp(mode, "led") == 0);
   if (!target_is_relay && !target_is_mask && !target_is_led) {
     ESP_LOGW(kTag, "CLI command set: invalid target '%s'", mode);
     return 1;
@@ -563,7 +600,6 @@ int cli_handle_set(int argc, char* argv[]) {
       std::uint32_t end = 0;
       const std::size_t dash = token.find('-');
       if (dash == std::string::npos) {
-        std::size_t consumed = 0;
         const char* start_cstr = token.c_str();
         char* end_ptr = nullptr;
         start = static_cast<std::uint32_t>(std::strtoul(start_cstr, &end_ptr, 10));
@@ -673,8 +709,36 @@ int cli_handle_log(int argc, char* argv[]) {
   return 1;
 }
 
+int cli_handle_logpage(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command logpage usage: logpage <next|prev|reset|show>");
+    return 1;
+  }
+  if (std::strcmp(argv[1], "show") == 0) {
+    io_lcd_show_logs_page();
+    return 0;
+  }
+  if (std::strcmp(argv[1], "next") == 0) {
+    io_lcd_show_logs_page();
+    io_lcd_log_page_next();
+    return 0;
+  }
+  if (std::strcmp(argv[1], "prev") == 0) {
+    io_lcd_show_logs_page();
+    io_lcd_log_page_prev();
+    return 0;
+  }
+  if (std::strcmp(argv[1], "reset") == 0) {
+    io_lcd_show_logs_page();
+    io_lcd_log_page_reset();
+    return 0;
+  }
+  ESP_LOGW(kTag, "CLI command logpage usage: logpage <next|prev|reset|show>");
+  return 1;
+}
+
 int cli_handle_reset(int argc, char* argv[]) {
-  if (argc < 2 || std::strcasecmp(argv[1], "yes") != 0) {
+  if (argc < 2 || strcasecmp(argv[1], "yes") != 0) {
     ESP_LOGW(kTag, "CLI command reset: factory reset! use 'reset yes' to confirm");
     return 1;
   }
@@ -706,6 +770,11 @@ int cli_handle_reboot(int, char*[]) {
 }
 
 int cli_handle_wifi_status(int, char*[]) {
+  wifi_status_for_cli();
+  return 0;
+}
+
+int cli_handle_wifi(int, char*[]) {
   wifi_status_for_cli();
   return 0;
 }
@@ -784,8 +853,7 @@ void cli_cmd_uptime() {
   const std::uint64_t mins = (uptime_s / 60ULL) % 60ULL;
   const std::uint64_t secs = uptime_s % 60ULL;
   const std::time_t boot_time = std::time(NULL) - static_cast<std::time_t>(uptime_s);
-  std::tm tm_buf {};
-  std::tm* tm_utc = std::gmtime(&boot_time) != nullptr ? std::gmtime(&boot_time) : nullptr;
+  std::tm* tm_utc = std::gmtime(&boot_time);
   char date_line[40] = "n/a";
   if (tm_utc != nullptr) {
     std::snprintf(date_line, sizeof(date_line), "%04d-%02d-%02dT%02d:%02d:%02dZ",
@@ -848,15 +916,17 @@ void cli_cmd_sensor_snapshot() {
   float temperature = 0.0f;
   float humidity = 0.0f;
   int light = 0;
+  int voltage = 0;
   bool dht_ok = false;
   I2cSensorSnapshot snapshot {};
   if (read_sensor_snapshot(snapshot)) {
     temperature = snapshot.temperature_c;
     humidity = snapshot.humidity_percent;
     light = snapshot.light_raw;
+    voltage = snapshot.voltage_raw;
     dht_ok = snapshot.dht_ok;
   }
-  ESP_LOGI(kTag, "CLI command sensor: temp=%.1fC hum=%.1f%% light=%d dht=%s", temperature, humidity, light,
+  ESP_LOGI(kTag, "CLI command sensor: temp=%.1fC hum=%.1f%% light=%d voltage=%d dht=%s", temperature, humidity, light, voltage,
            dht_ok ? "ok" : "invalid");
 }
 

@@ -8,7 +8,7 @@ Date: 2026-02-28
 - `wifi-lifecycle.md` — NET0 behavior and event model
 - `ntp.md` — NET0 SNTP state machine and `time.status`
 - `mdns.md` — NET0 hostname + TXT records + `mdns.status`
-- `mqtt.md` — NET1 publish-only telemetry + `mqtt.status`, `mqtt.pubtest`
+- `mqtt.md` — NET1 control subscriptions + telemetry + compatibility aliases + `mqtt.status`, `mqtt.pubtest`
 - `http.md` — NET1 HTTPS-only API + `http.status`
 - `architecture.md` — Strategy gating and direct orchestration model
 - `nvs-schema.md` — NVS namespaces and key defaults

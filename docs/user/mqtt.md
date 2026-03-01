@@ -4,7 +4,7 @@ Date: 2026-02-28
 
 ## Role
 
-Publish-only telemetry client with TLS optional and deterministic reconnect behavior.
+MQTT client with inbound control subscriptions and outbound telemetry/compatibility aliases.
 
 ## NVS schema (`mqtt`)
 
@@ -24,8 +24,42 @@ Publish-only telemetry client with TLS optional and deterministic reconnect beha
 - Enabled only when `mqtt/enabled = 1`.
 - If no IP yet, service remains in backoff state.
 - Connect/reconnect with exponential backoff.
-- No subscriptions are created in NET1 implementation.
+- Subscribes to inbound control topics on connect (base topic):
+  - `config/#`
+  - `relays/#`
+  - `sensor/#`
+  - `leds/#`
 - Telemetry payload includes basic firmware, network, relay/button state and timestamp fields.
+
+Supported inbound behavior:
+- `relays/state` (`uint8_t` bitmask) sets relay states.
+- `relays/state/<idx>` (`0|1` or `off|on`) sets relay index `idx`.
+- `config/*` accepts selected runtime options and stores them in NVS for next reboot:
+  - `name`, `hostname`
+  - `wifi/ssid`, `wifi/pass`
+  - `mqtt`, `mqtt/uri`, `mqtt/client_id`, `mqtt/base_topic`, `mqtt/username`, `mqtt/password`,
+    `mqtt/tls_enabled`, `mqtt/ca_pem_source`, `mqtt/qos`, `mqtt/keepalive_s`
+  - `mdns/instance`
+  - `http/token`
+  - `cli_net/token`
+- `sensor/threshold` stores `sensor/threshold` in NVS and updates live relay scheduling.
+- `config/*` supports legacy compatibility aliases and keeps legacy keys for future migration:
+  - `config/name`, `config/hostname`, `config/ssid`, `config/ssid2`, `config/pass`, `config/pass2`,
+    `config/wifi/ssid`, `config/wifi/pass`,
+  - `config/mqtt`, `config/mqtt/*`,
+  - `config/log*` logger compatibility fields (stored in `compat` namespace).
+- `relays/night` and `relays/night/<idx>` persist night masks into NVS and apply relay day/night suppression policy immediately.
+- `leds/state` and `leds/state/<idx>` publish current status-mask snapshots for compatibility and return deterministic state.
+
+Publishes legacy compatibility aliases under the base topic:
+  - `sensor/lighting`
+  - `sensor/voltage`
+  - `sensor/temperature`
+  - `sensor/humidity`
+- `relays/state`
+  - `relays/state/<idx>`
+
+Additional: `leds/state` and `leds/state/<idx>` can be queried as compatibility read-back topics.
 
 ## CLI
 

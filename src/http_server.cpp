@@ -1,4 +1,4 @@
-// HTTPS-only read-only server.
+// HTTPS API server + captive HTTP web portal.
 #include "luce/http_server.h"
 
 #include <cinttypes>
@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_http_server.h"
 #include "esp_https_server.h"
 #include "nvs.h"
 
@@ -32,8 +33,10 @@ namespace {
 constexpr const char* kTag = "[HTTP]";
 constexpr const char* kHttpNs = "http";
 constexpr std::uint16_t kDefaultHttpPort = 443;
+constexpr std::uint16_t kCaptiveHttpPort = 80;
 constexpr const char* kDefaultToken = "luce-token";
 constexpr const char* kUnauthorizedPayload = "{\"error\":\"unauthorized\"}";
+constexpr const char* kMethodNotAllowedPayload = "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
 
 enum class HttpState : std::uint8_t {
   kDisabled = 0,
@@ -52,6 +55,7 @@ struct HttpConfig {
 HttpConfig g_cfg {};
 HttpState g_state = HttpState::kDisabled;
 httpd_handle_t g_httpd = nullptr;
+httpd_handle_t g_captive_httpd = nullptr;
 TaskHandle_t g_task = nullptr;
 
 static const char kServerCertPgm[] = R"EOF(-----BEGIN CERTIFICATE-----
@@ -62,6 +66,28 @@ static const char kServerKeyPgm[] = R"EOF(-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9...
 -----END PRIVATE KEY-----
 )EOF";
+
+extern "C" {
+extern const unsigned char webapp_index_html[];
+extern const unsigned int webapp_index_html_len;
+extern const unsigned char webapp_app_css[];
+extern const unsigned int webapp_app_css_len;
+extern const unsigned char webapp_script_js[];
+extern const unsigned int webapp_script_js_len;
+}
+
+struct WebAsset {
+  const char* uri;
+  const char* content_type;
+  const std::uint8_t* data;
+  std::size_t size;
+};
+
+const WebAsset kWebAppAssets[] = {
+    {"/index.html", "text/html; charset=utf-8", webapp_index_html, static_cast<std::size_t>(webapp_index_html_len)},
+    {"/app.css", "text/css; charset=utf-8", webapp_app_css, static_cast<std::size_t>(webapp_app_css_len)},
+    {"/script.js", "text/javascript; charset=utf-8", webapp_script_js, static_cast<std::size_t>(webapp_script_js_len)},
+};
 
 const char* state_name(HttpState state) {
   switch (state) {
@@ -136,6 +162,16 @@ esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size
   return httpd_resp_send(req, payload, payload_len);
 }
 
+esp_err_t send_method_not_allowed(httpd_req_t* req, const char* allowed_methods) {
+  char payload[96] = {0};
+  std::snprintf(payload, sizeof(payload), kMethodNotAllowedPayload, allowed_methods ? allowed_methods : "GET");
+  httpd_resp_set_status(req, "405");
+  if (allowed_methods != nullptr) {
+    httpd_resp_set_hdr(req, "Allow", allowed_methods);
+  }
+  return send_json(req, 405, payload, 0);
+}
+
 esp_err_t send_unauthorized(httpd_req_t* req) {
   ESP_LOGW(kTag, "[HTTP] auth fail");
   return send_json(req, 401, kUnauthorizedPayload, 0);
@@ -170,12 +206,18 @@ esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
 }
 
 esp_err_t route_health(httpd_req_t* req) {
+  if (req->method != HTTP_GET) {
+    return send_method_not_allowed(req, "GET");
+  }
   char payload[256] = {0};
   get_uptime_payload(payload, sizeof(payload));
   return send_json(req, 200, payload, 0);
 }
 
 esp_err_t route_info(httpd_req_t* req) {
+  if (req->method != HTTP_GET) {
+    return send_method_not_allowed(req, "GET");
+  }
   if (!validate_auth(req)) {
     return send_unauthorized(req);
   }
@@ -189,7 +231,21 @@ esp_err_t route_info(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
+esp_err_t route_version(httpd_req_t* req) {
+  if (req->method != HTTP_GET) {
+    return send_method_not_allowed(req, "GET");
+  }
+  char payload[192] = {0};
+  std::snprintf(payload, sizeof(payload),
+                "{\"service\":\"luce\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\",\"build\":\"%s %s\"}",
+                LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__);
+  return send_json(req, 200, payload, 0);
+}
+
 esp_err_t route_state(httpd_req_t* req) {
+  if (req->method != HTTP_GET) {
+    return send_method_not_allowed(req, "GET");
+  }
   if (!validate_auth(req)) {
     return send_unauthorized(req);
   }
@@ -205,6 +261,9 @@ esp_err_t route_state(httpd_req_t* req) {
 }
 
 esp_err_t route_ota(httpd_req_t* req) {
+  if (req->method != HTTP_GET) {
+    return send_method_not_allowed(req, "GET");
+  }
   if (!validate_auth(req)) {
     return send_unauthorized(req);
   }
@@ -214,6 +273,9 @@ esp_err_t route_ota(httpd_req_t* req) {
 }
 
 esp_err_t route_ota_check(httpd_req_t* req) {
+  if (req->method != HTTP_POST && req->method != HTTP_PUT) {
+    return send_method_not_allowed(req, "POST, PUT");
+  }
   if (!validate_auth(req)) {
     return send_unauthorized(req);
   }
@@ -243,38 +305,78 @@ esp_err_t route_ota_check(httpd_req_t* req) {
   return send_json(req, 202, payload, 0);
 }
 
+const WebAsset* resolve_captive_asset(const char* path) {
+  if (path == nullptr) {
+    return &kWebAppAssets[0];
+  }
+  if (std::strcmp(path, "/") == 0 || std::strcmp(path, "/index.html") == 0) {
+    return &kWebAppAssets[0];
+  }
+  for (std::size_t i = 1; i < (sizeof(kWebAppAssets) / sizeof(kWebAppAssets[0])); ++i) {
+    if (std::strcmp(path, kWebAppAssets[i].uri) == 0) {
+      return &kWebAppAssets[i];
+    }
+  }
+  return &kWebAppAssets[0];
+}
+
+esp_err_t route_captive(httpd_req_t* req) {
+  const WebAsset* asset = resolve_captive_asset(req != nullptr ? req->uri : nullptr);
+  if (asset == nullptr || asset->data == nullptr || asset->size == 0) {
+    ESP_LOGW(kTag, "[HTTP][CAPTIVE] requested asset missing uri=%s", req && req->uri ? req->uri : "<null>");
+    return httpd_resp_send_404(req);
+  }
+
+  httpd_resp_set_type(req, asset->content_type);
+  return httpd_resp_send(req, reinterpret_cast<const char*>(asset->data), asset->size);
+}
+
 httpd_uri_t g_uri_health = {
     .uri = "/api/health",
-    .method = HTTP_GET,
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_health,
     .user_ctx = nullptr,
 };
 
 httpd_uri_t g_uri_info = {
     .uri = "/api/info",
-    .method = HTTP_GET,
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_info,
+    .user_ctx = nullptr,
+};
+
+httpd_uri_t g_uri_version = {
+    .uri = "/api/version",
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
+    .handler = route_version,
     .user_ctx = nullptr,
 };
 
 httpd_uri_t g_uri_state = {
     .uri = "/api/state",
-    .method = HTTP_GET,
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_state,
     .user_ctx = nullptr,
 };
 
 httpd_uri_t g_uri_ota = {
     .uri = "/api/ota",
-    .method = HTTP_GET,
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_ota,
     .user_ctx = nullptr,
 };
 
 httpd_uri_t g_uri_ota_check = {
     .uri = "/api/ota/check",
-    .method = HTTP_POST,
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_ota_check,
+    .user_ctx = nullptr,
+};
+
+httpd_uri_t g_uri_captive = {
+    .uri = "/*",
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
+    .handler = route_captive,
     .user_ctx = nullptr,
 };
 
@@ -284,11 +386,21 @@ void stop_http_server() {
   }
   httpd_ssl_stop(g_httpd);
   g_httpd = nullptr;
-  set_state(HttpState::kInit, "stopped");
+}
+
+void stop_captive_http_server() {
+  if (g_captive_httpd == nullptr) {
+    return;
+  }
+  httpd_stop(g_captive_httpd);
+  g_captive_httpd = nullptr;
 }
 
 void start_http_server() {
   if (g_httpd != nullptr) {
+    return;
+  }
+  if (!g_cfg.enabled) {
     return;
   }
 
@@ -306,26 +418,58 @@ void start_http_server() {
   if (err != ESP_OK) {
     ESP_LOGW(kTag, "[HTTP] start failed=%s", esp_err_to_name(err));
     g_httpd = nullptr;
-    set_state(HttpState::kFailed, "start_failed");
     return;
   }
 
   httpd_register_uri_handler(g_httpd, &g_uri_health);
   httpd_register_uri_handler(g_httpd, &g_uri_info);
+  httpd_register_uri_handler(g_httpd, &g_uri_version);
   httpd_register_uri_handler(g_httpd, &g_uri_state);
   httpd_register_uri_handler(g_httpd, &g_uri_ota);
   httpd_register_uri_handler(g_httpd, &g_uri_ota_check);
-  set_state(HttpState::kStarted, "started");
   ESP_LOGI(kTag, "[HTTP] started");
-  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/state, /api/ota, /api/ota/check");
+  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, /api/ota/check");
+}
+
+void start_captive_http_server() {
+  if (g_captive_httpd != nullptr) {
+    return;
+  }
+  if (!g_cfg.enabled || g_cfg.port == kCaptiveHttpPort) {
+    return;
+  }
+
+  httpd_config_t conf = HTTPD_DEFAULT_CONFIG();
+  conf.server_port = kCaptiveHttpPort;
+  conf.max_uri_handlers = 4;
+  conf.task_priority = 5;
+  conf.stack_size = 8192;
+  conf.uri_match_fn = httpd_uri_match_wildcard;
+
+  const esp_err_t err = httpd_start(&g_captive_httpd, &conf);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "[HTTP][CAPTIVE] start failed=%s", esp_err_to_name(err));
+    g_captive_httpd = nullptr;
+    return;
+  }
+
+  httpd_register_uri_handler(g_captive_httpd, &g_uri_captive);
+  ESP_LOGI(kTag, "[HTTP][CAPTIVE] started on port %u", static_cast<unsigned>(kCaptiveHttpPort));
+}
+
+void sync_http_state() {
+  if (g_httpd != nullptr || g_captive_httpd != nullptr) {
+    set_state(HttpState::kStarted, "running");
+  } else if (g_cfg.enabled && wifi_is_ip_ready()) {
+    set_state(HttpState::kFailed, "start_failed");
+  }
 }
 
 void http_loop(void*) {
   for (;;) {
     if (!g_cfg.enabled) {
-      if (g_httpd != nullptr) {
-        stop_http_server();
-      }
+      stop_http_server();
+      stop_captive_http_server();
       set_state(HttpState::kDisabled, "disabled");
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
@@ -333,20 +477,23 @@ void http_loop(void*) {
 
     if (!wifi_is_ip_ready()) {
       set_state(HttpState::kInit, "waiting_ip");
-      if (g_httpd != nullptr) {
-        stop_http_server();
-      }
+      stop_http_server();
+      stop_captive_http_server();
       vTaskDelay(pdMS_TO_TICKS(1000));
       continue;
     }
 
     if (g_httpd == nullptr) {
       start_http_server();
-      if (g_httpd == nullptr) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-      }
+    }
+    if (g_captive_httpd == nullptr) {
+      start_captive_http_server();
+    }
+    if (g_httpd == nullptr && g_captive_httpd == nullptr) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
+    sync_http_state();
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -362,7 +509,7 @@ bool http_is_enabled() {
 }
 
 bool http_is_running() {
-  return g_httpd != nullptr;
+  return g_httpd != nullptr || g_captive_httpd != nullptr;
 }
 
 void http_startup() {
@@ -376,7 +523,8 @@ void http_startup() {
 }
 
 void http_status_for_cli() {
-  ESP_LOGI(kTag, "http.status state=%s enabled=%d port=%u", state_name(g_state), g_cfg.enabled ? 1 : 0, g_cfg.port);
+  ESP_LOGI(kTag, "http.status state=%s enabled=%d https_port=%u captive_port=%u", state_name(g_state), g_cfg.enabled ? 1 : 0,
+           g_cfg.port, static_cast<unsigned>(kCaptiveHttpPort));
 }
 
 #else

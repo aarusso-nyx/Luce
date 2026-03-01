@@ -48,6 +48,15 @@ LUCE uses namespace-scoped key-value configuration.
   - `port` u16
   - `token` string
   - `tls_dev_mode` u8
+- `relays`
+- `state` u32 (stored relay request mask, loaded at startup)
+- `state_fmt` u8 = 1 when `state` is stored as request-mask (internal migration marker)
+- `night_mask` u8 (relay policy: suppresses these relays during day)
+- `compat`
+  - `log_console_fmt` string
+  - `log_file_fmt` string
+  - `log_console_level` string
+  - `log_file_level` string
 
 ## Defaults
 

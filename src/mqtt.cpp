@@ -2,8 +2,10 @@
 #include "luce/mqtt.h"
 
 #include <cinttypes>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if LUCE_HAS_MQTT
@@ -22,6 +24,7 @@
 #include "luce/net_wifi.h"
 #include "luce/i2c_io.h"
 #include "luce_build.h"
+#include "luce/led_status.h"
 #include "luce/task_budgets.h"
 
 namespace {
@@ -33,7 +36,12 @@ constexpr std::uint32_t kBackoffMinMs = 30000;
 constexpr std::uint32_t kBackoffMaxMs = 60000;
 constexpr const char* kMqttNvsTag = "[MQTT][NVS]";
 constexpr std::uint16_t kPayloadBufferBytes = 256;
+constexpr std::uint16_t kPayloadTextBufferBytes = 128;
 constexpr std::uint16_t kTopicSuffixBufferBytes = 128;
+constexpr std::uint16_t kTopicTextBufferBytes = 128;
+constexpr std::uint8_t kRelayCount = 8;
+constexpr const char* kRelaysNs = "relays";
+constexpr const char* kRelaysNightKey = "night_mask";
 
 enum class MqttState : std::uint8_t {
   kDisabled = 0,
@@ -68,6 +76,567 @@ TickType_t g_next_retry_tick = 0;
 std::uint32_t g_backoff_ms = 0;
 bool g_connected = false;
 std::uint32_t g_last_rcvd = 0;
+
+int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std::size_t payload_len = 0);
+
+bool parse_u32_value(const char* text, std::uint32_t* out_value) {
+  if (!text || !out_value || *text == '\0') {
+    return false;
+  }
+  char* end = nullptr;
+  const std::uint32_t parsed = static_cast<std::uint32_t>(std::strtoul(text, &end, 0));
+  if (*end != '\0') {
+    return false;
+  }
+  *out_value = parsed;
+  return true;
+}
+
+bool parse_bool_value(const char* text, bool* out_value) {
+  if (!text || !out_value || *text == '\0') {
+    return false;
+  }
+  if (std::strcmp(text, "1") == 0) {
+    *out_value = true;
+    return true;
+  }
+  if (std::strcmp(text, "0") == 0) {
+    *out_value = false;
+    return true;
+  }
+
+  char lowered[kPayloadTextBufferBytes] = {0};
+  std::size_t idx = 0;
+  for (const char* read = text; *read != '\0' && idx + 1 < sizeof(lowered); ++read) {
+    const unsigned char ch = static_cast<unsigned char>(*read);
+    if (ch == ' ' || ch == '\t') {
+      continue;
+    }
+    lowered[idx++] = static_cast<char>(std::tolower(ch));
+  }
+  if (std::strcmp(lowered, "on") == 0 || std::strcmp(lowered, "true") == 0 || std::strcmp(lowered, "yes") == 0) {
+    *out_value = true;
+    return true;
+  }
+  if (std::strcmp(lowered, "off") == 0 || std::strcmp(lowered, "false") == 0 || std::strcmp(lowered, "no") == 0) {
+    *out_value = false;
+    return true;
+  }
+  return false;
+}
+
+bool trim_to_buffer(const char* text, char* out, std::size_t out_size) {
+  if (!text || !out || out_size == 0) {
+    return false;
+  }
+
+  std::size_t start = 0;
+  while (text[start] != '\0' && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n')) {
+    ++start;
+  }
+
+  std::size_t end = std::strlen(text);
+  while (end > start &&
+         (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r' || text[end - 1] == '\n')) {
+    --end;
+  }
+
+  if (end <= start) {
+    out[0] = '\0';
+    return false;
+  }
+
+  const std::size_t text_len = end - start;
+  const std::size_t safe_len = (text_len < (out_size - 1)) ? text_len : (out_size - 1);
+  std::memcpy(out, text + start, safe_len);
+  out[safe_len] = '\0';
+  return true;
+}
+
+bool nvs_write_u8(const char* ns, const char* key, std::uint8_t value) {
+  nvs_handle_t handle = 0;
+  if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][NVS] failed to open namespace '%s' for update", ns);
+    return false;
+  }
+  const esp_err_t set_rc = nvs_set_u8(handle, key, value);
+  const bool ok = (set_rc == ESP_OK) ? (nvs_commit(handle) == ESP_OK) : false;
+  nvs_close(handle);
+  if (!ok) {
+    ESP_LOGW(kTag, "[MQTT][NVS] failed to persist %s/%s=%u", ns, key, static_cast<unsigned>(value));
+  }
+  return ok;
+}
+
+bool nvs_write_u32(const char* ns, const char* key, std::uint32_t value) {
+  nvs_handle_t handle = 0;
+  if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][NVS] failed to open namespace '%s' for update", ns);
+    return false;
+  }
+  const esp_err_t set_rc = nvs_set_u32(handle, key, value);
+  const bool ok = (set_rc == ESP_OK) ? (nvs_commit(handle) == ESP_OK) : false;
+  nvs_close(handle);
+  if (!ok) {
+    ESP_LOGW(kTag, "[MQTT][NVS] failed to persist %s/%s=%lu", ns, key, static_cast<unsigned long>(value));
+  }
+  return ok;
+}
+
+bool nvs_write_string(const char* ns, const char* key, const char* value, bool mask_value = false) {
+  if (!value) {
+    return false;
+  }
+  nvs_handle_t handle = 0;
+  if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][NVS] failed to open namespace '%s' for update", ns);
+    return false;
+  }
+  const esp_err_t set_rc = nvs_set_str(handle, key, value);
+  const bool ok = (set_rc == ESP_OK) ? (nvs_commit(handle) == ESP_OK) : false;
+  nvs_close(handle);
+  if (!ok) {
+    ESP_LOGW(kTag, "[MQTT][NVS] failed to persist %s/%s=%s", ns, key, mask_value ? "********" : value);
+  }
+  return ok;
+}
+
+void publish_unsupported_config(const char* subtopic, const char* payload) {
+  if (payload != nullptr) {
+    ESP_LOGW(kTag, "[MQTT][IN] config topic '%s' unsupported or read-only with value '%s'", subtopic ? subtopic : "(null)",
+             payload);
+  } else {
+    ESP_LOGW(kTag, "[MQTT][IN] config topic '%s' unsupported or read-only", subtopic ? subtopic : "(null)");
+  }
+}
+
+bool persist_config_bool(const char* ns, const char* key, const char* payload, const char* tag) {
+  bool value = false;
+  if (!parse_bool_value(payload, &value)) {
+    ESP_LOGW(kTag, "[MQTT][IN] %s config value must be bool: %s", tag ? tag : "config", payload ? payload : "(null)");
+    return false;
+  }
+  if (!nvs_write_u8(ns, key, value ? 1u : 0u)) {
+    return false;
+  }
+  ESP_LOGI(kTag, "[MQTT][IN] %s set %s/%s=%u (reboot to apply)", tag ? tag : "config", ns, key,
+           static_cast<unsigned>(value ? 1u : 0u));
+  return true;
+}
+
+bool persist_config_u32(const char* ns, const char* key, const char* payload, const char* tag, std::uint32_t min = 0,
+                       std::uint32_t max = 0xFFFFFFFFu) {
+  std::uint32_t value = 0;
+  if (!parse_u32_value(payload, &value)) {
+    ESP_LOGW(kTag, "[MQTT][IN] %s config value must be integer: %s", tag ? tag : "config", payload ? payload : "(null)");
+    return false;
+  }
+  value = luce::runtime::clamp_u32(value, min, max);
+  if (!nvs_write_u32(ns, key, value)) {
+    return false;
+  }
+  ESP_LOGI(kTag, "[MQTT][IN] %s set %s/%s=%lu (reboot to apply)", tag ? tag : "config", ns, key,
+           static_cast<unsigned long>(value));
+  return true;
+}
+void copy_text(const char* source, std::size_t length, char* out, std::size_t out_size) {
+  if (!source || !out || out_size == 0) {
+    return;
+  }
+  const std::size_t safe_len = (length < (out_size - 1)) ? length : (out_size - 1);
+  if (safe_len > 0) {
+    std::memcpy(out, source, safe_len);
+  }
+  out[safe_len] = '\0';
+}
+
+void subscribe_control_topics() {
+  if (!g_client || g_cfg.base_topic[0] == '\0') {
+    return;
+  }
+
+  char topic[kTopicTextBufferBytes] = {0};
+  std::snprintf(topic, sizeof(topic), "%s/config/#", g_cfg.base_topic);
+  esp_mqtt_client_subscribe(g_client, topic, g_cfg.qos);
+  std::snprintf(topic, sizeof(topic), "%s/relays/#", g_cfg.base_topic);
+  esp_mqtt_client_subscribe(g_client, topic, g_cfg.qos);
+  std::snprintf(topic, sizeof(topic), "%s/sensor/#", g_cfg.base_topic);
+  esp_mqtt_client_subscribe(g_client, topic, g_cfg.qos);
+  std::snprintf(topic, sizeof(topic), "%s/leds/#", g_cfg.base_topic);
+  esp_mqtt_client_subscribe(g_client, topic, g_cfg.qos);
+}
+
+void handle_relay_state_index(const char* index_text, const char* payload) {
+  std::uint32_t index = 0;
+  if (!parse_u32_value(index_text, &index) || index >= kRelayCount) {
+    ESP_LOGW(kTag, "[MQTT][IN] invalid relay index '%s' for relays/state", index_text ? index_text : "(null)");
+    led_status_notify_user_error();
+    return;
+  }
+
+  bool on = false;
+  if (!parse_bool_value(payload, &on)) {
+    ESP_LOGW(kTag, "[MQTT][IN] invalid relay value '%s' for relays/state/%u", payload ? payload : "(null)",
+             static_cast<unsigned>(index));
+    led_status_notify_user_error();
+    return;
+  }
+
+  const std::uint8_t next_mask = relay_mask_for_channel_state(static_cast<int>(index), on, g_relay_mask);
+  if (set_relay_mask_safe(next_mask) != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][IN] relays/state/%u failed (i/o unavailable)", static_cast<unsigned>(index));
+    led_status_notify_user_error();
+    return;
+  }
+  g_relay_mask = next_mask;
+  led_status_notify_user_input();
+  ESP_LOGI(kTag, "[MQTT][IN] relays/state/%u=%s", static_cast<unsigned>(index), on ? "on" : "off");
+}
+
+void handle_relay_state(const char* payload) {
+  std::uint32_t mask = 0;
+  if (!parse_u32_value(payload, &mask) || mask > 0xFFu) {
+    ESP_LOGW(kTag, "[MQTT][IN] invalid relay mask '%s' for relays/state", payload ? payload : "(null)");
+    led_status_notify_user_error();
+    return;
+  }
+
+  const std::uint8_t next_mask = static_cast<std::uint8_t>(mask & 0xFFu);
+  if (set_relay_mask_safe(next_mask) != ESP_OK) {
+    ESP_LOGW(kTag, "[MQTT][IN] relays/state failed (i/o unavailable)");
+    led_status_notify_user_error();
+    return;
+  }
+  g_relay_mask = next_mask;
+  led_status_notify_user_input();
+  ESP_LOGI(kTag, "[MQTT][IN] relays/state=%u", static_cast<unsigned>(next_mask));
+}
+
+void handle_relay_topic(const char* subtopic, const char* payload) {
+  if (std::strcmp(subtopic, "state") == 0) {
+    handle_relay_state(payload);
+    return;
+  }
+  if (std::strncmp(subtopic, "state/", 6) == 0) {
+    handle_relay_state_index(subtopic + 6, payload);
+    return;
+  }
+
+  if (std::strncmp(subtopic, "night", 5) == 0) {
+    if (std::strcmp(subtopic, "night") == 0) {
+      char value_text[kPayloadTextBufferBytes] = {0};
+      if (!trim_to_buffer(payload, value_text, sizeof(value_text))) {
+        ESP_LOGW(kTag, "[MQTT][IN] relays/night payload empty");
+        return;
+      }
+      std::uint32_t night_mask = 0;
+      if (!parse_u32_value(value_text, &night_mask) || night_mask > 0xFFu) {
+        ESP_LOGW(kTag, "[MQTT][IN] relays/night invalid mask '%s'", value_text);
+        led_status_notify_user_error();
+        return;
+      }
+      io_set_relay_night_mask(static_cast<std::uint8_t>(night_mask));
+      ESP_LOGI(kTag, "[MQTT][IN] relays/night set=0x%02lX", static_cast<unsigned long>(night_mask));
+      return;
+    }
+
+    if (std::strncmp(subtopic, "night/", 6) == 0) {
+      char index_text[kTopicSuffixBufferBytes] = {0};
+      std::snprintf(index_text, sizeof(index_text), "%s", subtopic + 6);
+      std::uint32_t index = 0;
+      if (!parse_u32_value(index_text, &index) || index >= kRelayCount) {
+        ESP_LOGW(kTag, "[MQTT][IN] relays/night/%s invalid relay index", subtopic + 6);
+        led_status_notify_user_error();
+        return;
+      }
+      char value_text[kPayloadTextBufferBytes] = {0};
+      if (!trim_to_buffer(payload, value_text, sizeof(value_text))) {
+        ESP_LOGW(kTag, "[MQTT][IN] relays/night/%u payload empty", static_cast<unsigned>(index));
+        return;
+      }
+      bool on = false;
+      if (!parse_bool_value(value_text, &on)) {
+        ESP_LOGW(kTag, "[MQTT][IN] relays/night/%u invalid value '%s'", static_cast<unsigned>(index), value_text);
+        led_status_notify_user_error();
+        return;
+      }
+      std::uint8_t mask = io_relay_night_mask();
+      if (on) {
+        mask |= static_cast<std::uint8_t>(1u << index);
+      } else {
+        mask &= static_cast<std::uint8_t>(~(1u << index));
+      }
+      io_set_relay_night_mask(mask);
+      ESP_LOGI(kTag, "[MQTT][IN] relays/night/%u=%s (mask=0x%02X)", static_cast<unsigned>(index), on ? "on" : "off",
+               static_cast<unsigned>(mask));
+      return;
+    }
+
+    ESP_LOGW(kTag, "[MQTT][IN] relays/%s ignored (legacy command not implemented)", subtopic);
+    return;
+  }
+
+  if (payload != nullptr) {
+    ESP_LOGW(kTag, "[MQTT][IN] unhandled relays topic '%s' payload='%s'", subtopic, payload);
+  } else {
+    ESP_LOGW(kTag, "[MQTT][IN] unhandled relays topic '%s'", subtopic);
+  }
+}
+
+void handle_config_topic(const char* subtopic, const char* payload) {
+  if (!subtopic || subtopic[0] == '\0') {
+    ESP_LOGW(kTag, "[MQTT][IN] empty config topic");
+    return;
+  }
+
+  char value_text[kPayloadTextBufferBytes] = {0};
+  if (!trim_to_buffer(payload, value_text, sizeof(value_text))) {
+    ESP_LOGW(kTag, "[MQTT][IN] config/%s payload empty", subtopic);
+    return;
+  }
+
+  if (std::strcmp(subtopic, "name") == 0) {
+    if (nvs_write_string("net", "hostname", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/name set net/hostname=%s (reboot to apply)", value_text);
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "hostname") == 0) {
+    if (nvs_write_string("net", "hostname", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/hostname set net/hostname=%s (reboot to apply)", value_text);
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "ssid") == 0) {
+    if (nvs_write_string("wifi", "ssid", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/ssid set wifi/ssid=%s (reboot to apply)", value_text);
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "pass") == 0) {
+    if (nvs_write_string("wifi", "pass", value_text, true)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/pass set wifi/pass (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "ssid2") == 0) {
+    if (nvs_write_string("wifi", "ssid2", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/ssid2 set wifi/ssid2=%s (reboot to apply)", value_text);
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "pass2") == 0) {
+    if (nvs_write_string("wifi", "pass2", value_text, true)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/pass2 set wifi/pass2 (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "wifi/ssid") == 0) {
+    if (nvs_write_string("wifi", "ssid", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/wifi/ssid updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "wifi/pass") == 0) {
+    if (nvs_write_string("wifi", "pass", value_text, true)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/wifi/pass updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "logConsoleFmt") == 0) {
+    ESP_LOGI(kTag, "[MQTT][IN] config/logConsoleFmt='%s' (compat, retained only)", value_text);
+    (void)nvs_write_string("compat", "log_console_fmt", value_text);
+    return;
+  }
+  if (std::strcmp(subtopic, "logFileFmt") == 0) {
+    ESP_LOGI(kTag, "[MQTT][IN] config/logFileFmt='%s' (compat, retained only)", value_text);
+    (void)nvs_write_string("compat", "log_file_fmt", value_text);
+    return;
+  }
+  if (std::strcmp(subtopic, "logConsoleLevel") == 0) {
+    ESP_LOGI(kTag, "[MQTT][IN] config/logConsoleLevel='%s' (compat, retained only)", value_text);
+    (void)nvs_write_string("compat", "log_console_level", value_text);
+    return;
+  }
+  if (std::strcmp(subtopic, "logFileLevel") == 0) {
+    ESP_LOGI(kTag, "[MQTT][IN] config/logFileLevel='%s' (compat, retained only)", value_text);
+    (void)nvs_write_string("compat", "log_file_level", value_text);
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt") == 0 || std::strcmp(subtopic, "mqtt/uri") == 0) {
+    if (nvs_write_string("mqtt", "uri", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt uri updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/client_id") == 0) {
+    if (nvs_write_string("mqtt", "client_id", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/client_id updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/base_topic") == 0) {
+    if (nvs_write_string("mqtt", "base_topic", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/base_topic updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/username") == 0) {
+    if (nvs_write_string("mqtt", "username", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/username updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/password") == 0) {
+    if (nvs_write_string("mqtt", "password", value_text, true)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/password updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/tls_enabled") == 0) {
+    (void)persist_config_bool("mqtt", "tls_enabled", value_text, "mqtt");
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/ca_pem_source") == 0) {
+    if (nvs_write_string("mqtt", "ca_pem_source", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/ca_pem_source set=%s (reboot to apply)", value_text);
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/qos") == 0) {
+    (void)persist_config_u32("mqtt", "qos", value_text, "mqtt", 0u, 2u);
+    return;
+  }
+  if (std::strcmp(subtopic, "mqtt/keepalive_s") == 0) {
+    (void)persist_config_u32("mqtt", "keepalive_s", value_text, "mqtt", 30u, 7200u);
+    return;
+  }
+  if (std::strcmp(subtopic, "mdns/instance") == 0) {
+    if (nvs_write_string("mdns", "instance", value_text)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/mdns/instance set=%s (reboot to apply)", value_text);
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "http/token") == 0) {
+    if (nvs_write_string("http", "token", value_text, true)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/http/token updated (reboot to apply)");
+    }
+    return;
+  }
+  if (std::strcmp(subtopic, "cli_net/token") == 0) {
+    if (nvs_write_string("cli_net", "token", value_text, true)) {
+      ESP_LOGI(kTag, "[MQTT][IN] config/cli_net/token updated (reboot to apply)");
+    }
+    return;
+  }
+
+  publish_unsupported_config(subtopic, value_text);
+}
+
+void handle_sensor_topic(const char* subtopic, const char* payload) {
+  if (std::strcmp(subtopic, "threshold") == 0) {
+    char value_text[kPayloadTextBufferBytes] = {0};
+    if (trim_to_buffer(payload, value_text, sizeof(value_text))) {
+      std::uint32_t threshold = 0u;
+      if (parse_u32_value(value_text, &threshold)) {
+        if (threshold > 5000u) {
+          threshold = 5000u;
+        }
+        io_set_light_threshold(static_cast<std::uint16_t>(threshold));
+        (void)persist_config_u32("sensor", "threshold", value_text, "sensor", 0u, 5000u);
+      }
+    }
+    return;
+  }
+  ESP_LOGW(kTag, "[MQTT][IN] sensor topic '%s' ignored", subtopic);
+}
+
+void handle_leds_topic(const char* subtopic, const char* payload) {
+  if (!subtopic || subtopic[0] == '\0') {
+    return;
+  }
+  if (std::strcmp(subtopic, "state") == 0) {
+    char value[kPayloadTextBufferBytes] = {0};
+    if (trim_to_buffer(payload, value, sizeof(value))) {
+      ESP_LOGI(kTag, "[MQTT][IN] leds/state request ignored; publishing compatibility snapshot");
+      const std::uint8_t current_mask = led_status_current_mask();
+      std::snprintf(value, sizeof(value), "%u", static_cast<unsigned>(current_mask));
+      (void)publish_with_topic_suffix("leds/state", value);
+    } else {
+      const std::uint8_t current_mask = led_status_current_mask();
+      std::snprintf(value, sizeof(value), "%u", static_cast<unsigned>(current_mask));
+      (void)publish_with_topic_suffix("leds/state", value);
+    }
+    return;
+  }
+  if (std::strncmp(subtopic, "state/", 6) == 0) {
+    std::uint32_t index = 0;
+    if (!parse_u32_value(subtopic + 6, &index) || index > 2) {
+      ESP_LOGW(kTag, "[MQTT][IN] leds/state/<idx> index must be 0-2");
+      return;
+    }
+    char value[kPayloadTextBufferBytes] = {0};
+    const std::uint8_t current_mask = led_status_current_mask();
+    std::snprintf(value, sizeof(value), "%u", static_cast<unsigned>((current_mask >> index) & 0x1u));
+    (void)publish_with_topic_suffix(subtopic, value);
+    return;
+  }
+  ESP_LOGW(kTag, "[MQTT][IN] leds topic '%s' ignored (status-only LED pipeline)", subtopic);
+}
+
+void dispatch_inbound_message(const char* subtopic, const char* payload) {
+  if (!subtopic || subtopic[0] == '\0') {
+    return;
+  }
+
+  if (std::strncmp(subtopic, "config/", 7) == 0) {
+    handle_config_topic(subtopic + 7, payload);
+  } else if (std::strncmp(subtopic, "relays/", 7) == 0) {
+    handle_relay_topic(subtopic + 7, payload);
+  } else if (std::strncmp(subtopic, "sensor/", 7) == 0) {
+    handle_sensor_topic(subtopic + 7, payload);
+  } else if (std::strncmp(subtopic, "leds/", 5) == 0) {
+    handle_leds_topic(subtopic + 5, payload);
+  } else {
+    ESP_LOGW(kTag, "[MQTT][IN] unhandled topic '%s'", subtopic);
+  }
+}
+
+void publish_relay_aliases() {
+  if (!g_client || !g_connected) {
+    return;
+  }
+  char payload[kPayloadTextBufferBytes] = {0};
+  std::snprintf(payload, sizeof(payload), "%u", static_cast<unsigned>(g_relay_mask));
+  (void)publish_with_topic_suffix("relays/state", payload);
+
+  for (std::uint8_t idx = 0; idx < kRelayCount; ++idx) {
+    const std::uint8_t on_mask = relay_mask_for_channel_state(static_cast<int>(idx), true, g_relay_mask);
+    const bool on = (on_mask != g_relay_mask);
+    char idx_topic[kTopicTextBufferBytes] = {0};
+    std::snprintf(idx_topic, sizeof(idx_topic), "relays/state/%u", static_cast<unsigned>(idx));
+    std::snprintf(payload, sizeof(payload), "%d", on ? 1 : 0);
+    (void)publish_with_topic_suffix(idx_topic, payload);
+  }
+}
+
+void publish_sensor_aliases() {
+  if (!g_client || !g_connected) {
+    return;
+  }
+  I2cSensorSnapshot snapshot {};
+  (void)read_sensor_snapshot(snapshot);
+
+  char payload[kPayloadTextBufferBytes] = {0};
+  std::snprintf(payload, sizeof(payload), "%d", snapshot.light_raw);
+  (void)publish_with_topic_suffix("sensor/lighting", payload);
+  std::snprintf(payload, sizeof(payload), "%d", snapshot.voltage_raw);
+  (void)publish_with_topic_suffix("sensor/voltage", payload);
+  std::snprintf(payload, sizeof(payload), "%.2f", static_cast<double>(snapshot.temperature_c));
+  (void)publish_with_topic_suffix("sensor/temperature", payload);
+  std::snprintf(payload, sizeof(payload), "%.2f", static_cast<double>(snapshot.humidity_percent));
+  (void)publish_with_topic_suffix("sensor/humidity", payload);
+}
 
 const char* state_name(MqttState state) {
   switch (state) {
@@ -138,7 +707,7 @@ void load_mqtt_config() {
   g_cfg.tls_enabled = (tls != 0);
   f_qos = luce::nvs::read_u32(handle, "qos", u32, 0);
   if (f_qos) {
-    g_cfg.qos = luce::runtime::clamp_u32(u32, 0u, 1u);
+    g_cfg.qos = luce::runtime::clamp_u32(u32, 0u, 2u);
   }
   f_keepalive = luce::nvs::read_u32(handle, "keepalive_s", u32, 120);
   if (f_keepalive) {
@@ -216,6 +785,7 @@ void setup_client() {
         g_backoff_ms = 0;
         g_reconnect_count = 0;
         set_state(MqttState::kConnected, "connected");
+        subscribe_control_topics();
         ESP_LOGI(kTag, "[MQTT][EVENT] connected");
         break;
       case MQTT_EVENT_DISCONNECTED:
@@ -231,6 +801,28 @@ void setup_client() {
         ESP_LOGW(kTag, "[MQTT][EVENT] error");
         schedule_backoff();
         break;
+      case MQTT_EVENT_DATA:
+      {
+        if (!event || event->topic == nullptr || event->topic_len == 0 || event->data == nullptr || event->data_len == 0) {
+          break;
+        }
+        char topic[kTopicTextBufferBytes] = {0};
+        char payload[kPayloadTextBufferBytes] = {0};
+        copy_text(event->topic, event->topic_len, topic, sizeof(topic));
+        copy_text(event->data, event->data_len, payload, sizeof(payload));
+
+        const std::size_t base_len = std::strlen(g_cfg.base_topic);
+        if (base_len == 0 || std::strncmp(topic, g_cfg.base_topic, base_len) != 0 || topic[base_len] != '/') {
+          break;
+        }
+        const char* subtopic = topic + base_len + 1;
+        if (subtopic[0] == '\0') {
+          break;
+        }
+        dispatch_inbound_message(subtopic, payload);
+        g_last_rcvd = xTaskGetTickCount();
+        break;
+      }
       default:
         break;
     }
@@ -244,7 +836,7 @@ void setup_client() {
   }
 }
 
-int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std::size_t payload_len = 0) {
+int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std::size_t payload_len) {
   if (!g_client || !g_connected || topic_suffix == nullptr || *topic_suffix == '\0' || payload == nullptr) {
     return -1;
   }
@@ -275,6 +867,8 @@ void publish_state() {
     ESP_LOGW(kTag, "[MQTT][PUB] failed rc=%d", rc);
     return;
   }
+  publish_sensor_aliases();
+  publish_relay_aliases();
   ++g_publish_count;
   ESP_LOGI(kTag, "[MQTT][PUB] topic=%s/telemetry/state bytes=%zu rc=%d", g_cfg.base_topic, std::strlen(payload), rc);
 }

@@ -26,6 +26,7 @@ struct I2cSensorSnapshot {
   float temperature_c = 0.0f;
   float humidity_percent = 0.0f;
   int light_raw = 0;
+  int voltage_raw = 0;
   bool dht_ok = false;
 };
 
@@ -58,5 +59,14 @@ bool read_button_inputs(uint8_t* value);
 void configure_int_pin();
 void io_startup();
 bool read_sensor_snapshot(I2cSensorSnapshot& snapshot);
+void io_set_relay_night_mask(std::uint8_t night_mask);
+void io_set_light_threshold(std::uint16_t threshold);
+void io_apply_relay_policy();
+std::uint8_t io_relay_night_mask();
+std::uint16_t io_light_threshold();
+void io_lcd_show_logs_page();
+void io_lcd_log_page_next();
+void io_lcd_log_page_prev();
+void io_lcd_log_page_reset();
 
 bool i2c_lcd_write_text(const char* text);

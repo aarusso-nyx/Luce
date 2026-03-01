@@ -7,7 +7,7 @@ Authoritative docs for implementation behavior and operations.
 - `wifi-lifecycle.md` — Wi-Fi state machine and config keys
 - `ntp.md` — SNTP service behavior and CLI
 - `mdns.md` — zero-config LAN advertising
-- `mqtt.md` — publish-only MQTT telemetry and config
+- `mqtt.md` — MQTT control subscriptions, outbound telemetry, and compatibility aliases
 - `http.md` — HTTPS read-only API
 - `nvs-schema.md` — persisted configuration keys
 - `hardware-map.md` — strategy-independent hardware constants and pin mapping

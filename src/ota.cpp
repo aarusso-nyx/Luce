@@ -1,5 +1,6 @@
 // OTA update service implementation.
 #include "luce/ota.h"
+#include <cstdio>
 
 #if LUCE_HAS_OTA
 
@@ -7,7 +8,6 @@
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 
 #include "luce_build.h"
@@ -441,7 +441,7 @@ void ota_request_check() {}
 void ota_request_check_with_url(const char*) {}
 void ota_build_status_payload(char* out, std::size_t out_size) {
   if (out && out_size > 0) {
-    std::snprintf(out, out_size, "{\"enabled\":false,\"state\":\"DISABLED\",\"running\":false}");
+    snprintf(out, out_size, "{\"enabled\":false,\"state\":\"DISABLED\",\"running\":false}");
   }
 }
 

@@ -89,6 +89,7 @@ bool g_device_booting = true;
 bool g_alert_active = false;
 std::uint8_t g_user_input_events = 0;
 std::uint8_t g_user_error_events = 0;
+std::uint8_t g_status_mask = 0;
 
 DeviceLedMode g_device_mode = DeviceLedMode::kStartup;
 BlinkState g_device_blink;
@@ -380,6 +381,12 @@ void led_status_task(void*) {
       }
     }
 
+    const std::uint8_t next_mask = static_cast<std::uint8_t>((led0 ? 0x01u : 0x00u) | (led1 ? 0x02u : 0x00u) |
+                                                            (led2 ? 0x04u : 0x00u));
+    portENTER_CRITICAL(&g_state_lock);
+    g_status_mask = next_mask;
+    portEXIT_CRITICAL(&g_state_lock);
+
     gpio_set_level(kLedDeviceStatus, led0 ? 1 : 0);
     gpio_set_level(kLedNetworkStatus, led1 ? 1 : 0);
     gpio_set_level(kLedOperationStatus, led2 ? 1 : 0);
@@ -439,4 +446,11 @@ void led_status_notify_user_error() {
   const std::uint16_t queued = g_user_error_events + 1;
   g_user_error_events = static_cast<std::uint8_t>((queued > kMaxQueuedUserPulses) ? kMaxQueuedUserPulses : queued);
   portEXIT_CRITICAL(&g_state_lock);
+}
+
+std::uint8_t led_status_current_mask() {
+  portENTER_CRITICAL(&g_state_lock);
+  const std::uint8_t mask = g_status_mask;
+  portEXIT_CRITICAL(&g_state_lock);
+  return mask;
 }
