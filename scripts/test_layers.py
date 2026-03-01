@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import shlex
 import subprocess
 import sys
@@ -21,6 +22,9 @@ from typing import Sequence
 
 
 LAYERS = ("build", "boot", "http", "tcp", "ws", "mqtt")
+LAYER_GROUPS = {
+    "critical": ("http", "tcp", "ws", "mqtt"),
+}
 
 
 @dataclass
@@ -30,6 +34,14 @@ class LayerResult:
     rc: int
     log: str
     details: str = ""
+
+
+@dataclass
+class SpawnedBroker:
+    proc: subprocess.Popen[str]
+    host: str
+    port: int
+    log_path: Path
 
 
 def utc_now_compact() -> str:
@@ -48,10 +60,31 @@ def append_log(log_path: Path, text: str) -> None:
             fh.write("\n")
 
 
-def run_cmd(cmd: Sequence[str], *, log_path: Path, cwd: Path | None = None) -> int:
+def run_cmd(
+    cmd: Sequence[str],
+    *,
+    log_path: Path,
+    cwd: Path | None = None,
+    timeout_s: float | None = None,
+) -> int:
     append_log(log_path, f"==> {shell_join(cmd)}")
     append_log(log_path, f"# {datetime.now(timezone.utc).isoformat()}")
-    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if exc.stdout:
+            append_log(log_path, exc.stdout)
+        if exc.stderr:
+            append_log(log_path, exc.stderr)
+        append_log(log_path, f"command_timeout={timeout_s}")
+        append_log(log_path, "command_exit=124")
+        return 124
     if proc.stdout:
         append_log(log_path, proc.stdout)
     if proc.stderr:
@@ -64,10 +97,17 @@ def resolve_layers(raw: str) -> list[str]:
     raw = raw.strip().lower()
     if raw in ("all", "full"):
         return list(LAYERS)
+    if raw in LAYER_GROUPS:
+        return list(LAYER_GROUPS[raw])
     selected = []
     for part in raw.split(","):
         item = part.strip()
         if not item:
+            continue
+        if item in LAYER_GROUPS:
+            for expanded in LAYER_GROUPS[item]:
+                if expanded not in selected:
+                    selected.append(expanded)
             continue
         if item not in LAYERS:
             raise ValueError(f"unknown layer: {item}")
@@ -88,7 +128,7 @@ def expected_boot_markers(env: str) -> list[str]:
 def run_build_layer(args: argparse.Namespace, repo_root: Path, out_dir: Path) -> LayerResult:
     log = out_dir / "build.log"
     zsh_cmd = f"source ~/.zshrc && cd {shlex.quote(str(repo_root))} && python3 -m platformio run -e {shlex.quote(args.env)}"
-    rc = run_cmd(["/bin/zsh", "-lc", zsh_cmd], log_path=log)
+    rc = run_cmd(["/bin/zsh", "-lc", zsh_cmd], log_path=log, timeout_s=args.layer_timeout_s)
     status = "PASS" if rc == 0 else "FAIL"
     return LayerResult("build", status, rc, str(log))
 
@@ -102,7 +142,7 @@ def run_boot_layer(args: argparse.Namespace, repo_root: Path, out_dir: Path) -> 
         f"cd {shlex.quote(str(repo_root))} && "
         f"python3 -m platformio run -e {shlex.quote(args.env)} -t upload --upload-port {shlex.quote(args.upload_port)}"
     )
-    rc = run_cmd(["/bin/zsh", "-lc", upload_cmd], log_path=log)
+    rc = run_cmd(["/bin/zsh", "-lc", upload_cmd], log_path=log, timeout_s=args.layer_timeout_s)
     if rc != 0:
         return LayerResult("boot", "FAIL", rc, str(log), "upload failed")
 
@@ -118,7 +158,7 @@ def run_boot_layer(args: argparse.Namespace, repo_root: Path, out_dir: Path) -> 
         "--output",
         str(serial_log),
     ]
-    rc = run_cmd(capture_cmd, log_path=log, cwd=repo_root)
+    rc = run_cmd(capture_cmd, log_path=log, cwd=repo_root, timeout_s=args.layer_timeout_s)
     if rc != 0:
         return LayerResult("boot", "FAIL", rc, str(log), "serial capture failed")
 
@@ -187,9 +227,122 @@ def pytest_cmd_for_layer(args: argparse.Namespace, repo_root: Path, out_dir: Pat
 def run_pytest_layer(args: argparse.Namespace, repo_root: Path, out_dir: Path, layer: str) -> LayerResult:
     log = out_dir / f"{layer}.log"
     cmd = pytest_cmd_for_layer(args, repo_root, out_dir, layer)
-    rc = run_cmd(cmd, log_path=log, cwd=repo_root)
+    rc = run_cmd(cmd, log_path=log, cwd=repo_root, timeout_s=args.layer_timeout_s)
     status = "PASS" if rc == 0 else "FAIL"
     return LayerResult(layer, status, rc, str(log))
+
+
+def wait_for_tcp(host: str, port: int, timeout_s: float) -> bool:
+    deadline = time_monotonic() + timeout_s
+    while time_monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            try:
+                sock.connect((host, port))
+                return True
+            except OSError:
+                pass
+        sleep_short()
+    return False
+
+
+def time_monotonic() -> float:
+    import time
+
+    return time.monotonic()
+
+
+def sleep_short() -> None:
+    import time
+
+    time.sleep(0.1)
+
+
+def spawn_test_mqtt_broker(args: argparse.Namespace, out_dir: Path) -> SpawnedBroker:
+    try:
+        import amqtt  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("amqtt not installed; install with 'python3 -m pip install -r tests/requirements.txt'") from exc
+
+    broker_log = out_dir / "test-mqtt-broker.log"
+    broker_script = out_dir / "_spawn_test_mqtt_broker.py"
+    broker_script.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env python3
+            import asyncio
+            import signal
+            from amqtt.broker import Broker
+
+            HOST = {args.test_mqtt_host!r}
+            PORT = {int(args.test_mqtt_port)!r}
+
+            CONFIG = {{
+                "listeners": {{
+                    "default": {{
+                        "type": "tcp",
+                        "bind": f"{{HOST}}:{{PORT}}",
+                    }}
+                }},
+                "sys_interval": 0,
+                "topic-check": {{
+                    "enabled": False
+                }},
+                "auth": {{
+                    "allow-anonymous": True
+                }},
+            }}
+
+            async def main() -> None:
+                broker = Broker(CONFIG)
+                await broker.start()
+                stop_event = asyncio.Event()
+
+                def _stop(*_args):
+                    stop_event.set()
+
+                loop = asyncio.get_running_loop()
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop.add_signal_handler(sig, _stop)
+
+                print(f"AMQTT broker started on {{HOST}}:{{PORT}}", flush=True)
+                await stop_event.wait()
+                await broker.shutdown()
+
+            if __name__ == "__main__":
+                asyncio.run(main())
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    proc = subprocess.Popen(
+        ["python3", str(broker_script)],
+        stdout=broker_log.open("w", encoding="utf-8"),
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    if not wait_for_tcp(args.test_mqtt_host, int(args.test_mqtt_port), timeout_s=args.test_mqtt_startup_timeout):
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise RuntimeError(f"failed to start test MQTT broker on {args.test_mqtt_host}:{args.test_mqtt_port}")
+
+    return SpawnedBroker(proc=proc, host=args.test_mqtt_host, port=int(args.test_mqtt_port), log_path=broker_log)
+
+
+def stop_test_mqtt_broker(broker: SpawnedBroker) -> None:
+    if broker.proc.poll() is not None:
+        return
+    broker.proc.terminate()
+    try:
+        broker.proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        broker.proc.kill()
+        broker.proc.wait(timeout=3)
 
 
 def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> None:
@@ -244,6 +397,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
             Selection:
               --layers all
+              --layers critical
               --layers build,boot,http,tcp,ws,mqtt
               --layers http,ws
 
@@ -261,12 +415,21 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
               python3 scripts/test_layers.py --layers http,ws \
                 --host https://192.168.1.99 --http-token TOKEN --ws-host 192.168.1.99
+
+              python3 scripts/test_layers.py --layers mqtt \
+                --spawn-test-mqtt-broker --mqtt-topic luce/net1
             """
         ),
     )
 
     parser.add_argument("--layers", default="all", help="Comma-separated layers or 'all'.")
     parser.add_argument("--continue-on-fail", action="store_true", help="Run all selected layers even after failures.")
+    parser.add_argument(
+        "--layer-timeout-s",
+        type=float,
+        default=float(os.getenv("LUCE_LAYER_TIMEOUT_S", "0")),
+        help="Per-command timeout in seconds (0 disables timeout).",
+    )
 
     parser.add_argument("--env", default=os.getenv("LUCE_ENV", "net1"), help="PlatformIO environment for build/boot.")
     parser.add_argument("--upload-port", default=os.getenv("LUCE_UPLOAD_PORT", "/dev/cu.usbserial-0001"))
@@ -291,6 +454,28 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--mqtt-topic", default=os.getenv("LUCE_MQTT_BASE_TOPIC", "luce/net1"))
     parser.add_argument("--mqtt-username", default=os.getenv("LUCE_MQTT_USERNAME", ""))
     parser.add_argument("--mqtt-password", default=os.getenv("LUCE_MQTT_PASSWORD", ""))
+    parser.add_argument(
+        "--spawn-test-mqtt-broker",
+        action="store_true",
+        help="Spawn a temporary Python MQTT broker (amqtt) for MQTT layer tests (no Docker).",
+    )
+    parser.add_argument(
+        "--test-mqtt-host",
+        default=os.getenv("LUCE_TEST_MQTT_HOST", "127.0.0.1"),
+        help="Bind host for spawned test MQTT broker.",
+    )
+    parser.add_argument(
+        "--test-mqtt-port",
+        type=int,
+        default=int(os.getenv("LUCE_TEST_MQTT_PORT", "18883")),
+        help="Bind port for spawned test MQTT broker.",
+    )
+    parser.add_argument(
+        "--test-mqtt-startup-timeout",
+        type=float,
+        default=float(os.getenv("LUCE_TEST_MQTT_STARTUP_TIMEOUT", "8.0")),
+        help="Seconds to wait for spawned test MQTT broker readiness.",
+    )
 
     parser.add_argument("--diag-root", default=os.getenv("LUCE_DIAG_DIR", "docs/work/diag"), help="Diagnostics root path.")
     parser.add_argument("--run-id", default="", help="Optional run id override; default UTC timestamp.")
@@ -298,6 +483,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--pytest-arg", action="append", default=[], help="Extra pytest arg (repeatable).")
 
     args = parser.parse_args(argv)
+    if args.layer_timeout_s <= 0:
+        args.layer_timeout_s = None
     try:
         args.layer_list = resolve_layers(args.layers)
     except ValueError as exc:
@@ -321,6 +508,7 @@ def main(argv: Sequence[str]) -> int:
             return 1
 
     results: list[LayerResult] = []
+    spawned_broker: SpawnedBroker | None = None
 
     layer_handlers = {
         "build": lambda: run_build_layer(args, repo_root, out_dir),
@@ -331,12 +519,37 @@ def main(argv: Sequence[str]) -> int:
         "mqtt": lambda: run_pytest_layer(args, repo_root, out_dir, "mqtt"),
     }
 
-    for layer in args.layer_list:
-        result = layer_handlers[layer]()
-        results.append(result)
-        print(f"{layer}: {result.status} (rc={result.rc})")
-        if result.status == "FAIL" and not args.continue_on_fail:
-            break
+    try:
+        if args.spawn_test_mqtt_broker and "mqtt" in args.layer_list:
+            try:
+                spawned_broker = spawn_test_mqtt_broker(args, out_dir)
+                args.mqtt_host = spawned_broker.host
+                args.mqtt_port = spawned_broker.port
+                print(f"test-mqtt-broker: RUNNING ({spawned_broker.host}:{spawned_broker.port})")
+            except RuntimeError as exc:
+                results.append(
+                    LayerResult(
+                        "mqtt-broker",
+                        "FAIL",
+                        1,
+                        str(out_dir / "test-mqtt-broker.log"),
+                        str(exc),
+                    )
+                )
+                write_summaries(out_dir, run_id, results)
+                print(f"summary: {out_dir / 'summary.md'}")
+                return 1
+
+        for layer in args.layer_list:
+            result = layer_handlers[layer]()
+            results.append(result)
+            print(f"{layer}: {result.status} (rc={result.rc})")
+            if result.status == "FAIL" and not args.continue_on_fail:
+                break
+    finally:
+        if spawned_broker is not None:
+            stop_test_mqtt_broker(spawned_broker)
+            print("test-mqtt-broker: STOPPED")
 
     write_summaries(out_dir, run_id, results)
 

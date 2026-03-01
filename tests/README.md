@@ -6,16 +6,22 @@ Install dependencies:
 python3 -m pip install -r tests/requirements.txt
 ```
 
-Start a local MQTT broker for MQTT layer tests:
+Use the test suite to spawn a temporary Python broker (no Docker):
 
 ```bash
-scripts/spawn_mqtt_broker.sh start
+python3 scripts/test_layers.py --layers mqtt --spawn-test-mqtt-broker --mqtt-topic luce/net1
 ```
 
 Run all tests through the layered entrypoint:
 
 ```bash
 python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
+```
+
+Run only critical network contract layers:
+
+```bash
+python3 scripts/test_layers.py --layers critical --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
 ```
 
 Direct pytest invocation:

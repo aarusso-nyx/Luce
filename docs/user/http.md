@@ -33,6 +33,9 @@ NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a c
     - query `url=<https://...>` takes precedence when provided and non-empty
     - otherwise plain-text body payload is used when non-empty
     - when neither source provides a URL, queued check runs with configured/default source
+  - response payload includes:
+    - `status` = `queued`
+    - `source` = `query|body|default` (effective URL source resolution)
 - `PUT /api/ota/check`
   - alias of POST behavior for update checks; requires bearer token
 - `GET /api/version`

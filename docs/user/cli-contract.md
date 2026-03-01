@@ -51,7 +51,7 @@ NET0 adds read-only TCP transport:
 
 - Serial CLI remains full read/write.
 - TCP CLI enforces read-only execution list:
-  - `help`, `status`, `wifi.status`, `time.status`, `mdns.status`, `i2c_scan`, `mcp_read`, `buttons`, `sensors`, `cli_net.status`, `http.status`
+  - `help`, `status`, `wifi.status`, `time.status`, `mdns.status`, `i2c_scan`, `mcp_read`, `buttons`, `sensors`, `http.status`
 - Mutating commands are rejected in remote sessions and logged as denied.
 
 ## TCP auth and session
@@ -59,7 +59,7 @@ NET0 adds read-only TCP transport:
 - `AUTH <token>` required before command execution.
 - Max auth failures: 3 before disconnect.
 - Idle timeout is configurable from `cli_net/idle_timeout_s`.
-- Session emits command response lines including `cmd=<name> rc=<code>`.
+- Session emits wire responses as `AUTH ...`, `OK`, `ERR`, and `DENIED`/`DENIED cmd=<name>`.
 
 ## Verification
 

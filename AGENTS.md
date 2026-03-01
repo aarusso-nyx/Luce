@@ -30,7 +30,7 @@
 - PlatformIO strategy environment file list and flags:
   - `default`: no `LUCE_NET_*` flags (baseline)
   - `net0`: `-DLUCE_NET_CORE=1`
-  - `net1`: `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1`
+  - `net1`: `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1 -DLUCE_NET_OTA=1`
 - SDK config used by all envs is `sdkconfig` via `board_build.esp-idf.sdkconfig_path`.
 
 ## Required Governance Evidence

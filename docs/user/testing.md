@@ -26,7 +26,7 @@ What it does:
 
 ## Evidence output
 
-- Logs are written to: `docs/work/diag/<timestamp>/test/`
+- Logs are written to: `docs/work/diag/<run_id>/test-layers/`
 
 ## Test policy note
 
@@ -45,6 +45,7 @@ Native host tests and stubs were removed.
 Use the integrated layered test entrypoint to validate transport and lifecycle behavior:
 
 - `python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token> --ws-host <device-ip> --mqtt-host <broker-ip>`
+- `python3 scripts/test_layers.py --layers mqtt --spawn-test-mqtt-broker --mqtt-topic luce/net1` (ephemeral Python broker, no Docker)
 
 Dependencies:
 

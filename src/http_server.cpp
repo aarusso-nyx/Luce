@@ -487,6 +487,7 @@ esp_err_t route_ota_check(httpd_req_t* req) {
   char query[64] = {0};
   char query_url[256] = {0};
   char body_url[256] = {0};
+  const char* source = "default";
   if (req->content_len > 0 && req->content_len < static_cast<int>(sizeof(body_url))) {
     const int got = httpd_req_recv(req, body_url, req->content_len);
     if (got > 0) {
@@ -503,13 +504,16 @@ esp_err_t route_ota_check(httpd_req_t* req) {
   }
   if (query_url[0] != '\0') {
     ota_request_check_with_url(query_url);
+    source = "query";
   } else if (body_url[0] != '\0') {
     ota_request_check_with_url(body_url);
+    source = "body";
   } else {
     ota_request_check();
+    source = "default";
   }
-  char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"status\":\"queued\"}");
+  char payload[160] = {0};
+  std::snprintf(payload, sizeof(payload), "{\"status\":\"queued\",\"source\":\"%s\"}", source);
   return send_json(req, 202, payload, 0);
 }
 

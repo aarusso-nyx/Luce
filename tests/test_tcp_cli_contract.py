@@ -47,6 +47,9 @@ def test_tcp_cli_readonly_policy(tcp_config):
         send_line(sock, "help")
         assert "OK" in recv_line(sock)
 
+        send_line(sock, "cli_net.status")
+        assert "DENIED" in recv_line(sock)
+
         send_line(sock, "relay_set 0 1")
         assert "DENIED" in recv_line(sock)
 
