@@ -11,9 +11,10 @@ Use the repository scripts for deterministic local workflows:
 
 ```bash
 source ~/.zshrc
-./scripts/build.sh                 # build all environments
-./scripts/flash.sh default         # flash a specific environment
-./scripts/monitor.sh default       # serial monitor with timestamps
+./scripts/luce.sh build                    # build all environments
+./scripts/luce.sh upload --env default      # flash a specific environment
+./scripts/luce.sh monitor --env default     # serial monitor with timestamps
+./scripts/luce.sh test --env net1 --duration 45 # smoke test net1
 ```
 
 You can also call PlatformIO directly:
@@ -74,8 +75,7 @@ PY
 - `net0` — `-DLUCE_NET_CORE=1`: baseline + Wi-Fi + NTP + mDNS + TCP CLI
 - `net1` — `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1`: net0 + MQTT + HTTP
 
-In `scripts/build.sh`, `LUCE_ENV` can optionally build a single env. If unset, all declared envs are built.
-
+In `scripts/luce.sh build`, `LUCE_ENV` can optionally build a single env. If unset, all declared envs are built.
 Default PlatformIO environment is `default`.
 Canonical SDK config is a single file: `sdkconfig` (shared across all envs).
 

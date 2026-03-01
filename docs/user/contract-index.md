@@ -26,7 +26,6 @@ Date: 2026-02-28
 - Evidence index (latest anchor): `docs/work/diag/evidence/20260222_221921/90_summary.md`
 - Governance scorecard pointer: `docs/governance/compliance/scorecard-current.md`
 
-## Deprecation notes
+## Notes
 
-- `docs/user/CLI.md` is a launcher page; canonical contract is `docs/user/cli-contract.md`.
 - `docs/dev/hardware-map.md` is a historical reference copy; canonical map is `docs/user/hardware-map.md`.

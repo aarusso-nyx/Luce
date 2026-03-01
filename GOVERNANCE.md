@@ -30,8 +30,7 @@ This repository is governed by the `.codex/system.md` runtime instructions and `
 ## Source of Truth for Tooling
 
 - `platformio.ini` is authoritative for environments and active SDK config mapping.
-- `scripts/build.sh` is the canonical batch build entry point.
-- `scripts/flash.sh` and `scripts/monitor.sh` are canonical deployment/monitor commands.
+- `scripts/luce.sh` is the canonical batch build/deploy/test/health entry point.
 - Before any PlatformIO use, load shell environment:
 
 ```bash

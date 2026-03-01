@@ -8,7 +8,7 @@ LUCE test policy is firmware-only on real hardware.
 
 ## Smoke test command
 
-- `scripts/test_firmware_net1.sh`
+- `scripts/luce.sh test --env net1 --duration 45`
 
 What it does:
 
@@ -38,7 +38,7 @@ Native host tests and stubs were removed.
 
 - Build firmware: `pio run -e net1`
 - Flash + capture + assert boot markers:
-  - `scripts/test_firmware_net1.sh`
+  - `scripts/luce.sh test --env net1 --duration 45`
 
 ## Preconditions
 

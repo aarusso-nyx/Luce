@@ -4,9 +4,9 @@
 
 ## Checks
 
-- lint: PASS (`scripts/lint.sh`)
+- lint: PASS (`scripts/luce.sh lint`)
 - build: PASS (`pio run -e net1`)
-- test: BLOCKED (`scripts/test_firmware_net1.sh 10`; upload failed because `/dev/cu.usbserial-0001` was not available)
+- test: BLOCKED (`scripts/luce.sh test --env net1 --duration 45`; upload failed because `/dev/cu.usbserial-0001` was not available)
 - upload: SKIPPED (no hardware attached in this evidence run)
 - boot: SKIPPED (no upload path validated in this evidence run)
 - e2e: PREREQ_MISSING for NET1 (credentials/network prerequisites absent)
