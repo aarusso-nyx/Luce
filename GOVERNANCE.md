@@ -17,6 +17,6 @@ This repository follows `AGENTS.md` as the operational contract.
 ## Bootstrap Guardrails
 
 - Keep `README.md` and `AGENTS.md` stable at repository root.
-- Keep canonical source trees: `src/`, `include/`, `lib/`, `test/`, `scripts/`.
+- Keep canonical source trees: `src/`, `include/`, `scripts/`.
 - Use canonical HTTP routes and MQTT topics only (no `/v2` aliases).
 - Keep CLI/HTTP/MQTT behavior and documentation in sync.

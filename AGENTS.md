@@ -23,8 +23,6 @@
 - Source and include trees remain canonical:
   - `src/`
   - `include/`
-  - `lib/`
-  - `test/`
   - `scripts/`
 
 ## Required Governance Evidence
@@ -32,10 +30,6 @@
 - `docs/governance/compliance/scorecard-current.md`
 - `docs/governance/health/preflight.md`
 - Evidence outputs and temporary logs may be written under `docs/work/**`.
-
-See `.codex/system.md` for repository scope and stack-level assumptions.
-- NPM security audits and Node dependency checks are excluded for this firmware-only repository unless Node-based tooling is introduced later.
-- See `docs/governance/audit/npm-applicability.md` for the explicit firmware-only rationale.
 
 ## Contributor Expectations
 - Prefer task-oriented FreeRTOS architecture and explicit state ownership.
