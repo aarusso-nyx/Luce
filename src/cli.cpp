@@ -693,8 +693,8 @@ int cli_handle_set(int argc, char* argv[]) {
     const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
     const std::string ids(spec, eq_pos);
     const std::string value_str(spec + eq_pos + 1);
-    LedManualMode mode = LedManualMode::kAuto;
-    if (!parse_led_manual_mode_token(value_str.c_str(), &mode)) {
+    LedManualMode led_mode = LedManualMode::kAuto;
+    if (!parse_led_manual_mode_token(value_str.c_str(), &led_mode)) {
       ESP_LOGW(kTag, "CLI command set: invalid state '%s'", value_str.c_str());
       return 1;
     }
@@ -711,7 +711,7 @@ int cli_handle_set(int argc, char* argv[]) {
       if (!token.empty()) {
         if (token == "all") {
           for (std::uint8_t idx = 0; idx < 3; ++idx) {
-            (void)led_status_set_manual_mode(idx, mode);
+            (void)led_status_set_manual_mode(idx, led_mode);
           }
           applied = 3;
         } else {
@@ -753,7 +753,7 @@ int cli_handle_set(int argc, char* argv[]) {
               ESP_LOGW(kTag, "CLI command set: invalid led id %lu (expected 0..2)", static_cast<unsigned long>(idx));
               return 1;
             }
-            (void)led_status_set_manual_mode(static_cast<std::uint8_t>(idx), mode);
+            (void)led_status_set_manual_mode(static_cast<std::uint8_t>(idx), led_mode);
             ++applied;
           }
         }
@@ -767,7 +767,7 @@ int cli_handle_set(int argc, char* argv[]) {
       ESP_LOGW(kTag, "CLI command set: no led ids selected");
       return 1;
     }
-    ESP_LOGI(kTag, "CLI command set: led=%s applied=%u", led_manual_mode_name(mode), static_cast<unsigned>(applied));
+    ESP_LOGI(kTag, "CLI command set: led=%s applied=%u", led_manual_mode_name(led_mode), static_cast<unsigned>(applied));
     return 0;
   }
 
@@ -1053,7 +1053,7 @@ void cli_cmd_uptime() {
   const std::uint64_t mins = (uptime_s / 60ULL) % 60ULL;
   const std::uint64_t secs = uptime_s % 60ULL;
   const std::time_t boot_time = std::time(NULL) - static_cast<std::time_t>(uptime_s);
-  std::tm* tm_utc = std::gmtime(&boot_time);
+  const std::tm* tm_utc = std::gmtime(&boot_time);
   char date_line[40] = "n/a";
   if (tm_utc != nullptr) {
     std::snprintf(date_line, sizeof(date_line), "%04d-%02d-%02dT%02d:%02d:%02dZ",
@@ -1244,25 +1244,6 @@ int cli_execute_command(int argc, char* argv[]) {
     led_status_notify_user_error();
   }
   return rc;
-}
-
-int cli_execute_command_readonly(int argc, char* argv[], bool* denied_mutation) {
-  if (denied_mutation) {
-    *denied_mutation = false;
-  }
-  if (argc <= 0 || !argv || !argv[0]) {
-    led_status_notify_user_error();
-    return 1;
-  }
-  if (cli_command_is_mutating(argv[0])) {
-    led_status_notify_user_error();
-    if (denied_mutation) {
-      *denied_mutation = true;
-    }
-    ESP_LOGW(kTag, "CLI readonly command denied: '%s'", argv[0]);
-    return 2;
-  }
-  return cli_execute_command(argc, argv);
 }
 
 void cli_task(void*) {

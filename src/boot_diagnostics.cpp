@@ -157,18 +157,3 @@ void luce_log_status_health() {
   ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d REL:0x%02X BTN:0x%02X", g_i2c_initialized ? 1 : 0,
            g_mcp_available ? 1 : 0, relay_mask, button_mask);
 }
-
-void luce_log_runtime_status(std::uint64_t uptime_s, bool i2c_ok, bool mcp_ok,
-                            std::uint8_t relay_mask, std::uint8_t button_mask) {
-  char mask_line[32] = {0};
-  std::snprintf(mask_line, sizeof(mask_line), "REL:0x%02X BTN:0x%02X", relay_mask, button_mask);
-  ESP_LOGI(kTag, "LUCE S3 %llu | I2C:%s MCP:%s %s",
-           static_cast<unsigned long long>(uptime_s), i2c_ok ? "ok" : "no",
-           mcp_ok ? "ok" : "no", mask_line);
-}
-
-void luce_log_stage_watermarks(const char* context) {
-  const char* used_context = context ? context : "unknown";
-  const UBaseType_t now = uxTaskGetStackHighWaterMark(nullptr);
-  ESP_LOGI(kTag, "Stack watermark (%s): current=%u", used_context, now);
-}

@@ -92,16 +92,17 @@ resolve_pio_cmd() {
 }
 
 platformio_envs() {
-  local -a envs=()
-  mapfile -t envs < <(awk -F'[][]' '/^\[env:/{print $2}' "${PLATFORMIO_INI}")
-  printf '%s\n' "${envs[@]}"
+  awk -F'[][]' '/^\[env:/{name=$2; sub(/^env:/, "", name); print name}' "${PLATFORMIO_INI}"
 }
 
 resolve_envs() {
   local requested="${1:-}"
   local include_all="${2:-0}"
-  local -a envs
-  mapfile -t envs < <(platformio_envs)
+  local -a envs=()
+  local env
+  while IFS= read -r env; do
+    [ -n "${env}" ] && envs+=("${env}")
+  done < <(platformio_envs)
 
   if [ "${#envs[@]}" -eq 0 ]; then
     echo "error: no PlatformIO environments found in platformio.ini" >&2
@@ -227,8 +228,11 @@ cmd_build() {
     esac
   done
 
-  local -a envs
-  mapfile -t envs < <(resolve_envs "${REQUESTED_ENV}" "${include_all}")
+  local -a envs=()
+  local env
+  while IFS= read -r env; do
+    [ -n "${env}" ] && envs+=("${env}")
+  done < <(resolve_envs "${REQUESTED_ENV}" "${include_all}")
   if [ "${#envs[@]}" -eq 0 ]; then
     echo "error: no build environments resolved" >&2
     exit 1
@@ -240,6 +244,7 @@ cmd_build() {
     local log_file
     out_dir="$(artifact_dir build "${env}")"
     log_file="${out_dir}/build.txt"
+    mkdir -p "${out_dir}"
     echo "env=${env}" | tee "${log_file}"
     if ! run_and_capture "${log_file}" "${PIO_CMD[@]}" run -e "${env}"; then
       overall=1
@@ -259,9 +264,11 @@ cmd_upload() {
     env="$(default_env)"
   fi
 
-  local target_env
-  mapfile -t target_env < <(resolve_envs "${env}" 0)
-  env="${target_env[0]}"
+  local resolved_env=""
+  while IFS= read -r resolved_env; do
+    break
+  done < <(resolve_envs "${env}" 0)
+  env="${resolved_env}"
 
   local out_dir
   local log_file
@@ -278,9 +285,11 @@ cmd_monitor() {
     env="$(default_env)"
   fi
 
-  local target_env
-  mapfile -t target_env < <(resolve_envs "${env}" 0)
-  env="${target_env[0]}"
+  local resolved_env=""
+  while IFS= read -r resolved_env; do
+    break
+  done < <(resolve_envs "${env}" 0)
+  env="${resolved_env}"
 
   local out_dir
   local log_file
@@ -349,9 +358,11 @@ cmd_collect() {
   fi
   require_positive_int "${duration}" "duration"
 
-  local target_env
-  mapfile -t target_env < <(resolve_envs "${env}" 0)
-  env="${target_env[0]}"
+  local resolved_env=""
+  while IFS= read -r resolved_env; do
+    break
+  done < <(resolve_envs "${env}" 0)
+  env="${resolved_env}"
 
   local out_dir
   local log_file
@@ -419,8 +430,11 @@ cmd_lint() {
     exit 1
   fi
 
-  local -a envs
-  mapfile -t envs < <(resolve_envs "${REQUESTED_ENV}" "${include_all}")
+  local -a envs=()
+  local env
+  while IFS= read -r env; do
+    [ -n "${env}" ] && envs+=("${env}")
+  done < <(resolve_envs "${REQUESTED_ENV}" "${include_all}")
   if [ "${#envs[@]}" -eq 0 ]; then
     echo "error: no lint environments resolved" >&2
     exit 1
@@ -545,8 +559,11 @@ cmd_health() {
 
   echo "health: tooling check passed" >> "${log_file}"
 
-  local -a envs
-  mapfile -t envs < <(platformio_envs)
+  local -a envs=()
+  local env
+  while IFS= read -r env; do
+    [ -n "${env}" ] && envs+=("${env}")
+  done < <(platformio_envs)
   if [ "${#envs[@]}" -eq 0 ]; then
     echo "health: FAIL (no envs in platformio.ini)" | tee -a "${log_file}"
     exit 1
@@ -593,8 +610,11 @@ cmd_clean() {
     esac
   done
 
-  local -a envs
-  mapfile -t envs < <(resolve_envs "${REQUESTED_ENV}" "${include_all}")
+  local -a envs=()
+  local env
+  while IFS= read -r env; do
+    [ -n "${env}" ] && envs+=("${env}")
+  done < <(resolve_envs "${REQUESTED_ENV}" "${include_all}")
   if [ "${#envs[@]}" -eq 0 ]; then
     echo "error: no environments resolved" >&2
     exit 1

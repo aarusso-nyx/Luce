@@ -885,9 +885,9 @@ void start_http_server() {
   conf.httpd.max_uri_handlers = 16;
   conf.httpd.task_priority = 5;
   conf.httpd.stack_size = 8192;
-  conf.servercert = (const unsigned char*)kServerCertPgm;
+  conf.servercert = reinterpret_cast<const unsigned char*>(kServerCertPgm);
   conf.servercert_len = sizeof(kServerCertPgm);
-  conf.prvtkey_pem = (const unsigned char*)kServerKeyPgm;
+  conf.prvtkey_pem = reinterpret_cast<const unsigned char*>(kServerKeyPgm);
   conf.prvtkey_len = sizeof(kServerKeyPgm);
 
   const esp_err_t err = httpd_ssl_start(&g_httpd, &conf);

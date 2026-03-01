@@ -274,9 +274,9 @@ void request_user_feedback(std::uint8_t input_events, std::uint8_t error_events)
 }
 
 void update_device_led(const LedStatusSnapshot& snap, TickType_t now, bool& led) {
-  DeviceLedMode next_mode = DeviceLedMode::kOff;
+  DeviceLedMode next_mode = DeviceLedMode::kOn;
   if (snap.device_booting) {
-    next_mode = DeviceLedMode::kOn;
+    // Keep steady ON during early boot.
   } else if (!snap.i2c_present) {
     next_mode = DeviceLedMode::kOff;
   } else if (!snap.mcp_present) {
@@ -481,13 +481,6 @@ void led_status_startup() {
   set_blink_state(g_device_blink, false, true, now, 0, 0);
   set_blink_state(g_network_connect_blink, false, false, now, 0, 0);
   g_device_mode = DeviceLedMode::kStartup;
-}
-
-void led_status_terminate() {
-  // Best-effort stop; task lifecycle is intentionally not forcibly deleted in firmware.
-  gpio_set_level(kLedDeviceStatus, 0);
-  gpio_set_level(kLedNetworkStatus, 0);
-  gpio_set_level(kLedOperationStatus, 0);
 }
 
 void led_status_set_device_ready(bool i2c_present, bool mcp_present, bool lcd_present) {

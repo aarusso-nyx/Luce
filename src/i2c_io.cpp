@@ -693,8 +693,6 @@ void render_lcd_logs_page() {
   const std::size_t stored_count = g_lcd_log_count;
   const std::size_t oldest_index = (g_lcd_log_head + kLcdLogBufferDepth - stored_count) % kLcdLogBufferDepth;
   clamp_lcd_log_view_offset(stored_count);
-  const std::size_t visible_count =
-      (stored_count < kLcdLogDisplayRows) ? stored_count : kLcdLogDisplayRows;
   const std::size_t max_offset = lcd_log_max_view_offset(stored_count);
   const std::size_t start = (stored_count <= kLcdLogDisplayRows)
                                ? 0u
@@ -711,7 +709,7 @@ void render_lcd_logs_page() {
 
   write_lcd_line(0, header);
   for (std::size_t row = 0; row < kLcdLogDisplayRows; ++row) {
-    if (row >= visible_count) {
+    if ((start + row) >= stored_count) {
       write_lcd_line(1 + row, "");
       continue;
     }
@@ -1245,8 +1243,6 @@ void run_i2c_diagnostics() {
   TickType_t last_night_tick = 0;
   int last_int_level = gpio_get_level(kMcpIntPin);
   TickType_t last_lcd_tick = 0;
-
-  relay_mask = g_relay_mask;
 
   ESP_LOGI(kTag, "Entering I/O runtime diagnostics loop (button-toggle relay control)");
   while (true) {
