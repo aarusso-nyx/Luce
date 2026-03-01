@@ -22,6 +22,7 @@
 #include "luce/net_wifi.h"
 #include "luce/i2c_io.h"
 #include "luce/ntp.h"
+#include "luce/mqtt.h"
 #include "luce/ota.h"
 #include "luce_build.h"
 #include "luce/nvs_helpers.h"
@@ -223,11 +224,28 @@ esp_err_t route_info(httpd_req_t* req) {
   }
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  char payload[256] = {0};
+  I2cSensorSnapshot snapshot {};
+  const bool has_sensor = read_sensor_snapshot(snapshot);
+  const std::uint16_t threshold = io_light_threshold();
+  const std::uint8_t night_mask = io_relay_night_mask();
+  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
+  char payload[1024] = {0};
   std::snprintf(payload, sizeof(payload),
-               "{\"service\":\"luce\",\"strategy\":\"%s\",\"wifi_ip\":\"%s\",\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,\"uptime_s\":%lld}",
-               LUCE_STRATEGY_NAME, as_n_a(ip), g_cfg.enabled ? "true" : "false", g_cfg.port,
-               g_cfg.tls_dev_mode ? 1 : 0, (long long)(esp_timer_get_time() / 1000000ULL));
+                "{\"service\":\"luce\",\"name\":\"%s\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\","
+                "\"build\":\"%s %s\",\"uptimeMs\":%llu,\"uptime_s\":%llu,\"wifi_ip\":\"%s\","
+                "\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,"
+                "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"threshold\":%u,"
+                "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
+                "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
+                "luce", LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__,
+                static_cast<unsigned long long>(esp_timer_get_time() / 1000ULL),
+                static_cast<unsigned long long>(esp_timer_get_time() / 1000000ULL), as_n_a(ip),
+                g_cfg.enabled ? "true" : "false", g_cfg.port, g_cfg.tls_dev_mode ? 1 : 0,
+                static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
+                static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
+                has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
+                has_sensor && snapshot.dht_ok ? "true" : "false", as_n_a(ip), wifi_is_connected() ? "true" : "false",
+                mqtt_is_connected() ? "true" : "false", ntp_is_synced() ? "true" : "false");
   return send_json(req, 200, payload, 0);
 }
 

@@ -19,6 +19,11 @@ NET1 provides a TLS-protected API surface on HTTPS and a captive portal UI serve
   - minimal public health and service state
 - `GET /api/info`
   - requires bearer token in `Authorization: Bearer <token>`
+  - includes compatibility fields for legacy consumers:
+    - identity/build: `name`, `version`, `strategy`, `sha`, `build`, `uptimeMs`, `uptime_s`
+    - relay/sensor: `relays`, `nightMask`, `day`, `threshold`, `light`, `temperature`, `humidity`, `sensor_ok`
+    - network: `wifi_ip` and nested `network.{ip,wifiConnected,mqttConnected,ntpSynced}`
+    - current HTTP flags: `http_enabled`, `http_port`, `tls`
 - `GET /api/state`
   - requires bearer token
 - `GET /api/ota`
