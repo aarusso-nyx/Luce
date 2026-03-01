@@ -22,6 +22,13 @@ struct I2cScanResult {
   char addresses[64] = {0};
 };
 
+struct I2cSensorSnapshot {
+  float temperature_c = 0.0f;
+  float humidity_percent = 0.0f;
+  int light_raw = 0;
+  bool dht_ok = false;
+};
+
 struct Mcp23017State {
   bool connected = false;
   uint8_t relay_mask = 0xFF;
@@ -50,5 +57,6 @@ uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask)
 bool read_button_inputs(uint8_t* value);
 void configure_int_pin();
 void io_startup();
+bool read_sensor_snapshot(I2cSensorSnapshot& snapshot);
 
 bool i2c_lcd_write_text(const char* text);

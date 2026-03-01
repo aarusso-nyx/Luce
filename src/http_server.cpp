@@ -21,6 +21,7 @@
 #include "luce/net_wifi.h"
 #include "luce/i2c_io.h"
 #include "luce/ntp.h"
+#include "luce/ota.h"
 #include "luce_build.h"
 #include "luce/nvs_helpers.h"
 #include "luce/runtime_state.h"
@@ -203,6 +204,45 @@ esp_err_t route_state(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
+esp_err_t route_ota(httpd_req_t* req) {
+  if (!validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+  char payload[512] = {0};
+  ota_build_status_payload(payload, sizeof(payload));
+  return send_json(req, 200, payload, 0);
+}
+
+esp_err_t route_ota_check(httpd_req_t* req) {
+  if (!validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+  char query[64] = {0};
+  char url[256] = {0};
+  if (req->content_len > 0 && req->content_len < sizeof(url)) {
+    const int got = httpd_req_recv(req, url, req->content_len);
+    if (got > 0) {
+      url[got < static_cast<int>(sizeof(url)) ? got : static_cast<int>(sizeof(url) - 1)] = '\0';
+    }
+  }
+  if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+      if (httpd_query_key_value(query, "url", url, sizeof(url)) == ESP_OK) {
+        ota_request_check_with_url(url);
+      } else {
+        ota_request_check();
+      }
+    } else {
+      ota_request_check();
+    }
+  } else {
+    ota_request_check();
+  }
+  char payload[128] = {0};
+  std::snprintf(payload, sizeof(payload), "{\"status\":\"queued\"}");
+  return send_json(req, 202, payload, 0);
+}
+
 httpd_uri_t g_uri_health = {
     .uri = "/api/health",
     .method = HTTP_GET,
@@ -224,6 +264,20 @@ httpd_uri_t g_uri_state = {
     .user_ctx = nullptr,
 };
 
+httpd_uri_t g_uri_ota = {
+    .uri = "/api/ota",
+    .method = HTTP_GET,
+    .handler = route_ota,
+    .user_ctx = nullptr,
+};
+
+httpd_uri_t g_uri_ota_check = {
+    .uri = "/api/ota/check",
+    .method = HTTP_POST,
+    .handler = route_ota_check,
+    .user_ctx = nullptr,
+};
+
 void stop_http_server() {
   if (g_httpd == nullptr) {
     return;
@@ -240,7 +294,7 @@ void start_http_server() {
 
   httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
   conf.httpd.server_port = g_cfg.port;
-  conf.httpd.max_uri_handlers = 6;
+  conf.httpd.max_uri_handlers = 8;
   conf.httpd.task_priority = 5;
   conf.httpd.stack_size = 8192;
   conf.servercert = (const unsigned char*)kServerCertPgm;
@@ -259,9 +313,11 @@ void start_http_server() {
   httpd_register_uri_handler(g_httpd, &g_uri_health);
   httpd_register_uri_handler(g_httpd, &g_uri_info);
   httpd_register_uri_handler(g_httpd, &g_uri_state);
+  httpd_register_uri_handler(g_httpd, &g_uri_ota);
+  httpd_register_uri_handler(g_httpd, &g_uri_ota_check);
   set_state(HttpState::kStarted, "started");
   ESP_LOGI(kTag, "[HTTP] started");
-  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/state");
+  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/state, /api/ota, /api/ota/check");
 }
 
 void http_loop(void*) {

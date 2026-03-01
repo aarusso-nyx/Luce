@@ -2,8 +2,7 @@
 
 ESP32 firmware project built with PlatformIO + ESP-IDF.
 
-> Before running any `pio` command, ensure your shell environment is initialized:
-> `source ~/.zshrc`
+> `scripts/luce.sh` refreshes PlatformIO discovery, including sourcing your `~/.zshrc` environment when required.
 
 ## Build/Flash/Monitor
 
@@ -16,17 +15,7 @@ source ~/.zshrc
 ./scripts/luce.sh monitor --env default     # serial monitor with timestamps
 ./scripts/luce.sh test --env net1 --duration 45 # smoke test net1
 ```
-
-You can also call PlatformIO directly:
-
-```bash
-source ~/.zshrc
-pio run -e default
-pio run -e net0
-pio run -e net1
-pio run -e default -t upload
-pio device monitor -e default --timestamp
-```
+You can also call PlatformIO directly when preferred.
 
 ## Serial Ports and Runtime Iteration
 

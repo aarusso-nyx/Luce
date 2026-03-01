@@ -12,6 +12,10 @@
 #define LUCE_NET_HTTP 0
 #endif
 
+#ifndef LUCE_NET_OTA
+#define LUCE_NET_OTA 0
+#endif
+
 // Baseline hardware capabilities are always present in the canonical firmware build.
 #define LUCE_HAS_WIFI (LUCE_NET_CORE ? 1 : 0)
 #define LUCE_HAS_NTP (LUCE_NET_CORE ? 1 : 0)
@@ -20,6 +24,7 @@
 
 #define LUCE_HAS_MQTT (LUCE_NET_MQTT ? 1 : 0)
 #define LUCE_HAS_HTTP (LUCE_NET_HTTP ? 1 : 0)
+#define LUCE_HAS_OTA (LUCE_NET_OTA ? 1 : 0)
 
 #if LUCE_NET_CORE
 #if LUCE_NET_MQTT

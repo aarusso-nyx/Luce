@@ -142,6 +142,35 @@ void log_sensor_readings() {
   }
 }
 
+bool read_sensor_snapshot(I2cSensorSnapshot& snapshot) {
+  init_light_sensor();
+  int light_raw = 0;
+  if (g_light_sensor_ready) {
+    int converted = 0;
+    if (adc_oneshot_read(g_light_sensor_handle, kLightSensorChannel, &converted) == ESP_OK) {
+      light_raw = converted;
+    }
+  }
+
+  float humidity = 0.0f;
+  float temperature = 0.0f;
+  const bool dht_ok = dht21_22_read_with_retries(kDhtDataPin, temperature, humidity);
+  if (dht_ok) {
+    g_last_dht_read_ok = true;
+    g_last_temperature_c = temperature;
+    g_last_humidity_percent = humidity;
+  } else {
+    g_last_dht_read_ok = false;
+  }
+  g_last_light_raw = light_raw;
+
+  snapshot.temperature_c = g_last_temperature_c;
+  snapshot.humidity_percent = g_last_humidity_percent;
+  snapshot.light_raw = g_last_light_raw;
+  snapshot.dht_ok = g_last_dht_read_ok;
+  return dht_ok;
+}
+
 constexpr uint8_t kLcdPcfRsBit = 0;
 constexpr uint8_t kLcdPcfRwBit = 1;
 constexpr uint8_t kLcdPcfEnBit = 2;

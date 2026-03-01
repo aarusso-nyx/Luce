@@ -22,6 +22,7 @@
 #include "luce/mqtt.h"
 #include "luce/http_server.h"
 #include "luce/i2c_io.h"
+#include "luce/ota.h"
 #include "luce/led_status.h"
 
 namespace {
@@ -66,6 +67,10 @@ extern "C" void app_main(void) {
 
 #if LUCE_HAS_HTTP
   http_startup();
+#endif
+
+#if LUCE_HAS_OTA
+  ota_startup();
 #endif
 
   for (;;) {

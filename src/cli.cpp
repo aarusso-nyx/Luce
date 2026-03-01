@@ -6,12 +6,22 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <string>
+#include <strings.h>
 #include "luce_build.h"
 
 #include "driver/uart.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
+#include "esp_timer.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -34,6 +44,7 @@
 #if LUCE_HAS_HTTP
 #include "luce/http_server.h"
 #endif
+#include "luce/ota.h"
 constexpr const char* kTag = "luce_boot";
 constexpr std::size_t kCliLineBuffer = 128;
 
@@ -55,10 +66,19 @@ void cli_cmd_relay_set(int channel, int on_off);
 void cli_cmd_relay_mask(std::uint32_t value);
 void cli_cmd_buttons();
 void cli_cmd_lcd_print(const char* text);
+void cli_cmd_parts();
+void cli_cmd_uptime();
+void cli_cmd_test();
+void cli_cmd_system();
+void cli_cmd_state();
+void cli_cmd_free();
+void cli_cmd_sensor_snapshot();
+void cli_cmd_log();
 
 int cli_handle_help(int, char*[]);
 int cli_handle_status(int, char*[]);
 int cli_handle_nvs_dump(int, char*[]);
+int cli_handle_nvs(int, char*[]);
 int cli_handle_i2c_scan(int, char*[]);
 int cli_handle_mcp_read(int, char*[]);
 int cli_handle_relay_set(int, char*[]);
@@ -66,9 +86,27 @@ int cli_handle_relay_mask(int, char*[]);
 int cli_handle_buttons(int, char*[]);
 int cli_handle_lcd_print(int, char*[]);
 int cli_handle_reboot(int, char*[]);
+int cli_handle_version(int, char*[]);
+int cli_handle_info(int, char*[]);
+int cli_handle_wakeup(int, char*[]);
+int cli_handle_uptime(int, char*[]);
+int cli_handle_reset(int, char*[]);
+int cli_handle_parts(int, char*[]);
+int cli_handle_free(int, char*[]);
+int cli_handle_sensor(int, char*[]);
+int cli_handle_test(int, char*[]);
+int cli_handle_log(int, char*[]);
+int cli_handle_set(int, char*[]);
+int cli_handle_system(int, char*[]);
+int cli_handle_state(int, char*[]);
+int cli_handle_sensors(int, char*[]);
 int cli_handle_wifi_status(int, char*[]);
 int cli_handle_wifi_scan(int, char*[]);
 int cli_handle_time_status(int, char*[]);
+#if LUCE_HAS_OTA
+int cli_handle_ota_status(int, char*[]);
+int cli_handle_ota_check(int, char*[]);
+#endif
 #if LUCE_HAS_MDNS
 int cli_handle_mdns_status(int, char*[]);
 #endif
@@ -84,6 +122,21 @@ int cli_handle_http_status(int, char*[]);
 #endif
 
 constexpr CliCommandInfo kCliCommands[] = {
+    {"version", false, true, "version", cli_handle_version},
+    {"info", false, true, "info", cli_handle_info},
+    {"wakeup", false, true, "wakeup", cli_handle_wakeup},
+    {"uptime", false, true, "uptime", cli_handle_uptime},
+    {"system", false, true, "system", cli_handle_system},
+    {"state", false, true, "state", cli_handle_state},
+    {"nvs", false, true, "nvs", cli_handle_nvs},
+    {"free", false, true, "free", cli_handle_free},
+    {"sensor", false, true, "sensor [<interval_s> <count>]", cli_handle_sensor},
+    {"sensors", false, true, "sensors", cli_handle_sensors},
+    {"set", true, false, "set <relay|mask|led> <ids>=<on|off>", cli_handle_set},
+    {"log", true, false, "log [show | buffer [<size>] | console [level|format] [<val>] | logfile [level|format] [<val>]]", cli_handle_log},
+    {"test", true, false, "test", cli_handle_test},
+    {"reset", true, false, "reset", cli_handle_reset},
+    {"parts", false, true, "parts", cli_handle_parts},
     {"help", false, true, "help", cli_handle_help},
     {"status", false, true, "status", cli_handle_status},
     {"nvs_dump", false, false, "nvs_dump", cli_handle_nvs_dump},
@@ -109,6 +162,10 @@ constexpr CliCommandInfo kCliCommands[] = {
 #endif
 #if LUCE_HAS_HTTP
     {"http.status", false, true, "http.status", cli_handle_http_status},
+#endif
+#if LUCE_HAS_OTA
+    {"ota.status", false, true, "ota.status", cli_handle_ota_status},
+    {"ota.check", true, false, "ota.check [url]", cli_handle_ota_check},
 #endif
 };
 
@@ -222,6 +279,97 @@ bool cli_command_is_readonly(const char* command) {
   return cmd != nullptr && !cmd->mutating && cmd->tcp_readonly;
 }
 
+const char* reset_reason_name(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_UNKNOWN:
+      return "UNKNOWN";
+    case ESP_RST_POWERON:
+      return "POWERON";
+    case ESP_RST_EXT:
+      return "EXT";
+    case ESP_RST_SW:
+      return "SW";
+    case ESP_RST_PANIC:
+      return "PANIC";
+    case ESP_RST_INT_WDT:
+      return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+      return "TASK_WDT";
+    case ESP_RST_WDT:
+      return "WDT";
+    case ESP_RST_DEEPSLEEP:
+      return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT";
+    case ESP_RST_SDIO:
+      return "SDIO";
+    case ESP_RST_USB:
+      return "USB";
+    case ESP_RST_JTAG:
+      return "JTAG";
+    case ESP_RST_EFUSE:
+      return "EFUSE";
+    case ESP_RST_PWR_GLITCH:
+      return "POWER_GLITCH";
+    default:
+      return "OTHER";
+  }
+}
+
+const char* wakeup_reason_name(esp_sleep_wakeup_cause_t reason) {
+  switch (reason) {
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+      return "UNDEFINED";
+    case ESP_SLEEP_WAKEUP_ALL:
+      return "ALL";
+    case ESP_SLEEP_WAKEUP_EXT0:
+      return "EXT0";
+    case ESP_SLEEP_WAKEUP_EXT1:
+      return "EXT1";
+    case ESP_SLEEP_WAKEUP_TIMER:
+      return "TIMER";
+    case ESP_SLEEP_WAKEUP_TOUCHPAD:
+      return "TOUCHPAD";
+    case ESP_SLEEP_WAKEUP_ULP:
+      return "ULP";
+    case ESP_SLEEP_WAKEUP_GPIO:
+      return "GPIO";
+    case ESP_SLEEP_WAKEUP_UART:
+      return "UART";
+    case ESP_SLEEP_WAKEUP_WIFI_FTM:
+      return "WIFI_FTM";
+    case ESP_SLEEP_WAKEUP_COCPU:
+      return "COCPU";
+    case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG:
+      return "COCPU_TRAP";
+    case ESP_SLEEP_WAKEUP_BT:
+      return "BT";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+bool parse_bool_value(const char* token, bool* out_value) {
+  if (!token || !out_value) {
+    return false;
+  }
+  if (std::strcmp(token, "1") == 0 || std::strcasecmp(token, "on") == 0 ||
+      std::strcasecmp(token, "true") == 0 || std::strcasecmp(token, "yes") == 0) {
+    *out_value = true;
+    return true;
+  }
+  if (std::strcmp(token, "0") == 0 || std::strcasecmp(token, "off") == 0 ||
+      std::strcasecmp(token, "false") == 0 || std::strcasecmp(token, "no") == 0) {
+    *out_value = false;
+    return true;
+  }
+  return false;
+}
+
+bool parse_onoff(const char* token, bool* value) {
+  return parse_bool_value(token, value);
+}
+
 int cli_handle_help(int, char*[]) {
   cli_print_help();
   return 0;
@@ -230,6 +378,59 @@ int cli_handle_help(int, char*[]) {
 int cli_handle_status(int, char*[]) {
   cli_cmd_status();
   return 0;
+}
+
+int cli_handle_version(int, char*[]) {
+  ESP_LOGI(kTag, "CLI command version: %s", LUCE_PROJECT_VERSION);
+  return 0;
+}
+
+int cli_handle_info(int, char*[]) {
+  luce_print_chip_info();
+  luce_print_app_info();
+  luce_print_feature_flags();
+  luce_print_heap_stats();
+  return 0;
+}
+
+int cli_handle_uptime(int, char*[]) {
+  cli_cmd_uptime();
+  return 0;
+}
+
+int cli_handle_wakeup(int, char*[]) {
+  const esp_reset_reason_t reset_reason = esp_reset_reason();
+  const esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  ESP_LOGI(kTag, "CLI command wakeup: reset=%s (0x%x) wakeup=%s (0x%x)", reset_reason_name(reset_reason),
+           static_cast<unsigned>(reset_reason), wakeup_reason_name(wakeup_reason), static_cast<unsigned>(wakeup_reason));
+  return 0;
+}
+
+int cli_handle_nvs(int, char*[]) {
+  cli_cmd_nvs_dump();
+  return 0;
+}
+
+int cli_handle_system(int, char*[]) {
+  cli_cmd_system();
+  return 0;
+}
+
+int cli_handle_state(int, char*[]) {
+  cli_cmd_state();
+  return 0;
+}
+
+int cli_handle_sensor(int argc, char* argv[]) {
+  if (argc > 1 && (std::strcmp(argv[1], "-h") == 0 || std::strcmp(argv[1], "--help") == 0)) {
+    ESP_LOGI(kTag, "CLI command sensor: reads [interval_s] [count], not stored");
+  }
+  cli_cmd_sensor_snapshot();
+  return 0;
+}
+
+int cli_handle_sensors(int, char*[]) {
+  return cli_handle_sensor(1, nullptr);
 }
 
 int cli_handle_nvs_dump(int, char*[]) {
@@ -309,6 +510,194 @@ int cli_handle_lcd_print(int argc, char* argv[]) {
   return 0;
 }
 
+int cli_handle_set(int argc, char* argv[]) {
+  if (argc != 3) {
+    ESP_LOGW(kTag, "CLI command set: usage set <relay|mask|led> <ids>=<on|off>");
+    return 1;
+  }
+  const char* mode = argv[1];
+  const char* spec = argv[2];
+  if (!mode || !spec || std::strchr(spec, '=') == nullptr) {
+    ESP_LOGW(kTag, "CLI command set usage: set <relay|mask|led> <ids>=<on|off>");
+    return 1;
+  }
+
+  const bool target_is_relay = (std::strcasecmp(mode, "relay") == 0);
+  const bool target_is_mask = (std::strcasecmp(mode, "mask") == 0);
+  const bool target_is_led = (std::strcasecmp(mode, "led") == 0);
+  if (!target_is_relay && !target_is_mask && !target_is_led) {
+    ESP_LOGW(kTag, "CLI command set: invalid target '%s'", mode);
+    return 1;
+  }
+  if (target_is_led) {
+    ESP_LOGW(kTag, "CLI command set: led control not available in current firmware");
+    return 1;
+  }
+
+  const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
+  if (eq_pos == std::string::npos) {
+    ESP_LOGW(kTag, "CLI command set usage: set <relay|mask|led> <ids>=<on|off>");
+    return 1;
+  }
+  const std::string ids(spec, eq_pos);
+  const std::string value_str(spec + eq_pos + 1);
+  bool value = false;
+  if (!parse_onoff(value_str.c_str(), &value)) {
+    ESP_LOGW(kTag, "CLI command set: invalid state '%s'", value_str.c_str());
+    return 1;
+  }
+
+  if (ids.empty()) {
+    ESP_LOGW(kTag, "CLI command set: empty id list");
+    return 1;
+  }
+
+  std::uint8_t next_mask = g_relay_mask;
+  std::uint16_t applied = 0;
+  std::size_t cursor = 0;
+  while (cursor < ids.size()) {
+    std::size_t comma_pos = ids.find(',', cursor);
+    const std::string token = ids.substr(cursor, comma_pos == std::string::npos ? std::string::npos : (comma_pos - cursor));
+    if (!token.empty()) {
+      std::uint32_t start = 0;
+      std::uint32_t end = 0;
+      const std::size_t dash = token.find('-');
+      if (dash == std::string::npos) {
+        std::size_t consumed = 0;
+        const char* start_cstr = token.c_str();
+        char* end_ptr = nullptr;
+        start = static_cast<std::uint32_t>(std::strtoul(start_cstr, &end_ptr, 10));
+        if (end_ptr == start_cstr || *end_ptr != '\0') {
+          ESP_LOGW(kTag, "CLI command set: invalid id token '%s'", token.c_str());
+          return 1;
+        }
+        end = start;
+      } else {
+        const std::string start_str = token.substr(0, dash);
+        const std::string end_str = token.substr(dash + 1);
+        if (start_str.empty() || end_str.empty()) {
+          ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", token.c_str());
+          return 1;
+        }
+        char* end_ptr = nullptr;
+        start = static_cast<std::uint32_t>(std::strtoul(start_str.c_str(), &end_ptr, 10));
+        if (end_ptr == start_str.c_str() || *end_ptr != '\0') {
+          ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", token.c_str());
+          return 1;
+        }
+        end_ptr = nullptr;
+        end = static_cast<std::uint32_t>(std::strtoul(end_str.c_str(), &end_ptr, 10));
+        if (end_ptr == end_str.c_str() || *end_ptr != '\0') {
+          ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", token.c_str());
+          return 1;
+        }
+      }
+
+      const std::uint32_t lo = (start <= end) ? start : end;
+      const std::uint32_t hi = (start <= end) ? end : start;
+      for (std::uint32_t ch1 = lo; ch1 <= hi; ++ch1) {
+        if (ch1 == 0 || ch1 > 8) {
+          ESP_LOGW(kTag, "CLI command set: invalid relay id %lu", static_cast<unsigned long>(ch1));
+          return 1;
+        }
+        const std::uint8_t next_channel = static_cast<std::uint8_t>(ch1 - 1);
+        next_mask = relay_mask_for_channel_state(static_cast<int>(next_channel), value, next_mask);
+        if (applied < 16) {
+          ++applied;
+        }
+      }
+    }
+    if (comma_pos == std::string::npos) {
+      break;
+    }
+    cursor = comma_pos + 1;
+  }
+
+  if (applied == 0) {
+    ESP_LOGW(kTag, "CLI command set: no channels selected");
+    return 1;
+  }
+
+  const esp_err_t err = set_relay_mask_safe(next_mask);
+  if (err == ESP_OK) {
+    g_relay_mask = next_mask;
+    ESP_LOGI(kTag, "CLI command set: %s=%s mask=0x%02X", target_is_mask ? "mask" : "relay",
+             value ? "on" : "off", next_mask);
+    return 0;
+  }
+  ESP_LOGW(kTag, "CLI command set: relay write failed: %s", esp_err_to_name(err));
+  return 1;
+}
+
+int cli_handle_test(int, char*[]) {
+  cli_cmd_test();
+  return 0;
+}
+
+int cli_handle_log(int argc, char* argv[]) {
+  if (argc < 2) {
+    cli_cmd_log();
+    return 0;
+  }
+
+  const char* sub = argv[1];
+  if (std::strcmp(sub, "show") == 0) {
+    ESP_LOGI(kTag, "CLI command log show: not persisted in this firmware");
+    return 0;
+  }
+  if (std::strcmp(sub, "buffer") == 0) {
+    if (argc == 2) {
+      ESP_LOGI(kTag, "CLI command log buffer: logging buffer size is fixed in current build");
+      return 0;
+    }
+    if (argc == 3) {
+      ESP_LOGI(kTag, "CLI command log buffer: set requested to %s (not persisted)", argv[2]);
+      return 0;
+    }
+    ESP_LOGW(kTag, "CLI command log buffer usage: log buffer [<size>]");
+    return 1;
+  }
+  if (std::strcmp(sub, "console") == 0 || std::strcmp(sub, "logfile") == 0) {
+    if (argc < 3) {
+      ESP_LOGW(kTag, "CLI command log %s usage: <level|format> [<value>]", sub);
+      return 1;
+    }
+    if (argc == 3) {
+      ESP_LOGI(kTag, "CLI command log %s: not persisted in this firmware", sub);
+      return 0;
+    }
+    ESP_LOGI(kTag, "CLI command log %s %s=%s", sub, argv[2], argv[3]);
+    return 0;
+  }
+  ESP_LOGW(kTag, "CLI command log: unknown subcommand '%s'", sub);
+  return 1;
+}
+
+int cli_handle_reset(int argc, char* argv[]) {
+  if (argc < 2 || std::strcasecmp(argv[1], "yes") != 0) {
+    ESP_LOGW(kTag, "CLI command reset: factory reset! use 'reset yes' to confirm");
+    return 1;
+  }
+  ESP_LOGW(kTag, "CLI command reset: erasing NVS");
+  const esp_err_t erase_err = nvs_flash_erase();
+  if (erase_err != ESP_OK) {
+    ESP_LOGW(kTag, "CLI command reset: nvs_flash_erase failed: %s", esp_err_to_name(erase_err));
+    return 1;
+  }
+  cli_handle_reboot(0, nullptr);
+  return 0;
+}
+
+int cli_handle_parts(int, char*[]) {
+  cli_cmd_parts();
+  return 0;
+}
+
+int cli_handle_free(int, char*[]) {
+  cli_cmd_free();
+  return 0;
+}
+
 int cli_handle_reboot(int, char*[]) {
   ESP_LOGW(kTag, "CLI command reboot: restarting");
   vTaskDelay(pdMS_TO_TICKS(100));
@@ -330,6 +719,26 @@ int cli_handle_time_status(int, char*[]) {
   ntp_status_for_cli();
   return 0;
 }
+
+#if LUCE_HAS_OTA
+int cli_handle_ota_status(int, char*[]) {
+  ota_status_for_cli();
+  return 0;
+}
+
+int cli_handle_ota_check(int argc, char* argv[]) {
+  if (argc == 1) {
+    ota_request_check();
+    return 0;
+  }
+  if (argc == 2) {
+    ota_request_check_with_url(argv[1]);
+    return 0;
+  }
+  ESP_LOGW(kTag, "CLI command ota.check usage: ota.check [url]");
+  return 1;
+}
+#endif
 
 #if LUCE_HAS_MDNS
 int cli_handle_mdns_status(int, char*[]) {
@@ -366,6 +775,117 @@ int cli_handle_http_status(int, char*[]) {
 
 void cli_cmd_status() {
   luce_log_status_health();
+}
+
+void cli_cmd_uptime() {
+  const std::uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
+  const std::uint64_t days = uptime_s / (24ULL * 3600ULL);
+  const std::uint64_t hours = (uptime_s / 3600ULL) % 24ULL;
+  const std::uint64_t mins = (uptime_s / 60ULL) % 60ULL;
+  const std::uint64_t secs = uptime_s % 60ULL;
+  const std::time_t boot_time = std::time(NULL) - static_cast<std::time_t>(uptime_s);
+  std::tm tm_buf {};
+  std::tm* tm_utc = std::gmtime(&boot_time) != nullptr ? std::gmtime(&boot_time) : nullptr;
+  char date_line[40] = "n/a";
+  if (tm_utc != nullptr) {
+    std::snprintf(date_line, sizeof(date_line), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                  tm_utc->tm_year + 1900, tm_utc->tm_mon + 1, tm_utc->tm_mday,
+                  tm_utc->tm_hour, tm_utc->tm_min, tm_utc->tm_sec);
+  }
+  ESP_LOGI(kTag, "CLI command uptime: %llud %lluh %llum %llus", static_cast<unsigned long long>(days),
+           static_cast<unsigned long long>(hours), static_cast<unsigned long long>(mins),
+           static_cast<unsigned long long>(secs));
+  ESP_LOGI(kTag, "CLI command uptime: boot_time=%s", date_line);
+}
+
+void cli_cmd_system() {
+  ESP_LOGI(kTag, "System command: firmware info");
+  cli_handle_version(0, nullptr);
+  ESP_LOGI(kTag, "System command: diagnostics");
+  luce_print_chip_info();
+  luce_print_app_info();
+  luce_print_heap_stats();
+  ESP_LOGI(kTag, "System command: nvs dump");
+  cli_cmd_nvs_dump();
+  ESP_LOGI(kTag, "System command: partitions");
+  cli_cmd_parts();
+}
+
+void cli_cmd_state() {
+  ESP_LOGI(kTag, "State: wifi");
+  wifi_status_for_cli();
+  ESP_LOGI(kTag, "State: time");
+  ntp_status_for_cli();
+  ESP_LOGI(kTag, "State: sensor");
+  cli_cmd_sensor_snapshot();
+}
+
+void cli_cmd_parts() {
+  ESP_LOGI(kTag, "CLI command parts: scanning partition table");
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  if (!it) {
+    ESP_LOGW(kTag, "CLI command parts: no partitions found");
+    return;
+  }
+  for (esp_partition_iterator_t cur = it; cur;) {
+    const esp_partition_t* partition = esp_partition_get(cur);
+    if (partition) {
+      ESP_LOGI(kTag, "  type=0x%02X subtype=0x%02X label=%s addr=0x%06lX size=0x%06lX", partition->type,
+               partition->subtype, partition->label, static_cast<unsigned long>(partition->address),
+               static_cast<unsigned long>(partition->size));
+    }
+    cur = esp_partition_next(cur);
+  }
+  esp_partition_iterator_release(it);
+}
+
+void cli_cmd_free() {
+  ESP_LOGI(kTag, "CLI command free: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+}
+
+void cli_cmd_sensor_snapshot() {
+  float temperature = 0.0f;
+  float humidity = 0.0f;
+  int light = 0;
+  bool dht_ok = false;
+  I2cSensorSnapshot snapshot {};
+  if (read_sensor_snapshot(snapshot)) {
+    temperature = snapshot.temperature_c;
+    humidity = snapshot.humidity_percent;
+    light = snapshot.light_raw;
+    dht_ok = snapshot.dht_ok;
+  }
+  ESP_LOGI(kTag, "CLI command sensor: temp=%.1fC hum=%.1f%% light=%d dht=%s", temperature, humidity, light,
+           dht_ok ? "ok" : "invalid");
+}
+
+void cli_cmd_test() {
+  if (!g_mcp_available) {
+    ESP_LOGW(kTag, "CLI command test: MCP unavailable");
+    return;
+  }
+  ESP_LOGI(kTag, "CLI command test: cycling each relay");
+  const std::uint8_t start_mask = g_relay_mask;
+  for (int i = 0; i < 8; ++i) {
+    const std::uint8_t on_mask = relay_mask_for_channel_state(i, true, g_relay_mask);
+    (void)set_relay_mask_safe(on_mask);
+    g_relay_mask = on_mask;
+    vTaskDelay(pdMS_TO_TICKS(250));
+
+    const std::uint8_t off_mask = relay_mask_for_channel_state(i, false, g_relay_mask);
+    (void)set_relay_mask_safe(off_mask);
+    g_relay_mask = off_mask;
+    vTaskDelay(pdMS_TO_TICKS(120));
+  }
+  (void)set_relay_mask_safe(start_mask);
+  g_relay_mask = start_mask;
+  ESP_LOGI(kTag, "CLI command test: done");
+}
+
+void cli_cmd_log() {
+  ESP_LOGI(kTag, "CLI command log: legacy CLI logging controls are no longer persisted");
+  ESP_LOGI(kTag, "  options: show | buffer [size] | console [level|format] [value] | logfile [level|format] [value]");
 }
 
 void cli_cmd_nvs_dump() {

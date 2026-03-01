@@ -1,6 +1,6 @@
 # Luce Governance
 
-This repository is governed by the `.codex/system.md` runtime instructions and `AGENTS.md` project contract.
+This repository is governed by `AGENTS.md` and the project’s own runbook contract.
 
 ## Governance Authorities
 
@@ -24,8 +24,7 @@ This repository is governed by the `.codex/system.md` runtime instructions and `
   - `net1` — `LUCE_NET_CORE=1`, `LUCE_NET_MQTT=1`, `LUCE_NET_HTTP=1`
 - Canonical sdkconfig: `sdkconfig`
 - Removed/legacy stage artifacts are intentionally deprecated:
-  - `luce_stage*` environment naming is retained only in historical artifacts
-  - duplicate stage sdkconfig variants
+  - `luce_stage*` naming and legacy SDK config variants are intentionally retired from active use.
 
 ## Source of Truth for Tooling
 

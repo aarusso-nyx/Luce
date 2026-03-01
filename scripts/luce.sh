@@ -19,6 +19,22 @@ VERBOSE=0
 
 declare -a PIO_CMD=()
 
+refresh_pio_path_from_zshrc() {
+  local zsh_pio=""
+
+  if [ ! -f "${HOME}/.zshrc" ]; then
+    return 0
+  fi
+
+  if command -v zsh >/dev/null 2>&1; then
+    zsh_pio="$(zsh -lc 'source ~/.zshrc >/dev/null 2>&1; command -v pio' 2>/dev/null | tr -d '\r' | xargs)"
+  fi
+
+  if [ -n "${zsh_pio}" ]; then
+    PATH="$(dirname "${zsh_pio}"):${PATH}"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -57,6 +73,10 @@ EOF
 }
 
 resolve_pio_cmd() {
+  if ! command -v pio >/dev/null 2>&1; then
+    refresh_pio_path_from_zshrc
+  fi
+
   if [ -d "${PLATFORMIO_PENV_BIN}" ] && [[ ":${PATH}:" != *":${PLATFORMIO_PENV_BIN}:"* ]]; then
     PATH="${PLATFORMIO_PENV_BIN}:${PATH}"
   fi
