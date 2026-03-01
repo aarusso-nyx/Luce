@@ -125,6 +125,39 @@ bool parse_bool_value(const char* text, bool* out_value) {
   return false;
 }
 
+bool parse_led_manual_mode(const char* text, LedManualMode* out_mode) {
+  if (!text || !out_mode) {
+    return false;
+  }
+  if (std::strcmp(text, "auto") == 0 || std::strcmp(text, "AUTO") == 0) {
+    *out_mode = LedManualMode::kAuto;
+    return true;
+  }
+  if (std::strcmp(text, "blink") == 0 || std::strcmp(text, "normal") == 0 ||
+      std::strcmp(text, "BLINK") == 0 || std::strcmp(text, "NORMAL") == 0) {
+    *out_mode = LedManualMode::kBlinkNormal;
+    return true;
+  }
+  if (std::strcmp(text, "fast") == 0 || std::strcmp(text, "FAST") == 0) {
+    *out_mode = LedManualMode::kBlinkFast;
+    return true;
+  }
+  if (std::strcmp(text, "slow") == 0 || std::strcmp(text, "SLOW") == 0) {
+    *out_mode = LedManualMode::kBlinkSlow;
+    return true;
+  }
+  if (std::strcmp(text, "flash") == 0 || std::strcmp(text, "FLASH") == 0) {
+    *out_mode = LedManualMode::kFlash;
+    return true;
+  }
+  bool on = false;
+  if (parse_bool_value(text, &on)) {
+    *out_mode = on ? LedManualMode::kOn : LedManualMode::kOff;
+    return true;
+  }
+  return false;
+}
+
 bool trim_to_buffer(const char* text, char* out, std::size_t out_size) {
   if (!text || !out || out_size == 0) {
     return false;
@@ -201,13 +234,52 @@ bool nvs_write_string(const char* ns, const char* key, const char* value, bool m
   return ok;
 }
 
+void sanitize_json_text(const char* input, char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  if (!input) {
+    out[0] = '\0';
+    return;
+  }
+  std::size_t w = 0;
+  for (std::size_t i = 0; input[i] != '\0' && w + 1 < out_size; ++i) {
+    const unsigned char ch = static_cast<unsigned char>(input[i]);
+    if (ch == '"' || ch == '\\' || ch < 0x20u || ch >= 0x7Fu) {
+      out[w++] = '_';
+    } else {
+      out[w++] = static_cast<char>(ch);
+    }
+  }
+  out[w] = '\0';
+}
+
+void publish_unsupported_legacy_topic(const char* topic_suffix, const char* reason, const char* payload) {
+  if (!topic_suffix || topic_suffix[0] == '\0') {
+    return;
+  }
+  char safe_topic[kTopicSuffixBufferBytes] = {0};
+  char safe_reason[48] = {0};
+  sanitize_json_text(topic_suffix, safe_topic, sizeof(safe_topic));
+  sanitize_json_text(reason ? reason : "unsupported", safe_reason, sizeof(safe_reason));
+
+  char body[kPayloadBufferBytes] = {0};
+  std::snprintf(body, sizeof(body),
+                "{\"status\":\"unsupported\",\"topic\":\"%s\",\"reason\":\"%s\",\"payload_present\":%s}",
+                safe_topic, safe_reason, (payload && payload[0] != '\0') ? "true" : "false");
+  (void)publish_with_topic_suffix("compat/unsupported", body);
+}
+
 void publish_unsupported_config(const char* subtopic, const char* payload) {
+  char topic[kTopicSuffixBufferBytes] = {0};
+  std::snprintf(topic, sizeof(topic), "config/%s", subtopic ? subtopic : "");
   if (payload != nullptr) {
     ESP_LOGW(kTag, "[MQTT][IN] config topic '%s' unsupported or read-only with value '%s'", subtopic ? subtopic : "(null)",
              payload);
   } else {
     ESP_LOGW(kTag, "[MQTT][IN] config topic '%s' unsupported or read-only", subtopic ? subtopic : "(null)");
   }
+  publish_unsupported_legacy_topic(topic, "unsupported_or_readonly", payload);
 }
 
 bool persist_config_bool(const char* ns, const char* key, const char* payload, const char* tag) {
@@ -373,6 +445,9 @@ void handle_relay_topic(const char* subtopic, const char* payload) {
     }
 
     ESP_LOGW(kTag, "[MQTT][IN] relays/%s ignored (legacy command not implemented)", subtopic);
+    char topic[kTopicSuffixBufferBytes] = {0};
+    std::snprintf(topic, sizeof(topic), "relays/%s", subtopic);
+    publish_unsupported_legacy_topic(topic, "legacy_command_not_implemented", payload);
     return;
   }
 
@@ -381,6 +456,9 @@ void handle_relay_topic(const char* subtopic, const char* payload) {
   } else {
     ESP_LOGW(kTag, "[MQTT][IN] unhandled relays topic '%s'", subtopic);
   }
+  char topic[kTopicSuffixBufferBytes] = {0};
+  std::snprintf(topic, sizeof(topic), "relays/%s", subtopic ? subtopic : "");
+  publish_unsupported_legacy_topic(topic, "unhandled_relays_topic", payload);
 }
 
 void handle_config_topic(const char* subtopic, const char* payload) {
@@ -549,6 +627,9 @@ void handle_sensor_topic(const char* subtopic, const char* payload) {
     return;
   }
   ESP_LOGW(kTag, "[MQTT][IN] sensor topic '%s' ignored", subtopic);
+  char topic[kTopicSuffixBufferBytes] = {0};
+  std::snprintf(topic, sizeof(topic), "sensor/%s", subtopic ? subtopic : "");
+  publish_unsupported_legacy_topic(topic, "unsupported_sensor_topic", payload);
 }
 
 void handle_leds_topic(const char* subtopic, const char* payload) {
@@ -558,7 +639,25 @@ void handle_leds_topic(const char* subtopic, const char* payload) {
   if (std::strcmp(subtopic, "state") == 0) {
     char value[kPayloadTextBufferBytes] = {0};
     if (trim_to_buffer(payload, value, sizeof(value))) {
-      ESP_LOGI(kTag, "[MQTT][IN] leds/state request ignored; publishing compatibility snapshot");
+      std::uint32_t mask = 0;
+      if (parse_u32_value(value, &mask) && mask <= 0x07u) {
+        for (std::uint8_t idx = 0; idx < 3; ++idx) {
+          const bool on = ((mask >> idx) & 0x1u) != 0u;
+          (void)led_status_set_manual(idx, on);
+        }
+        ESP_LOGI(kTag, "[MQTT][IN] leds/state=0x%02lX", static_cast<unsigned long>(mask));
+      } else {
+        LedManualMode mode = LedManualMode::kAuto;
+        if (!parse_led_manual_mode(value, &mode)) {
+          publish_unsupported_legacy_topic("leds/state", "invalid_led_state_payload", value);
+          ESP_LOGW(kTag, "[MQTT][IN] leds/state invalid payload '%s'", value);
+          return;
+        }
+        for (std::uint8_t idx = 0; idx < 3; ++idx) {
+          (void)led_status_set_manual_mode(idx, mode);
+        }
+        ESP_LOGI(kTag, "[MQTT][IN] leds/state mode applied");
+      }
       const std::uint8_t current_mask = led_status_current_mask();
       std::snprintf(value, sizeof(value), "%u", static_cast<unsigned>(current_mask));
       (void)publish_with_topic_suffix("leds/state", value);
@@ -573,15 +672,33 @@ void handle_leds_topic(const char* subtopic, const char* payload) {
     std::uint32_t index = 0;
     if (!parse_u32_value(subtopic + 6, &index) || index > 2) {
       ESP_LOGW(kTag, "[MQTT][IN] leds/state/<idx> index must be 0-2");
+      char topic[kTopicSuffixBufferBytes] = {0};
+      std::snprintf(topic, sizeof(topic), "leds/%s", subtopic);
+      publish_unsupported_legacy_topic(topic, "unsupported_led_index", payload);
       return;
     }
     char value[kPayloadTextBufferBytes] = {0};
+    if (trim_to_buffer(payload, value, sizeof(value))) {
+      LedManualMode mode = LedManualMode::kAuto;
+      if (!parse_led_manual_mode(value, &mode)) {
+        char topic[kTopicSuffixBufferBytes] = {0};
+        std::snprintf(topic, sizeof(topic), "leds/%s", subtopic);
+        publish_unsupported_legacy_topic(topic, "invalid_led_state_payload", value);
+        ESP_LOGW(kTag, "[MQTT][IN] leds/state/%lu invalid payload '%s'", static_cast<unsigned long>(index), value);
+        return;
+      }
+      (void)led_status_set_manual_mode(static_cast<std::uint8_t>(index), mode);
+      ESP_LOGI(kTag, "[MQTT][IN] leds/state/%lu mode applied", static_cast<unsigned long>(index));
+    }
     const std::uint8_t current_mask = led_status_current_mask();
     std::snprintf(value, sizeof(value), "%u", static_cast<unsigned>((current_mask >> index) & 0x1u));
     (void)publish_with_topic_suffix(subtopic, value);
     return;
   }
   ESP_LOGW(kTag, "[MQTT][IN] leds topic '%s' ignored (status-only LED pipeline)", subtopic);
+  char topic[kTopicSuffixBufferBytes] = {0};
+  std::snprintf(topic, sizeof(topic), "leds/%s", subtopic ? subtopic : "");
+  publish_unsupported_legacy_topic(topic, "status_only_led_pipeline", payload);
 }
 
 void dispatch_inbound_message(const char* subtopic, const char* payload) {
@@ -599,6 +716,7 @@ void dispatch_inbound_message(const char* subtopic, const char* payload) {
     handle_leds_topic(subtopic + 5, payload);
   } else {
     ESP_LOGW(kTag, "[MQTT][IN] unhandled topic '%s'", subtopic);
+    publish_unsupported_legacy_topic(subtopic, "unhandled_topic_family", payload);
   }
 }
 

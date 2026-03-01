@@ -49,7 +49,14 @@ Supported inbound behavior:
   - `config/mqtt`, `config/mqtt/*`,
   - `config/log*` logger compatibility fields (stored in `compat` namespace).
 - `relays/night` and `relays/night/<idx>` persist night masks into NVS and apply relay day/night suppression policy immediately.
-- `leds/state` and `leds/state/<idx>` publish current status-mask snapshots for compatibility and return deterministic state.
+- `leds/state` and `leds/state/<idx>` support command + readback semantics:
+  - `leds/state`:
+    - empty payload -> publish current status mask
+    - payload `0..7` -> set manual LED overrides for indexes `0..2` from bitmask
+    - payload `auto|off|on|blink|fast|slow|flash` -> apply mode to all LED indexes `0..2`
+  - `leds/state/<idx>` (`idx=0..2`):
+    - empty payload -> publish that LED current state
+    - payload `0|1|on|off|true|false|auto|blink|fast|slow|flash` -> set mode for index
 
 Publishes legacy compatibility aliases under the base topic:
   - `sensor/lighting`
@@ -60,6 +67,14 @@ Publishes legacy compatibility aliases under the base topic:
   - `relays/state/<idx>`
 
 Additional: `leds/state` and `leds/state/<idx>` can be queried as compatibility read-back topics.
+
+Unsupported legacy control topics now produce deterministic compatibility responses under:
+- `compat/unsupported`
+  - JSON payload:
+    - `status` = `unsupported`
+    - `topic` = inbound topic suffix that was rejected
+    - `reason` = deterministic rejection reason
+    - `payload_present` = whether a payload was provided
 
 ## CLI
 

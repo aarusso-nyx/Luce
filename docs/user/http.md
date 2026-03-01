@@ -34,6 +34,21 @@ NET1 provides a TLS-protected API surface on HTTPS and a captive portal UI serve
   - alias of POST behavior for update checks; requires bearer token
 - `GET /api/version`
   - returns firmware version/identity details
+- `GET /api/leds/state`
+  - requires bearer token; returns current LED state and manual override masks
+- `PUT /api/leds/state`
+  - requires bearer token; command LED manual overrides:
+    - body/query `value=0..7` sets manual state mask for LEDs `0..2`
+    - body/query `value=auto|off|on|blink|fast|slow|flash` applies mode to all LEDs `0..2`
+- `GET /api/leds/state/0` (same for `/1`, `/2`)
+  - requires bearer token; returns current state for selected LED index and manual value (`null` when auto mode)
+- `PUT /api/leds/state/0` (same for `/1`, `/2`)
+  - requires bearer token; command selected LED index:
+    - body/query `value=0|1|on|off|true|false|auto|blink|fast|slow|flash` sets mode for that index
+- `GET /ws`
+  - websocket endpoint (available on HTTPS API server and captive HTTP server)
+  - handshake sends an immediate state snapshot
+  - server pushes periodic state snapshots with relay/night/sensor fields (`type`, `tstamp`, `state`, `night`, `day`, `threshold`, `light`, `voltage`, `temperature`, `humidity`, `sensor_ok`)
 - `GET /`
   - serves `./data/webapp/index.html`
 - `GET /index.html`

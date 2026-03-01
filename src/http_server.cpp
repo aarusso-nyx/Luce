@@ -4,8 +4,11 @@
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 #if LUCE_HAS_HTTP
 
@@ -21,6 +24,7 @@
 
 #include "luce/net_wifi.h"
 #include "luce/i2c_io.h"
+#include "luce/led_status.h"
 #include "luce/ntp.h"
 #include "luce/mqtt.h"
 #include "luce/ota.h"
@@ -35,9 +39,11 @@ constexpr const char* kTag = "[HTTP]";
 constexpr const char* kHttpNs = "http";
 constexpr std::uint16_t kDefaultHttpPort = 443;
 constexpr std::uint16_t kCaptiveHttpPort = 80;
+constexpr std::size_t kWsClientScanMax = 8;
 constexpr const char* kDefaultToken = "luce-token";
 constexpr const char* kUnauthorizedPayload = "{\"error\":\"unauthorized\"}";
 constexpr const char* kMethodNotAllowedPayload = "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
+constexpr const char* kBadRequestPayload = "{\"error\":\"bad_request\",\"message\":\"%s\"}";
 
 enum class HttpState : std::uint8_t {
   kDisabled = 0,
@@ -178,6 +184,12 @@ esp_err_t send_unauthorized(httpd_req_t* req) {
   return send_json(req, 401, kUnauthorizedPayload, 0);
 }
 
+esp_err_t send_bad_request(httpd_req_t* req, const char* message) {
+  char payload[160] = {0};
+  std::snprintf(payload, sizeof(payload), kBadRequestPayload, message ? message : "invalid_request");
+  return send_json(req, 400, payload, 0);
+}
+
 bool validate_auth(httpd_req_t* req) {
   char header[64] = {0};
   if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK) {
@@ -192,6 +204,114 @@ bool validate_auth(httpd_req_t* req) {
   return std::strncmp(header, expected, sizeof(expected)) == 0;
 }
 
+bool parse_bool_token(const char* text, bool* out_value) {
+  if (!text || !out_value || text[0] == '\0') {
+    return false;
+  }
+  if (std::strcmp(text, "1") == 0 || strcasecmp(text, "on") == 0 || strcasecmp(text, "true") == 0 ||
+      strcasecmp(text, "yes") == 0) {
+    *out_value = true;
+    return true;
+  }
+  if (std::strcmp(text, "0") == 0 || strcasecmp(text, "off") == 0 || strcasecmp(text, "false") == 0 ||
+      strcasecmp(text, "no") == 0) {
+    *out_value = false;
+    return true;
+  }
+  return false;
+}
+
+bool parse_led_manual_mode_token(const char* text, LedManualMode* out_mode) {
+  if (!text || !out_mode || text[0] == '\0') {
+    return false;
+  }
+  if (strcasecmp(text, "auto") == 0) {
+    *out_mode = LedManualMode::kAuto;
+    return true;
+  }
+  if (strcasecmp(text, "blink") == 0 || strcasecmp(text, "normal") == 0) {
+    *out_mode = LedManualMode::kBlinkNormal;
+    return true;
+  }
+  if (strcasecmp(text, "fast") == 0) {
+    *out_mode = LedManualMode::kBlinkFast;
+    return true;
+  }
+  if (strcasecmp(text, "slow") == 0) {
+    *out_mode = LedManualMode::kBlinkSlow;
+    return true;
+  }
+  if (strcasecmp(text, "flash") == 0) {
+    *out_mode = LedManualMode::kFlash;
+    return true;
+  }
+  bool on = false;
+  if (parse_bool_token(text, &on)) {
+    *out_mode = on ? LedManualMode::kOn : LedManualMode::kOff;
+    return true;
+  }
+  return false;
+}
+
+const char* led_manual_mode_name(LedManualMode mode) {
+  switch (mode) {
+    case LedManualMode::kAuto:
+      return "auto";
+    case LedManualMode::kOff:
+      return "off";
+    case LedManualMode::kOn:
+      return "on";
+    case LedManualMode::kBlinkNormal:
+      return "blink";
+    case LedManualMode::kBlinkFast:
+      return "fast";
+    case LedManualMode::kBlinkSlow:
+      return "slow";
+    case LedManualMode::kFlash:
+      return "flash";
+    default:
+      return "auto";
+  }
+}
+
+bool parse_u32_token(const char* text, std::uint32_t* out_value) {
+  if (!text || !out_value || text[0] == '\0') {
+    return false;
+  }
+  char* end = nullptr;
+  const std::uint32_t parsed = static_cast<std::uint32_t>(std::strtoul(text, &end, 0));
+  if (!end || *end != '\0') {
+    return false;
+  }
+  *out_value = parsed;
+  return true;
+}
+
+bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
+  if (!req || !out || out_size == 0) {
+    return false;
+  }
+  out[0] = '\0';
+
+  if (req->content_len > 0 && req->content_len < static_cast<int>(out_size)) {
+    const int got = httpd_req_recv(req, out, req->content_len);
+    if (got > 0) {
+      out[got < static_cast<int>(out_size) ? got : static_cast<int>(out_size - 1)] = '\0';
+      return out[0] != '\0';
+    }
+  }
+
+  char query[96] = {0};
+  if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+      if (httpd_query_key_value(query, "value", out, out_size) == ESP_OK) {
+        return out[0] != '\0';
+      }
+    }
+  }
+  return false;
+}
+
 esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
     return ESP_FAIL;
@@ -204,6 +324,54 @@ esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
                 LUCE_STRATEGY_NAME, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
                 as_n_a(ip));
   return ESP_OK;
+}
+
+void build_ws_snapshot_payload(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  I2cSensorSnapshot snapshot {};
+  const bool has_sensor = read_sensor_snapshot(snapshot);
+  const std::uint16_t threshold = io_light_threshold();
+  const std::uint8_t night_mask = io_relay_night_mask();
+  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
+  std::time_t now = 0;
+  (void)std::time(&now);
+  std::snprintf(
+      out, out_size,
+      "{\"type\":\"state\",\"tstamp\":%llu,\"state\":%u,\"night\":%u,\"day\":%u,\"threshold\":%u,"
+      "\"light\":%d,\"voltage\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s}",
+      static_cast<unsigned long long>(now > 0 ? now : 0), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask),
+      day ? 1u : 0u, static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
+      has_sensor ? snapshot.voltage_raw : 0, has_sensor ? snapshot.temperature_c : 0.0f,
+      has_sensor ? snapshot.humidity_percent : 0.0f, has_sensor && snapshot.dht_ok ? "true" : "false");
+}
+
+void ws_broadcast_snapshot(httpd_handle_t server) {
+  if (!server) {
+    return;
+  }
+  int client_fds[kWsClientScanMax] = {0};
+  std::size_t clients = kWsClientScanMax;
+  if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK) {
+    return;
+  }
+  char payload[512] = {0};
+  build_ws_snapshot_payload(payload, sizeof(payload));
+  httpd_ws_frame_t ws_pkt {};
+  ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+  ws_pkt.payload = reinterpret_cast<std::uint8_t*>(payload);
+  ws_pkt.len = std::strlen(payload);
+  for (std::size_t i = 0; i < clients; ++i) {
+    const int fd = client_fds[i];
+    if (fd < 0) {
+      continue;
+    }
+    if (httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
+      continue;
+    }
+    (void)httpd_ws_send_frame_async(server, fd, &ws_pkt);
+  }
 }
 
 esp_err_t route_health(httpd_req_t* req) {
@@ -323,6 +491,199 @@ esp_err_t route_ota_check(httpd_req_t* req) {
   return send_json(req, 202, payload, 0);
 }
 
+esp_err_t build_leds_payload(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return ESP_FAIL;
+  }
+  const std::uint8_t state = led_status_current_mask();
+  const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
+  const std::uint8_t manual_value = led_status_manual_value_mask();
+  std::snprintf(out, out_size,
+                "{\"state\":%u,\"manual_enabled\":%u,\"manual_value\":%u,"
+                "\"mode0\":\"%s\",\"mode1\":\"%s\",\"mode2\":\"%s\"}",
+                static_cast<unsigned>(state), static_cast<unsigned>(manual_enabled), static_cast<unsigned>(manual_value),
+                led_manual_mode_name(led_status_manual_mode(0)),
+                led_manual_mode_name(led_status_manual_mode(1)),
+                led_manual_mode_name(led_status_manual_mode(2)));
+  return ESP_OK;
+}
+
+esp_err_t route_leds_state(httpd_req_t* req) {
+  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
+    return send_method_not_allowed(req, "GET, PUT");
+  }
+  if (!validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+
+  if (req->method == HTTP_PUT) {
+    char value[64] = {0};
+    if (!read_request_value(req, value, sizeof(value))) {
+      return send_bad_request(req, "missing_value");
+    }
+    std::uint32_t mask = 0;
+    if (parse_u32_token(value, &mask) && mask <= 0x07u) {
+      for (std::uint8_t idx = 0; idx < 3; ++idx) {
+        const bool on = ((mask >> idx) & 0x1u) != 0u;
+        (void)led_status_set_manual(idx, on);
+      }
+    } else {
+      LedManualMode mode = LedManualMode::kAuto;
+      if (!parse_led_manual_mode_token(value, &mode)) {
+        return send_bad_request(req, "invalid_led_value");
+      }
+      for (std::uint8_t idx = 0; idx < 3; ++idx) {
+        (void)led_status_set_manual_mode(idx, mode);
+      }
+    }
+  }
+
+  char payload[128] = {0};
+  (void)build_leds_payload(payload, sizeof(payload));
+  return send_json(req, 200, payload, 0);
+}
+
+esp_err_t route_leds_state_0(httpd_req_t* req) {
+  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
+    return send_method_not_allowed(req, "GET, PUT");
+  }
+  if (!validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+  if (req->method == HTTP_PUT) {
+    char value[32] = {0};
+    if (!read_request_value(req, value, sizeof(value))) {
+      return send_bad_request(req, "missing_value");
+    }
+    LedManualMode mode = LedManualMode::kAuto;
+    if (!parse_led_manual_mode_token(value, &mode)) {
+      return send_bad_request(req, "invalid_led_value");
+    }
+    (void)led_status_set_manual_mode(0, mode);
+  }
+  const std::uint8_t state = led_status_current_mask();
+  const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
+  const std::uint8_t manual_value = led_status_manual_value_mask();
+  char payload[128] = {0};
+  std::snprintf(payload, sizeof(payload), "{\"index\":0,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+                static_cast<unsigned>(state & 0x1u),
+                (manual_enabled & 0x1u) ? (((manual_value & 0x1u) != 0u) ? "true" : "false") : "null",
+                led_manual_mode_name(led_status_manual_mode(0)));
+  return send_json(req, 200, payload, 0);
+}
+
+esp_err_t route_leds_state_1(httpd_req_t* req) {
+  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
+    return send_method_not_allowed(req, "GET, PUT");
+  }
+  if (!validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+  if (req->method == HTTP_PUT) {
+    char value[32] = {0};
+    if (!read_request_value(req, value, sizeof(value))) {
+      return send_bad_request(req, "missing_value");
+    }
+    LedManualMode mode = LedManualMode::kAuto;
+    if (!parse_led_manual_mode_token(value, &mode)) {
+      return send_bad_request(req, "invalid_led_value");
+    }
+    (void)led_status_set_manual_mode(1, mode);
+  }
+  const std::uint8_t state = led_status_current_mask();
+  const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
+  const std::uint8_t manual_value = led_status_manual_value_mask();
+  char payload[128] = {0};
+  std::snprintf(payload, sizeof(payload), "{\"index\":1,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+                static_cast<unsigned>((state >> 1) & 0x1u),
+                (manual_enabled & 0x2u) ? (((manual_value & 0x2u) != 0u) ? "true" : "false") : "null",
+                led_manual_mode_name(led_status_manual_mode(1)));
+  return send_json(req, 200, payload, 0);
+}
+
+esp_err_t route_leds_state_2(httpd_req_t* req) {
+  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
+    return send_method_not_allowed(req, "GET, PUT");
+  }
+  if (!validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+  if (req->method == HTTP_PUT) {
+    char value[32] = {0};
+    if (!read_request_value(req, value, sizeof(value))) {
+      return send_bad_request(req, "missing_value");
+    }
+    LedManualMode mode = LedManualMode::kAuto;
+    if (!parse_led_manual_mode_token(value, &mode)) {
+      return send_bad_request(req, "invalid_led_value");
+    }
+    (void)led_status_set_manual_mode(2, mode);
+  }
+  const std::uint8_t state = led_status_current_mask();
+  const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
+  const std::uint8_t manual_value = led_status_manual_value_mask();
+  char payload[128] = {0};
+  std::snprintf(payload, sizeof(payload), "{\"index\":2,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+                static_cast<unsigned>((state >> 2) & 0x1u),
+                (manual_enabled & 0x4u) ? (((manual_value & 0x4u) != 0u) ? "true" : "false") : "null",
+                led_manual_mode_name(led_status_manual_mode(2)));
+  return send_json(req, 200, payload, 0);
+}
+
+esp_err_t route_ws(httpd_req_t* req) {
+  if (req->method == HTTP_GET) {
+    char payload[512] = {0};
+    build_ws_snapshot_payload(payload, sizeof(payload));
+    httpd_ws_frame_t ws_pkt {};
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    ws_pkt.payload = reinterpret_cast<std::uint8_t*>(payload);
+    ws_pkt.len = std::strlen(payload);
+    return httpd_ws_send_frame(req, &ws_pkt);
+  }
+
+  httpd_ws_frame_t ws_pkt {};
+  ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+  esp_err_t rc = httpd_ws_recv_frame(req, &ws_pkt, 0);
+  if (rc != ESP_OK) {
+    return rc;
+  }
+
+  std::uint8_t* rx_payload = nullptr;
+  if (ws_pkt.len > 0) {
+    rx_payload = static_cast<std::uint8_t*>(std::calloc(ws_pkt.len + 1, 1));
+    if (!rx_payload) {
+      return ESP_ERR_NO_MEM;
+    }
+    ws_pkt.payload = rx_payload;
+    rc = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+    if (rc != ESP_OK) {
+      std::free(rx_payload);
+      return rc;
+    }
+  }
+
+  if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
+    httpd_ws_frame_t pong {};
+    pong.type = HTTPD_WS_TYPE_PONG;
+    pong.payload = ws_pkt.payload;
+    pong.len = ws_pkt.len;
+    (void)httpd_ws_send_frame(req, &pong);
+  } else if (ws_pkt.type != HTTPD_WS_TYPE_CLOSE) {
+    char payload[512] = {0};
+    build_ws_snapshot_payload(payload, sizeof(payload));
+    httpd_ws_frame_t reply {};
+    reply.type = HTTPD_WS_TYPE_TEXT;
+    reply.payload = reinterpret_cast<std::uint8_t*>(payload);
+    reply.len = std::strlen(payload);
+    (void)httpd_ws_send_frame(req, &reply);
+  }
+
+  if (rx_payload) {
+    std::free(rx_payload);
+  }
+  return ESP_OK;
+}
+
 const WebAsset* resolve_captive_asset(const char* path) {
   if (path == nullptr) {
     return &kWebAppAssets[0];
@@ -354,6 +715,9 @@ httpd_uri_t g_uri_health = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_health,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
 };
 
 httpd_uri_t g_uri_info = {
@@ -361,6 +725,9 @@ httpd_uri_t g_uri_info = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_info,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
 };
 
 httpd_uri_t g_uri_version = {
@@ -368,6 +735,9 @@ httpd_uri_t g_uri_version = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_version,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
 };
 
 httpd_uri_t g_uri_state = {
@@ -375,6 +745,9 @@ httpd_uri_t g_uri_state = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_state,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
 };
 
 httpd_uri_t g_uri_ota = {
@@ -382,6 +755,9 @@ httpd_uri_t g_uri_ota = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_ota,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
 };
 
 httpd_uri_t g_uri_ota_check = {
@@ -389,6 +765,59 @@ httpd_uri_t g_uri_ota_check = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_ota_check,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
+};
+
+httpd_uri_t g_uri_leds_state = {
+    .uri = "/api/leds/state",
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
+    .handler = route_leds_state,
+    .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
+};
+
+httpd_uri_t g_uri_leds_state_0 = {
+    .uri = "/api/leds/state/0",
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
+    .handler = route_leds_state_0,
+    .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
+};
+
+httpd_uri_t g_uri_leds_state_1 = {
+    .uri = "/api/leds/state/1",
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
+    .handler = route_leds_state_1,
+    .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
+};
+
+httpd_uri_t g_uri_leds_state_2 = {
+    .uri = "/api/leds/state/2",
+    .method = static_cast<httpd_method_t>(HTTP_ANY),
+    .handler = route_leds_state_2,
+    .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
+};
+
+httpd_uri_t g_uri_ws = {
+    .uri = "/ws",
+    .method = HTTP_GET,
+    .handler = route_ws,
+    .user_ctx = nullptr,
+    .is_websocket = true,
+    .handle_ws_control_frames = true,
+    .supported_subprotocol = nullptr,
 };
 
 httpd_uri_t g_uri_captive = {
@@ -396,6 +825,9 @@ httpd_uri_t g_uri_captive = {
     .method = static_cast<httpd_method_t>(HTTP_ANY),
     .handler = route_captive,
     .user_ctx = nullptr,
+    .is_websocket = false,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = nullptr,
 };
 
 void stop_http_server() {
@@ -424,7 +856,7 @@ void start_http_server() {
 
   httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
   conf.httpd.server_port = g_cfg.port;
-  conf.httpd.max_uri_handlers = 8;
+  conf.httpd.max_uri_handlers = 16;
   conf.httpd.task_priority = 5;
   conf.httpd.stack_size = 8192;
   conf.servercert = (const unsigned char*)kServerCertPgm;
@@ -445,8 +877,13 @@ void start_http_server() {
   httpd_register_uri_handler(g_httpd, &g_uri_state);
   httpd_register_uri_handler(g_httpd, &g_uri_ota);
   httpd_register_uri_handler(g_httpd, &g_uri_ota_check);
+  httpd_register_uri_handler(g_httpd, &g_uri_leds_state);
+  httpd_register_uri_handler(g_httpd, &g_uri_leds_state_0);
+  httpd_register_uri_handler(g_httpd, &g_uri_leds_state_1);
+  httpd_register_uri_handler(g_httpd, &g_uri_leds_state_2);
+  httpd_register_uri_handler(g_httpd, &g_uri_ws);
   ESP_LOGI(kTag, "[HTTP] started");
-  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, /api/ota/check");
+  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, /api/ota/check, /api/leds/state, /api/leds/state/{0,1,2}, /ws");
 }
 
 void start_captive_http_server() {
@@ -471,6 +908,7 @@ void start_captive_http_server() {
     return;
   }
 
+  httpd_register_uri_handler(g_captive_httpd, &g_uri_ws);
   httpd_register_uri_handler(g_captive_httpd, &g_uri_captive);
   ESP_LOGI(kTag, "[HTTP][CAPTIVE] started on port %u", static_cast<unsigned>(kCaptiveHttpPort));
 }
@@ -512,6 +950,8 @@ void http_loop(void*) {
     }
 
     sync_http_state();
+    ws_broadcast_snapshot(g_httpd);
+    ws_broadcast_snapshot(g_captive_httpd);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }

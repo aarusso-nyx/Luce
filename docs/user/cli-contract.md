@@ -23,6 +23,9 @@ NET0 adds read-only TCP transport:
 - `mcp_read <gpioa|gpiob>`
 - `relay_set <0..7> <0|1>`
 - `relay_mask <hex>`
+- `led_set <0..2> <auto|off|on|blink|fast|slow|flash>`
+- `led_clear <0..2|all>`
+- `led_status`
 - `buttons`
 - `lcd_print <text>`
 - `reboot`

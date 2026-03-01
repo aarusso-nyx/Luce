@@ -85,6 +85,9 @@ int cli_handle_relay_set(int, char*[]);
 int cli_handle_relay_mask(int, char*[]);
 int cli_handle_buttons(int, char*[]);
 int cli_handle_lcd_print(int, char*[]);
+int cli_handle_led_set(int, char*[]);
+int cli_handle_led_clear(int, char*[]);
+int cli_handle_led_status(int, char*[]);
 int cli_handle_reboot(int, char*[]);
 int cli_handle_version(int, char*[]);
 int cli_handle_info(int, char*[]);
@@ -147,6 +150,9 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"mcp_read", false, true, "mcp_read <gpioa|gpiob>", cli_handle_mcp_read},
     {"relay_set", true, false, "relay_set <0..7> <0|1>", cli_handle_relay_set},
     {"relay_mask", true, false, "relay_mask <hex>", cli_handle_relay_mask},
+    {"led_set", true, false, "led_set <0..2> <auto|off|on|blink|fast|slow|flash>", cli_handle_led_set},
+    {"led_clear", true, false, "led_clear <0..2|all>", cli_handle_led_clear},
+    {"led_status", false, true, "led_status", cli_handle_led_status},
     {"buttons", false, true, "buttons", cli_handle_buttons},
     {"lcd_print", false, false, "lcd_print <text>", cli_handle_lcd_print},
     {"reboot", true, false, "reboot", cli_handle_reboot},
@@ -374,6 +380,62 @@ bool parse_onoff(const char* token, bool* value) {
   return parse_bool_value(token, value);
 }
 
+bool parse_led_manual_mode_token(const char* token, LedManualMode* mode) {
+  if (!token || !mode) {
+    return false;
+  }
+  if (strcasecmp(token, "auto") == 0) {
+    *mode = LedManualMode::kAuto;
+    return true;
+  }
+  if (strcasecmp(token, "off") == 0 || std::strcmp(token, "0") == 0) {
+    *mode = LedManualMode::kOff;
+    return true;
+  }
+  if (strcasecmp(token, "on") == 0 || std::strcmp(token, "1") == 0) {
+    *mode = LedManualMode::kOn;
+    return true;
+  }
+  if (strcasecmp(token, "blink") == 0 || strcasecmp(token, "normal") == 0) {
+    *mode = LedManualMode::kBlinkNormal;
+    return true;
+  }
+  if (strcasecmp(token, "fast") == 0) {
+    *mode = LedManualMode::kBlinkFast;
+    return true;
+  }
+  if (strcasecmp(token, "slow") == 0) {
+    *mode = LedManualMode::kBlinkSlow;
+    return true;
+  }
+  if (strcasecmp(token, "flash") == 0) {
+    *mode = LedManualMode::kFlash;
+    return true;
+  }
+  return false;
+}
+
+const char* led_manual_mode_name(LedManualMode mode) {
+  switch (mode) {
+    case LedManualMode::kAuto:
+      return "auto";
+    case LedManualMode::kOff:
+      return "off";
+    case LedManualMode::kOn:
+      return "on";
+    case LedManualMode::kBlinkNormal:
+      return "blink";
+    case LedManualMode::kBlinkFast:
+      return "fast";
+    case LedManualMode::kBlinkSlow:
+      return "slow";
+    case LedManualMode::kFlash:
+      return "flash";
+    default:
+      return "auto";
+  }
+}
+
 int cli_handle_help(int, char*[]) {
   cli_print_help();
   return 0;
@@ -533,6 +595,67 @@ int cli_handle_buttons(int, char*[]) {
   return 0;
 }
 
+int cli_handle_led_set(int argc, char* argv[]) {
+  if (argc != 3) {
+    ESP_LOGW(kTag, "CLI command led_set usage: led_set <0..2> <auto|off|on|blink|fast|slow|flash>");
+    return 1;
+  }
+  std::uint32_t index = 0;
+  char token[32] = {0};
+  if (!parse_u32_with_base(argv[1], 10, &index, token) || index > 2u) {
+    ESP_LOGW(kTag, "CLI command led_set: invalid index '%s'", token);
+    return 1;
+  }
+  LedManualMode mode = LedManualMode::kAuto;
+  if (!parse_led_manual_mode_token(argv[2], &mode)) {
+    ESP_LOGW(kTag, "CLI command led_set: invalid value '%s'", argv[2]);
+    return 1;
+  }
+  if (!led_status_set_manual_mode(static_cast<std::uint8_t>(index), mode)) {
+    ESP_LOGW(kTag, "CLI command led_set: failed to apply index=%lu", static_cast<unsigned long>(index));
+    return 1;
+  }
+  ESP_LOGI(kTag, "CLI command led_set: led[%lu]=%s", static_cast<unsigned long>(index), led_manual_mode_name(mode));
+  return 0;
+}
+
+int cli_handle_led_clear(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command led_clear usage: led_clear <0..2|all>");
+    return 1;
+  }
+  if (strcasecmp(argv[1], "all") == 0) {
+    led_status_clear_manual_all();
+    ESP_LOGI(kTag, "CLI command led_clear: all manual overrides cleared");
+    return 0;
+  }
+  std::uint32_t index = 0;
+  char token[32] = {0};
+  if (!parse_u32_with_base(argv[1], 10, &index, token) || index > 2u) {
+    ESP_LOGW(kTag, "CLI command led_clear: invalid index '%s'", token);
+    return 1;
+  }
+  if (!led_status_clear_manual(static_cast<std::uint8_t>(index))) {
+    ESP_LOGW(kTag, "CLI command led_clear: failed to clear index=%lu", static_cast<unsigned long>(index));
+    return 1;
+  }
+  ESP_LOGI(kTag, "CLI command led_clear: led[%lu] manual override cleared", static_cast<unsigned long>(index));
+  return 0;
+}
+
+int cli_handle_led_status(int, char*[]) {
+  const std::uint8_t state = led_status_current_mask();
+  const std::uint8_t enabled = led_status_manual_enabled_mask();
+  const std::uint8_t manual = led_status_manual_value_mask();
+  ESP_LOGI(kTag, "CLI command led_status: state=0x%02X manual_enabled=0x%02X manual_value=0x%02X",
+           static_cast<unsigned>(state), static_cast<unsigned>(enabled), static_cast<unsigned>(manual));
+  ESP_LOGI(kTag, "CLI command led_status: led0=%s led1=%s led2=%s",
+           led_manual_mode_name(led_status_manual_mode(0)),
+           led_manual_mode_name(led_status_manual_mode(1)),
+           led_manual_mode_name(led_status_manual_mode(2)));
+  return 0;
+}
+
 int cli_handle_lcd_print(int argc, char* argv[]) {
   if (argc < 2) {
     ESP_LOGW(kTag, "CLI command lcd_print usage: lcd_print <text>");
@@ -567,8 +690,85 @@ int cli_handle_set(int argc, char* argv[]) {
     return 1;
   }
   if (target_is_led) {
-    ESP_LOGW(kTag, "CLI command set: led control not available in current firmware");
-    return 1;
+    const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
+    const std::string ids(spec, eq_pos);
+    const std::string value_str(spec + eq_pos + 1);
+    LedManualMode mode = LedManualMode::kAuto;
+    if (!parse_led_manual_mode_token(value_str.c_str(), &mode)) {
+      ESP_LOGW(kTag, "CLI command set: invalid state '%s'", value_str.c_str());
+      return 1;
+    }
+    if (ids.empty()) {
+      ESP_LOGW(kTag, "CLI command set: empty id list");
+      return 1;
+    }
+
+    std::size_t cursor = 0;
+    std::uint16_t applied = 0;
+    while (cursor < ids.size()) {
+      std::size_t comma_pos = ids.find(',', cursor);
+      const std::string token = ids.substr(cursor, comma_pos == std::string::npos ? std::string::npos : (comma_pos - cursor));
+      if (!token.empty()) {
+        if (token == "all") {
+          for (std::uint8_t idx = 0; idx < 3; ++idx) {
+            (void)led_status_set_manual_mode(idx, mode);
+          }
+          applied = 3;
+        } else {
+          std::uint32_t start = 0;
+          std::uint32_t end = 0;
+          const std::size_t dash = token.find('-');
+          if (dash == std::string::npos) {
+            char* end_ptr = nullptr;
+            start = static_cast<std::uint32_t>(std::strtoul(token.c_str(), &end_ptr, 10));
+            if (end_ptr == token.c_str() || *end_ptr != '\0') {
+              ESP_LOGW(kTag, "CLI command set: invalid led token '%s'", token.c_str());
+              return 1;
+            }
+            end = start;
+          } else {
+            const std::string start_str = token.substr(0, dash);
+            const std::string end_str = token.substr(dash + 1);
+            if (start_str.empty() || end_str.empty()) {
+              ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", token.c_str());
+              return 1;
+            }
+            char* end_ptr = nullptr;
+            start = static_cast<std::uint32_t>(std::strtoul(start_str.c_str(), &end_ptr, 10));
+            if (end_ptr == start_str.c_str() || *end_ptr != '\0') {
+              ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", token.c_str());
+              return 1;
+            }
+            end_ptr = nullptr;
+            end = static_cast<std::uint32_t>(std::strtoul(end_str.c_str(), &end_ptr, 10));
+            if (end_ptr == end_str.c_str() || *end_ptr != '\0') {
+              ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", token.c_str());
+              return 1;
+            }
+          }
+          const std::uint32_t lo = (start <= end) ? start : end;
+          const std::uint32_t hi = (start <= end) ? end : start;
+          for (std::uint32_t idx = lo; idx <= hi; ++idx) {
+            if (idx > 2u) {
+              ESP_LOGW(kTag, "CLI command set: invalid led id %lu (expected 0..2)", static_cast<unsigned long>(idx));
+              return 1;
+            }
+            (void)led_status_set_manual_mode(static_cast<std::uint8_t>(idx), mode);
+            ++applied;
+          }
+        }
+      }
+      if (comma_pos == std::string::npos) {
+        break;
+      }
+      cursor = comma_pos + 1;
+    }
+    if (applied == 0) {
+      ESP_LOGW(kTag, "CLI command set: no led ids selected");
+      return 1;
+    }
+    ESP_LOGI(kTag, "CLI command set: led=%s applied=%u", led_manual_mode_name(mode), static_cast<unsigned>(applied));
+    return 0;
   }
 
   const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);

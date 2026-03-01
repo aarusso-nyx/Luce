@@ -29,6 +29,8 @@ constexpr gpio_num_t kLedOperationStatus = GPIO_NUM_27;
 constexpr TickType_t kLoopPeriodTicks = pdMS_TO_TICKS(25);
 constexpr TickType_t kFastBlinkOnTicks = pdMS_TO_TICKS(120);
 constexpr TickType_t kFastBlinkOffTicks = pdMS_TO_TICKS(120);
+constexpr TickType_t kNormalBlinkOnTicks = pdMS_TO_TICKS(300);
+constexpr TickType_t kNormalBlinkOffTicks = pdMS_TO_TICKS(300);
 constexpr TickType_t kSlowBlinkOnTicks = pdMS_TO_TICKS(220);
 constexpr TickType_t kSlowBlinkOffTicks = pdMS_TO_TICKS(720);
 constexpr TickType_t kConnectOnTicks = pdMS_TO_TICKS(180);
@@ -90,6 +92,9 @@ bool g_alert_active = false;
 std::uint8_t g_user_input_events = 0;
 std::uint8_t g_user_error_events = 0;
 std::uint8_t g_status_mask = 0;
+LedManualMode g_manual_mode[3] = {LedManualMode::kAuto, LedManualMode::kAuto, LedManualMode::kAuto};
+bool g_manual_phase_on[3] = {true, true, true};
+TickType_t g_manual_deadline[3] = {0, 0, 0};
 
 DeviceLedMode g_device_mode = DeviceLedMode::kStartup;
 BlinkState g_device_blink;
@@ -110,6 +115,70 @@ void snapshot_state(LedStatusSnapshot& out) {
   out.user_error_events = g_user_error_events;
   g_user_input_events = 0;
   g_user_error_events = 0;
+  portEXIT_CRITICAL(&g_state_lock);
+}
+
+bool run_manual_mode_for_index(std::uint8_t idx, TickType_t now, LedManualMode mode) {
+  if (idx > 2u) {
+    return false;
+  }
+  switch (mode) {
+    case LedManualMode::kAuto:
+      return false;
+    case LedManualMode::kOff:
+      return false;
+    case LedManualMode::kOn:
+      return true;
+    case LedManualMode::kBlinkNormal:
+    case LedManualMode::kBlinkFast:
+    case LedManualMode::kBlinkSlow:
+    case LedManualMode::kFlash: {
+      TickType_t on_ticks = kNormalBlinkOnTicks;
+      TickType_t off_ticks = kNormalBlinkOffTicks;
+      if (mode == LedManualMode::kBlinkFast) {
+        on_ticks = kFastBlinkOnTicks;
+        off_ticks = kFastBlinkOffTicks;
+      } else if (mode == LedManualMode::kBlinkSlow) {
+        on_ticks = kSlowBlinkOnTicks;
+        off_ticks = kSlowBlinkOffTicks;
+      } else if (mode == LedManualMode::kFlash) {
+        on_ticks = kConnectOnTicks;
+        off_ticks = kConnectOffTicks;
+      }
+
+      if (g_manual_deadline[idx] == 0) {
+        g_manual_phase_on[idx] = true;
+        g_manual_deadline[idx] = now + on_ticks;
+        return true;
+      }
+      if (now >= g_manual_deadline[idx]) {
+        g_manual_phase_on[idx] = !g_manual_phase_on[idx];
+        g_manual_deadline[idx] = now + (g_manual_phase_on[idx] ? on_ticks : off_ticks);
+      }
+      return g_manual_phase_on[idx];
+    }
+    default:
+      return false;
+  }
+}
+
+void apply_manual_overrides(TickType_t now, bool& led0, bool& led1, bool& led2) {
+  portENTER_CRITICAL(&g_state_lock);
+  for (std::uint8_t idx = 0; idx < 3; ++idx) {
+    const LedManualMode mode = g_manual_mode[idx];
+    if (mode == LedManualMode::kAuto) {
+      g_manual_deadline[idx] = 0;
+      continue;
+    }
+    const bool value = run_manual_mode_for_index(idx, now, mode);
+    if (idx == 0u) {
+      led0 = value;
+    } else if (idx == 1u) {
+      led1 = value;
+    } else {
+      led2 = value;
+    }
+  }
   portEXIT_CRITICAL(&g_state_lock);
 }
 
@@ -381,6 +450,8 @@ void led_status_task(void*) {
       }
     }
 
+    apply_manual_overrides(loop_now, led0, led1, led2);
+
     const std::uint8_t next_mask = static_cast<std::uint8_t>((led0 ? 0x01u : 0x00u) | (led1 ? 0x02u : 0x00u) |
                                                             (led2 ? 0x04u : 0x00u));
     portENTER_CRITICAL(&g_state_lock);
@@ -453,4 +524,77 @@ std::uint8_t led_status_current_mask() {
   const std::uint8_t mask = g_status_mask;
   portEXIT_CRITICAL(&g_state_lock);
   return mask;
+}
+
+bool led_status_set_manual(std::uint8_t index, bool on) {
+  return led_status_set_manual_mode(index, on ? LedManualMode::kOn : LedManualMode::kOff);
+}
+
+bool led_status_set_manual_mode(std::uint8_t index, LedManualMode mode) {
+  if (index > 2u) {
+    return false;
+  }
+  portENTER_CRITICAL(&g_state_lock);
+  g_manual_mode[index] = mode;
+  g_manual_phase_on[index] = true;
+  g_manual_deadline[index] = 0;
+  portEXIT_CRITICAL(&g_state_lock);
+  return true;
+}
+
+bool led_status_clear_manual(std::uint8_t index) {
+  if (index > 2u) {
+    return false;
+  }
+  portENTER_CRITICAL(&g_state_lock);
+  g_manual_mode[index] = LedManualMode::kAuto;
+  g_manual_phase_on[index] = true;
+  g_manual_deadline[index] = 0;
+  portEXIT_CRITICAL(&g_state_lock);
+  return true;
+}
+
+void led_status_clear_manual_all() {
+  portENTER_CRITICAL(&g_state_lock);
+  for (std::uint8_t idx = 0; idx < 3; ++idx) {
+    g_manual_mode[idx] = LedManualMode::kAuto;
+    g_manual_phase_on[idx] = true;
+    g_manual_deadline[idx] = 0;
+  }
+  portEXIT_CRITICAL(&g_state_lock);
+}
+
+std::uint8_t led_status_manual_enabled_mask() {
+  std::uint8_t mask = 0;
+  portENTER_CRITICAL(&g_state_lock);
+  for (std::uint8_t idx = 0; idx < 3; ++idx) {
+    if (g_manual_mode[idx] != LedManualMode::kAuto) {
+      mask = static_cast<std::uint8_t>(mask | (1u << idx));
+    }
+  }
+  portEXIT_CRITICAL(&g_state_lock);
+  return mask;
+}
+
+std::uint8_t led_status_manual_value_mask() {
+  std::uint8_t value_mask = 0;
+  portENTER_CRITICAL(&g_state_lock);
+  const std::uint8_t current_mask = g_status_mask;
+  for (std::uint8_t idx = 0; idx < 3; ++idx) {
+    if (g_manual_mode[idx] != LedManualMode::kAuto && ((current_mask >> idx) & 0x1u)) {
+      value_mask = static_cast<std::uint8_t>(value_mask | (1u << idx));
+    }
+  }
+  portEXIT_CRITICAL(&g_state_lock);
+  return value_mask;
+}
+
+LedManualMode led_status_manual_mode(std::uint8_t index) {
+  if (index > 2u) {
+    return LedManualMode::kAuto;
+  }
+  portENTER_CRITICAL(&g_state_lock);
+  const LedManualMode mode = g_manual_mode[index];
+  portEXIT_CRITICAL(&g_state_lock);
+  return mode;
 }
