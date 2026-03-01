@@ -27,6 +27,45 @@ pio run -e default -t upload
 pio device monitor -e default --timestamp
 ```
 
+## Serial Ports and Runtime Iteration
+
+Operational serial port policy for Luce CORE/NET workflows:
+
+- Flash/upload port: `/dev/cu.usbserial-0001`
+- Mirror monitor/console port: `/dev/cu.usbserial-40110`
+
+Use the following exact commands unless the port assignment is changed intentionally:
+
+```bash
+python3 -m platformio run -e default -t upload --upload-port /dev/cu.usbserial-0001
+python3 -m platformio device monitor -p /dev/cu.usbserial-40110
+python3 -m platformio run -e net0 -t upload --upload-port /dev/cu.usbserial-0001
+```
+
+Autonomous firmware iteration:
+
+```bash
+source ~/.zshrc
+python3 -m platformio run -e <env>
+python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001
+python3 -m platformio device monitor -p /dev/cu.usbserial-40110
+```
+
+For `net0`, run CLI commands (`help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`) and collect the first 80 monitor lines after reset.
+
+Monitor fallback (if termios fails on this host):
+
+```bash
+python3 - <<'PY'
+import sys, serial
+with serial.Serial('/dev/cu.usbserial-40110', 115200, timeout=0.2) as ser:
+    for _ in range(80):
+        line = ser.readline()
+        if line:
+            sys.stdout.write(line.decode('utf-8', errors='replace'))
+PY
+```
+
 ## Feature flags
 
 `LUCE_NET_*` selects network feature groups in `build_flags`.

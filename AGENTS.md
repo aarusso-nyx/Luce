@@ -45,7 +45,24 @@
 - Prefer `python3 -m platformio` only when `pio` is not on `PATH`.
 - Canonical command targets are:
   - `default`, `net0`, `net1`
+- Serial ports for firmware workflows:
+  - Upload: `/dev/cu.usbserial-0001`
+  - Monitor: `/dev/cu.usbserial-40110`
 - Do not revive legacy `luce_stage*` build environments in new work.
+- Recommended firmware iteration flow:
+  1. Build target environment with `python3 -m platformio run -e <env>`.
+  2. Upload with `python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001`.
+  3. Open console with `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`.
+  4. On `net0`, validate CLI outputs (`help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`) and capture the first 80 lines after reset.
+- If monitor open fails with `termios.error: (19, 'Operation not supported by device')`, use direct serial read fallback:
+  ```python
+  import sys, serial
+  with serial.Serial('/dev/cu.usbserial-40110', 115200, timeout=0.2) as ser:
+      for _ in range(80):
+          line = ser.readline()
+          if line:
+              sys.stdout.write(line.decode('utf-8', errors='replace'))
+  ```
 
 ## Contributor Expectations
 - Prefer task-oriented FreeRTOS architecture and explicit state ownership.
