@@ -7,14 +7,14 @@
 
 ## Findings
 
-- No open docs-vs-tests mismatches detected in previously failing areas.
+- No open docs-vs-tests mismatches were found in the previously failing areas.
 
 ## Evidence
 
-- MQTT docs now include explicit contract-coverage scope that matches implemented tests.
+- MQTT documentation now states explicit coverage scope matching enforced tests.
   - [docs/user/mqtt.md](/Users/aarusso/Development/Luce/docs/user/mqtt.md)
   - [tests/test_mqtt_contract.py](/Users/aarusso/Development/Luce/tests/test_mqtt_contract.py)
-- Test workflow docs now explicitly distinguish runner-native layers (`build`, `boot`) from pytest layers.
+- Test workflow documentation now explicitly distinguishes runner-native layers (`build`, `boot`) from pytest layers.
   - [docs/user/testing.md](/Users/aarusso/Development/Luce/docs/user/testing.md:54)
   - [tests/README.md](/Users/aarusso/Development/Luce/tests/README.md:21)
   - [scripts/test_layers.py](/Users/aarusso/Development/Luce/scripts/test_layers.py:24)
