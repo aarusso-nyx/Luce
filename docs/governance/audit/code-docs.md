@@ -1,7 +1,7 @@
 # Code vs Docs Audit
 
-- code_files_detected: 4
-- docs_files_detected: 151
+- code_files_detected: 15
+- docs_files_detected: 14
 - status: PASS
 
 ## Findings

@@ -7,6 +7,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <strings.h>
 
@@ -312,6 +313,24 @@ bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
   return false;
 }
 
+void trim_ascii_whitespace_inplace(char* text) {
+  if (!text) {
+    return;
+  }
+  std::size_t len = std::strlen(text);
+  while (len > 0 && std::isspace(static_cast<unsigned char>(text[len - 1])) != 0) {
+    text[len - 1] = '\0';
+    --len;
+  }
+  std::size_t start = 0;
+  while (text[start] != '\0' && std::isspace(static_cast<unsigned char>(text[start])) != 0) {
+    ++start;
+  }
+  if (start > 0) {
+    std::memmove(text, text + start, std::strlen(text + start) + 1);
+  }
+}
+
 esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
     return ESP_FAIL;
@@ -466,23 +485,26 @@ esp_err_t route_ota_check(httpd_req_t* req) {
     return send_unauthorized(req);
   }
   char query[64] = {0};
-  char url[256] = {0};
-  if (req->content_len > 0 && req->content_len < sizeof(url)) {
-    const int got = httpd_req_recv(req, url, req->content_len);
+  char query_url[256] = {0};
+  char body_url[256] = {0};
+  if (req->content_len > 0 && req->content_len < static_cast<int>(sizeof(body_url))) {
+    const int got = httpd_req_recv(req, body_url, req->content_len);
     if (got > 0) {
-      url[got < static_cast<int>(sizeof(url)) ? got : static_cast<int>(sizeof(url) - 1)] = '\0';
+      body_url[got < static_cast<int>(sizeof(body_url)) ? got : static_cast<int>(sizeof(body_url) - 1)] = '\0';
+      trim_ascii_whitespace_inplace(body_url);
     }
   }
   if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-      if (httpd_query_key_value(query, "url", url, sizeof(url)) == ESP_OK) {
-        ota_request_check_with_url(url);
-      } else {
-        ota_request_check();
+      if (httpd_query_key_value(query, "url", query_url, sizeof(query_url)) == ESP_OK) {
+        trim_ascii_whitespace_inplace(query_url);
       }
-    } else {
-      ota_request_check();
     }
+  }
+  if (query_url[0] != '\0') {
+    ota_request_check_with_url(query_url);
+  } else if (body_url[0] != '\0') {
+    ota_request_check_with_url(body_url);
   } else {
     ota_request_check();
   }

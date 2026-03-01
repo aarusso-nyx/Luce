@@ -22,7 +22,7 @@ MQTT client with inbound control subscriptions and outbound telemetry/compatibil
 ## Runtime behavior
 
 - Enabled only when `mqtt/enabled = 1`.
-- If no IP yet, service remains in backoff state.
+- If no IP yet, service remains initialized in `waiting_ip` state until networking is ready.
 - Connect/reconnect with exponential backoff.
 - Subscribes to inbound control topics on connect (base topic):
   - `config/#`

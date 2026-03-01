@@ -1,10 +1,10 @@
 # Docs vs Tests Audit
 
-- docs_files_detected: 151
-- test_files_detected: 3
-- status: PASS
+- docs_files_detected: 14
+- test_files_detected: 0
+- status: CONDITIONAL
 
 ## Findings
 
-- Both docs and tests are present; deep trace review may still be required.
+- One side of the docs/tests evidence is missing or sparse.
 

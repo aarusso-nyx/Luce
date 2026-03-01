@@ -8,7 +8,7 @@ LUCE test policy is firmware-only on real hardware.
 
 ## Smoke test command
 
-- `scripts/luce.sh test --env net1 --duration 45`
+- `python3 scripts/test_layers.py --layers boot --env net1 --boot-duration 45`
 
 What it does:
 
@@ -38,7 +38,33 @@ Native host tests and stubs were removed.
 
 - Build firmware: `pio run -e net1`
 - Flash + capture + assert boot markers:
-  - `scripts/luce.sh test --env net1 --duration 45`
+  - `python3 scripts/test_layers.py --layers boot --env net1 --boot-duration 45`
+
+## Full Contract Suite
+
+Use the integrated layered test entrypoint to validate transport and lifecycle behavior:
+
+- `python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token> --ws-host <device-ip> --mqtt-host <broker-ip>`
+
+Dependencies:
+
+- `python3 -m pip install -r tests/requirements.txt`
+
+Modules in the suite:
+
+- `build` layer (PlatformIO compile for selected env)
+- `boot` layer (upload + serial capture + marker assertions)
+- `tests/test_http_contract.py` (auth/method/payload + LED + OTA-check routes)
+- `tests/test_tcp_cli_contract.py` (AUTH, fail-limit disconnect, readonly enforcement)
+- `tests/test_ws_contract.py` (`/ws` handshake + snapshot payload contract)
+- `tests/test_mqtt_contract.py` (compat unsupported responses + LED readback topics)
+
+Outputs:
+
+- `docs/work/diag/<run_id>/test-layers/<layer>.log`
+- `docs/work/diag/<run_id>/test-layers/junit-<layer>.xml` (pytest layers)
+- `docs/work/diag/<run_id>/test-layers/summary.md`
+- `docs/work/diag/<run_id>/test-layers/summary.json`
 
 ## Preconditions
 

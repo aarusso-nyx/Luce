@@ -4,7 +4,7 @@ Date: 2026-03-01
 
 ## Scope
 
-NET1 provides a TLS-protected API surface on HTTPS and a captive portal UI served from `./data/webapp` on plain HTTP port `80`.
+NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a captive portal UI served from `./data/webapp` on plain HTTP port `80`.
 
 ## NVS schema (`http`)
 
@@ -29,7 +29,10 @@ NET1 provides a TLS-protected API surface on HTTPS and a captive portal UI serve
 - `GET /api/ota`
   - requires bearer token
 - `POST /api/ota/check`
-  - requires bearer token; optional `url` query parameter or body payload
+  - requires bearer token; optional URL from query/body:
+    - query `url=<https://...>` takes precedence when provided and non-empty
+    - otherwise plain-text body payload is used when non-empty
+    - when neither source provides a URL, queued check runs with configured/default source
 - `PUT /api/ota/check`
   - alias of POST behavior for update checks; requires bearer token
 - `GET /api/version`

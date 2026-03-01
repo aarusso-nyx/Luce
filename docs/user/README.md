@@ -8,7 +8,7 @@ Authoritative docs for implementation behavior and operations.
 - `ntp.md` — SNTP service behavior and CLI
 - `mdns.md` — zero-config LAN advertising
 - `mqtt.md` — MQTT control subscriptions, outbound telemetry, and compatibility aliases
-- `http.md` — HTTPS read-only API
+- `http.md` — HTTPS authenticated API (state + control routes)
 - `nvs-schema.md` — persisted configuration keys
 - `hardware-map.md` — strategy-independent hardware constants and pin mapping
 - `testing.md` — firmware-only hardware test workflow

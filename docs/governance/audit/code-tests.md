@@ -1,10 +1,10 @@
 # Code vs Tests Audit
 
-- code_files_detected: 4
-- test_files_detected: 3
-- status: PASS
+- code_files_detected: 15
+- test_files_detected: 0
+- status: FAIL
 
 ## Findings
 
-- No high-level coverage gap detected.
+- Tests appear missing for detected code scope.
 

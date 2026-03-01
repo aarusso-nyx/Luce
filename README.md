@@ -13,7 +13,7 @@ source ~/.zshrc
 ./scripts/luce.sh build                    # build all environments
 ./scripts/luce.sh upload --env default      # flash a specific environment
 ./scripts/luce.sh monitor --env default     # serial monitor with timestamps
-./scripts/luce.sh test --env net1 --duration 45 # smoke test net1
+python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
 ```
 You can also call PlatformIO directly when preferred.
 

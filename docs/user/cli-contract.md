@@ -37,7 +37,7 @@ NET0 adds read-only TCP transport:
 - `mqtt.pubtest` (`LUCE_NET_MQTT=1`)
 - `http.status` (`LUCE_NET_HTTP=1`)
 - `cli_net.status` (NET0+)
-- `sensors` (supported as unavailable placeholder in current firmware)
+- `sensors` (active alias for `sensor` snapshot behavior in current firmware)
 
 ## Parsing and errors
 

@@ -13,13 +13,13 @@ Date: 2026-02-28
 - `architecture.md` — Strategy gating and direct orchestration model
 - `nvs-schema.md` — NVS namespaces and key defaults
 - `hardware-map.md` — pin map and relay/button electrical assumptions
-- `testing.md` — firmware-only hardware smoke validation (`net1`)
+- `testing.md` — firmware-only hardware smoke validation (`net1`) + full HIL contract suite
 
 ## Transport and command matrix (authoritative)
 
 - Serial CLI: always enabled (baseline)
 - TCP CLI: `LUCE_NET_CORE=1` (read-only command subset + AUTH)
-- HTTPS CLI/API: `LUCE_NET_HTTP=1` (read-only API surface)
+- HTTPS API: `LUCE_NET_HTTP=1` (authenticated state + control routes)
 
 ## Evidence references
 

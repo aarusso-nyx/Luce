@@ -54,7 +54,6 @@ Global options:
   upload                Upload firmware for selected env.
   monitor               Open device monitor for selected env.
   collect               Upload + capture serial logs for selected env.
-  test                  Smoke test selected env (default: net1) using serial marker assertions.
   lint                  Run static checks. Defaults to all envs when no --env.
   health                Run quick tooling + environment preflight checks.
   http-smoke            Run HTTP API smoke checks against a running device endpoint.
@@ -67,7 +66,6 @@ Common command examples:
   ./scripts/luce.sh upload --env net1
   ./scripts/luce.sh monitor --env default
   ./scripts/luce.sh collect --env net1 --tag boot --duration 120
-  ./scripts/luce.sh test --env net1 --duration 45
   ./scripts/luce.sh http-smoke --host https://192.168.1.99 --token ABC123
   ./scripts/luce.sh lint --env net1 --min-severity medium
   ./scripts/luce.sh health --run-build
@@ -374,92 +372,6 @@ cmd_collect() {
   run_and_capture "${log_file}" "${PIO_CMD[@]}" run -e "${env}" -t upload --upload-port "${UPLOAD_PORT}"
   run_and_capture "${log_file}" python3 "${SCRIPT_DIR}/capture_serial.py" --port "${MONITOR_PORT}" --baud 115200 --seconds "${duration}" --output "${log_file}"
   echo "collect: PASS (${log_file})"
-}
-
-cmd_test() {
-  local env="${REQUESTED_ENV:-net1}"
-  local tag="smoke"
-  local duration=45
-  local -a required_markers=(
-    "LUCE STRATEGY=NET1"
-    "Feature flags: NVS=1 I2C=1 LCD=1 CLI=1 WIFI=1 NTP=1 mDNS=1 MQTT=1 HTTP=1"
-  )
-
-  while [ "${#}" -gt 0 ]; do
-    case "${1}" in
-      --env)
-        env="${2:-}"
-        shift 2
-        ;;
-      --tag)
-        tag="${2:-}"
-        shift 2
-        ;;
-      --duration)
-        duration="${2:-}"
-        shift 2
-        ;;
-      --require)
-        required_markers+=("${2:-}")
-        shift 2
-        ;;
-      --upload-port)
-        UPLOAD_PORT="${2:-}"
-        shift 2
-        ;;
-      --monitor-port)
-        MONITOR_PORT="${2:-}"
-        shift 2
-        ;;
-      --help|-h)
-        usage
-        exit 0
-        ;;
-      *)
-        echo "error: unknown test option '${1}'" >&2
-        exit 1
-        ;;
-    esac
-  done
-
-  if [ -z "${env}" ]; then
-    echo "error: test requires an environment" >&2
-    exit 1
-  fi
-  require_positive_int "${duration}" "duration"
-
-  local target_env
-  mapfile -t target_env < <(resolve_envs "${env}" 0)
-  env="${target_env[0]}"
-
-  local out_dir
-  local log_file
-  out_dir="$(artifact_dir test "${env}")"
-  log_file="${out_dir}/${env}_${tag}.log"
-
-  local tmp_env="${REQUESTED_ENV}"
-  REQUESTED_ENV="${env}"
-  cmd_collect --tag "${tag}" --duration "${duration}"
-  local collected_log="${out_dir}/${env}_${tag}.txt"
-  if [ -f "${collected_log}" ]; then
-    mv "${collected_log}" "${log_file}"
-  fi
-  REQUESTED_ENV="${tmp_env}"
-
-  local missing=0
-  for marker in "${required_markers[@]}"; do
-    if ! rg -Fq "${marker}" "${log_file}"; then
-      echo "FAIL: missing marker '${marker}' in ${log_file}" >&2
-      missing=1
-    fi
-  done
-
-  if [ "${missing}" -ne 0 ]; then
-    echo "test: FAIL"
-    exit 2
-  fi
-
-  echo "test: PASS (${log_file})"
 }
 
 cmd_lint() {
@@ -882,7 +794,6 @@ main() {
     upload) cmd_upload "$@" ;;
     monitor) cmd_monitor "$@" ;;
     collect) cmd_collect "$@" ;;
-    test) cmd_test "$@" ;;
     lint) cmd_lint "$@" ;;
     health) cmd_health "$@" ;;
     http-smoke) cmd_http_smoke "$@" ;;
