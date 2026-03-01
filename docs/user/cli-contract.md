@@ -4,12 +4,12 @@ Date: 2026-02-28
 
 ## Transport and format
 
-Serial CLI is available when `LUCE_STRATEGY >= LUCE_STRATEGY_CORE`.
+Serial CLI is always available (baseline).
 Commands are UTF-8 text lines ending in CR/LF over UART0 at 115200.
 Commands are parsed from whitespace-separated tokens.
 
 NET0 adds read-only TCP transport:
-- Listener `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`
+- Listener `LUCE_NET_CORE=1`
 - Default port: `2323`
 - First command sequence requires `AUTH <token>`
 - Command execution is command-line compatible with the serial parser subset
@@ -30,9 +30,9 @@ NET0 adds read-only TCP transport:
 - `wifi.scan` (NET0+)
 - `time.status` (NET0+)
 - `mdns.status` (NET0+)
-- `mqtt.status` (NET1+)
-- `mqtt.pubtest` (NET1+)
-- `http.status` (NET1+)
+- `mqtt.status` (`LUCE_NET_MQTT=1`)
+- `mqtt.pubtest` (`LUCE_NET_MQTT=1`)
+- `http.status` (`LUCE_NET_HTTP=1`)
 - `cli_net.status` (NET0+)
 - `sensors` (supported as unavailable placeholder in current firmware)
 

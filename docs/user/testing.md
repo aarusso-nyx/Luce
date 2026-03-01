@@ -4,7 +4,7 @@ LUCE test policy is firmware-only on real hardware.
 
 ## Canonical target
 
-- PlatformIO environment: `luce_net1`
+- PlatformIO environment: `net1`
 
 ## Smoke test command
 
@@ -12,7 +12,7 @@ LUCE test policy is firmware-only on real hardware.
 
 What it does:
 
-1. Uploads `luce_net1` firmware to the board.
+1. Uploads `net1` firmware to the board.
 2. Captures serial output for a bounded duration.
 3. Verifies boot markers:
    - `LUCE STRATEGY=NET1`
@@ -36,7 +36,7 @@ Native host tests and stubs were removed.
 
 ## Canonical Test Path
 
-- Build firmware: `pio run -e luce_net1`
+- Build firmware: `pio run -e net1`
 - Flash + capture + assert boot markers:
   - `scripts/test_firmware_net1.sh`
 

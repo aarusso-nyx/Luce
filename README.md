@@ -11,35 +11,34 @@ Use the repository scripts for deterministic local workflows:
 
 ```bash
 source ~/.zshrc
-./scripts/build.sh                 # build all strategy environments
-./scripts/flash.sh luce_core        # flash a specific environment
-./scripts/monitor.sh luce_core      # serial monitor with timestamps
+./scripts/build.sh                 # build all environments
+./scripts/flash.sh default         # flash a specific environment
+./scripts/monitor.sh default       # serial monitor with timestamps
 ```
 
 You can also call PlatformIO directly:
 
 ```bash
 source ~/.zshrc
-pio run -e luce_core
-pio run -e luce_net0
-pio run -e luce_net1
-pio run -e luce_core -t upload
-pio device monitor -e luce_core --timestamp
+pio run -e default
+pio run -e net0
+pio run -e net1
+pio run -e default -t upload
+pio device monitor -e default --timestamp
 ```
 
-## LUCE_STRATEGY
+## Feature flags
 
-`LUCE_STRATEGY` selects one of the compile-time strategy gates passed to `build_flags` as `LUCE_STRATEGY=<value>`.
+`LUCE_NET_*` selects network feature groups in `build_flags`.
 
-- `CORE` (`LUCE_STRATEGY=LUCE_STRATEGY_CORE`) — NVS, I2C, LCD, Serial CLI
-- `NET0` (`LUCE_STRATEGY=LUCE_STRATEGY_NET0`) — CORE + Wi-Fi + NTP + mDNS + TCP CLI
-- `NET1` (`LUCE_STRATEGY=LUCE_STRATEGY_NET1`) — NET0 + MQTT + HTTP
+- `default` — no `LUCE_NET_*` flags (baseline): NVS, I2C, LCD, CLI
+- `net0` — `-DLUCE_NET_CORE=1`: baseline + Wi-Fi + NTP + mDNS + TCP CLI
+- `net1` — `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1`: net0 + MQTT + HTTP
 
-In `scripts/build.sh`, `LUCE_STRATEGY` can be used to build matching environments (`luce_core`, `luce_net0`, `luce_net1`).
-If no matching env exists, all declared environments are built.
+In `scripts/build.sh`, `LUCE_ENV` can optionally build a single env. If unset, all declared envs are built.
 
-Default PlatformIO environment is `luce_net1`.
-Canonical SDK config is a single file: `sdkconfig` (shared across all three envs).
+Default PlatformIO environment is `default`.
+Canonical SDK config is a single file: `sdkconfig` (shared across all envs).
 
 Ports used by bootstrap scripts:
 ```bash

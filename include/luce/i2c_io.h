@@ -2,10 +2,6 @@
 
 #include <cstdint>
 
-#include "luce_build.h"
-
-#if LUCE_HAS_I2C
-
 #include <cstddef>
 
 #include "esp_err.h"
@@ -38,10 +34,7 @@ extern bool g_i2c_initialized;
 extern bool g_mcp_available;
 extern uint8_t g_relay_mask;
 extern uint8_t g_button_mask;
-
-#if LUCE_HAS_LCD
 extern bool g_lcd_present;
-#endif
 
 const char* init_status_name(InitPathStatus status);
 InitPathResult init_result_success();
@@ -57,8 +50,6 @@ esp_err_t set_relay_mask_safe(uint8_t mask);
 uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask);
 bool read_button_inputs(uint8_t* value);
 void configure_int_pin();
-void run_stage2_diagnostics();
+void run_i2c_diagnostics();
 
-bool stage2_lcd_write_text(const char* text);
-
-#endif  // LUCE_HAS_I2C
+bool i2c_lcd_write_text(const char* text);

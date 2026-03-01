@@ -18,19 +18,8 @@ else
   exit 1
 fi
 
-# Parse environments from platformio.ini and normalize names (no env: prefix).
-raw_envs=(
-  $(awk -F'[][]' '/^\[env:/{print $2}' platformio.ini)
-)
-envs=()
-for e in "${raw_envs[@]}"; do
-  e="${e#env:}"
-  case "${e}" in
-    luce_core|luce_net0|luce_net1)
-      envs+=("${e}")
-      ;;
-  esac
-done
+# Parse environments from platformio.ini.
+mapfile -t envs < <(awk -F'[][]' '/^\[env:/{print $2}' platformio.ini)
 if [ "${#envs[@]}" -eq 0 ]; then
   echo "error: no PlatformIO environments found in platformio.ini" >&2
   exit 1

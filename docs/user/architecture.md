@@ -4,7 +4,7 @@ Date: 2026-02-28
 
 ## Canonical model
 
-LUCE is a single-module ESP-IDF firmware with compile-time strategy gating. Strategy is selected via `LUCE_STRATEGY` in PlatformIO and gate macros in `include/luce_build.h`:
+LUCE is a single-module ESP-IDF firmware with compile-time feature gating. Build flags are selected by environment in `platformio.ini`:
 
 - `CORE`: minimal base build (NVS, I2C, LCD, CLI)
 - `NET0`: CORE + Wi-Fi + NTP + mDNS + TCP CLI
@@ -14,16 +14,17 @@ Runtime initialization remains deterministic in `app_main` and includes service 
 
 ## Feature gating
 
-- `LUCE_HAS_NVS` (`CORE`): `LUCE_STRATEGY >= LUCE_STRATEGY_CORE`
-- `LUCE_HAS_I2C` (`CORE`): `LUCE_STRATEGY >= LUCE_STRATEGY_CORE`
-- `LUCE_HAS_LCD` (`CORE`): `LUCE_STRATEGY >= LUCE_STRATEGY_CORE`
-- `LUCE_HAS_CLI` (`CORE`): `LUCE_STRATEGY >= LUCE_STRATEGY_CORE`
-- `LUCE_HAS_WIFI` (`NET0+`): `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`
-- `LUCE_HAS_NTP` (`NET0+`): `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`
-- `LUCE_HAS_MDNS` (`NET0+`): `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`
-- `LUCE_HAS_TCP_CLI` (`NET0+`): `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`
-- `LUCE_HAS_MQTT` (`NET1+`): `LUCE_STRATEGY >= LUCE_STRATEGY_NET1`
-- `LUCE_HAS_HTTP` (`NET1+`): `LUCE_STRATEGY >= LUCE_STRATEGY_NET1`
+- `CORE` always includes:
+  - NVS
+  - I2C
+  - LCD
+  - CLI
+- `LUCE_HAS_WIFI` (`NET0+`): `LUCE_NET_CORE=1`
+- `LUCE_HAS_NTP` (`NET0+`): `LUCE_NET_CORE=1`
+- `LUCE_HAS_MDNS` (`NET0+`): `LUCE_NET_CORE=1`
+- `LUCE_HAS_TCP_CLI` (`NET0+`): `LUCE_NET_CORE=1`
+- `LUCE_HAS_MQTT` (`MQTT`): `LUCE_NET_MQTT=1`
+- `LUCE_HAS_HTTP` (`HTTP`): `LUCE_NET_HTTP=1`
 
 ## Observability model
 

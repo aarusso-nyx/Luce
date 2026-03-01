@@ -4,7 +4,7 @@ Date: 2026-02-28
 
 ## Activation
 
-Compiled in when `LUCE_STRATEGY >= LUCE_STRATEGY_NET0`.
+Compiled in when `LUCE_NET_CORE=1`.
 Configured by namespace `mdns` plus fallback hostname from `net/hostname`.
 
 ## NVS schema (`mdns` and `net`)

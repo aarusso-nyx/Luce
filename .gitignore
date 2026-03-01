@@ -23,6 +23,8 @@ cmake_install.cmake
 compile_commands.json
 sdkconfig.old
 sdkconfig.luce_*
+sdkconfig.default
+sdkconfig.net*
 
 # VS Code local settings
 .vscode/.browse.c_cpp.db*
@@ -33,6 +35,7 @@ docs/work/inv/*
 docs/work/diag/*
 docs/work/plan/*
 !docs/work/inv/.gitkeep
+!docs/work/inv/legacy.md
 !docs/work/diag/.gitkeep
 !docs/work/plan/.gitkeep
 

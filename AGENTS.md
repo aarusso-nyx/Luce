@@ -4,7 +4,7 @@
 - **Path**: `/Users/aarusso/Development/Luce`
 - **Project type**: ESP32 firmware (ESP-IDF) with PlatformIO
 - **Primary stack**: C/C++ firmware + PlatformIO + ESP-IDF
-- **Canonical environments**: `luce_core`, `luce_net0`, `luce_net1`
+- **Canonical environments**: `default`, `net0`, `net1`
 - **Canonical config**: `sdkconfig` (single source for all strategy envs)
 
 ## Standards and Layout
@@ -25,13 +25,13 @@
 - Source and include trees remain canonical:
   - `src/`
   - `include/`
-  - `lib/`
   - `scripts/`
+  - `docs/`
 - PlatformIO strategy environment file list and flags:
-  - `luce_core`: `-DLUCE_STRATEGY=LUCE_STRATEGY_CORE`
-  - `luce_net0`: `-DLUCE_STRATEGY=LUCE_STRATEGY_NET0`
-  - `luce_net1`: `-DLUCE_STRATEGY=LUCE_STRATEGY_NET1`
-- SDK config used by all envs is `sdkconfig` via `board_build.sdkconfig`.
+  - `default`: no `LUCE_NET_*` flags (baseline)
+  - `net0`: `-DLUCE_NET_CORE=1`
+  - `net1`: `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1`
+- SDK config used by all envs is `sdkconfig` via `board_build.esp-idf.sdkconfig_path`.
 
 ## Required Governance Evidence
 - `docs/governance/audit/structure-conformance.md`
@@ -44,7 +44,7 @@
   - `source ~/.zshrc`
 - Prefer `python3 -m platformio` only when `pio` is not on `PATH`.
 - Canonical command targets are:
-  - `luce_core`, `luce_net0`, `luce_net1`
+  - `default`, `net0`, `net1`
 - Do not revive legacy `luce_stage*` build environments in new work.
 
 ## Contributor Expectations

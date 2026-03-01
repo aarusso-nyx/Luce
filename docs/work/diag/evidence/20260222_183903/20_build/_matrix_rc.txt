@@ -1,8 +1,0 @@
-luce_stage0 0
-luce_stage1 0
-luce_stage2 0
-luce_stage3 0
-luce_stage4 0
-luce_stage5 0
-luce_stage6 0
-luce_stage7 0

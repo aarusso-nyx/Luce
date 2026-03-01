@@ -7,9 +7,9 @@ Operational serial port policy for Luce CORE/NET workflows:
 
 Use the following exact commands unless the port assignment is changed intentionally:
 
-- Flash CORE firmware: `python3 -m platformio run -e luce_core -t upload --upload-port /dev/cu.usbserial-0001`
+- Flash baseline firmware: `python3 -m platformio run -e default -t upload --upload-port /dev/cu.usbserial-0001`
 - Monitor serial console continuously: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
-- NET0/NEXT CLI target: `python3 -m platformio run -e luce_net0 -t upload --upload-port /dev/cu.usbserial-0001`
+- NET0 CLI target: `python3 -m platformio run -e net0 -t upload --upload-port /dev/cu.usbserial-0001`
 
 ## Autonomous execution flow
 
@@ -18,10 +18,10 @@ For autonomous firmware iteration:
 1. Build the target env: `python3 -m platformio run -e <env>`
 2. Upload firmware: `python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001`
 3. Capture boot and runtime output on monitor port: `python3 -m platformio device monitor -p /dev/cu.usbserial-40110`
-4. For `luce_net0`, run CLI commands (`help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`) and paste back output.
+4. For `net0`, run CLI commands (`help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`) and paste back output.
 5. Paste back the first 80 lines after reset for diagnosis.
 
-Default target during bootstrap is `luce_core` until a later strategy env is requested.
+Default target during bootstrap is `default` until a later network env is requested.
 
 ### Monitor behavior note
 

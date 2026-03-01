@@ -3,8 +3,6 @@
 #include <cinttypes>
 #include <cstdio>
 
-#if LUCE_HAS_NVS
-
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs.h"
@@ -248,5 +246,3 @@ void update_boot_state_record() {
            (unsigned long)reset_reason);
   dump_nvs_entries();
 }
-
-#endif  // LUCE_HAS_NVS

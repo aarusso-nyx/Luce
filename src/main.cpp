@@ -21,10 +21,7 @@
 #include "luce/mdns.h"
 #include "luce/mqtt.h"
 #include "luce/http_server.h"
-
-#if LUCE_HAS_I2C
 #include "luce/i2c_io.h"
-#endif
 
 namespace {
 
@@ -59,11 +56,9 @@ void blink_alive_task(void*) {
   blink_alive();
 }
 
-#if LUCE_HAS_I2C
-void stage2_task(void*) {
-  run_stage2_diagnostics();
+void io_task(void*) {
+  run_i2c_diagnostics();
 }
-#endif
 
 }  // namespace
 
@@ -75,23 +70,17 @@ extern "C" void app_main(void) {
   luce_print_partition_summary();
   luce_print_feature_flags();
 
-#if LUCE_HAS_NVS
   update_boot_state_record();
-#endif
 
   if (xTaskCreate(blink_alive_task, "blink", kBlinkTaskStackWords, nullptr, 1, nullptr) != pdPASS) {
     ESP_LOGW(kTag, "Failed to create LED blink task");
   }
 
-#if LUCE_HAS_I2C
-  if (xTaskCreate(stage2_task, "stage2", 8192, nullptr, 1, nullptr) != pdPASS) {
-    ESP_LOGW(kTag, "Failed to create Stage2 diagnostics task");
+  if (xTaskCreate(io_task, "io", 8192, nullptr, 1, nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "Failed to create IO diagnostics task");
   }
-#endif
 
-#if LUCE_HAS_CLI
   cli_startup();
-#endif
 
 #if LUCE_HAS_WIFI
   wifi_startup();

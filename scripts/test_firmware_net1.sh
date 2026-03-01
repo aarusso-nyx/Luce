@@ -14,7 +14,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd "${script_dir}/.." && pwd)"
 cd "${project_root}"
 
-env="luce_net1"
+env="net1"
 duration="${1:-45}"
 
 if [[ ! "${duration}" =~ ^[0-9]+$ ]]; then

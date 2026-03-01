@@ -19,8 +19,6 @@
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
 
-#if LUCE_HAS_I2C
-
 constexpr const char* kTag = "luce_boot";
 
 constexpr i2c_port_t kI2CPort = I2C_NUM_0;
@@ -68,9 +66,8 @@ float g_last_temperature_c = 0.0f;
 float g_last_humidity_percent = 0.0f;
 int g_last_light_raw = 0;
 bool g_last_dht_read_ok = false;
-#if LUCE_HAS_LCD
 bool g_lcd_present = false;
-#endif
+
 
 const char* init_status_name(InitPathStatus status) {
   switch (status) {
@@ -134,7 +131,6 @@ void log_sensor_readings() {
   }
 }
 
-#if LUCE_HAS_LCD
 constexpr uint8_t kLcdPcfRsBit = 0;
 constexpr uint8_t kLcdPcfRwBit = 1;
 constexpr uint8_t kLcdPcfEnBit = 2;
@@ -270,13 +266,7 @@ class Pcf8574Hd44780 {
 };
 
 Pcf8574Hd44780 g_lcd(kI2CPort, kLcdAddress);
-#endif  // LUCE_HAS_LCD
 
-#if !LUCE_HAS_LCD
-void update_lcd_status() {}
-#endif
-
-#if LUCE_HAS_LCD
 void update_lcd_status() {
   if (!g_lcd_present) {
     return;
@@ -318,8 +308,6 @@ void update_lcd_status() {
     ESP_LOGW(kTag, "LCD status update failed");
   }
 }
-
-#endif  // LUCE_HAS_LCD
 
 esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks) {
   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
@@ -389,16 +377,13 @@ InitPathResult run_i2c_scan_flow(I2cScanResult& scan, const char* context, bool 
     ESP_LOGI(kTag, "%s: summary found=%d mcp=%d lcd=%d", context, scan.found_count,
              scan.mcp ? 1 : 0, scan.lcd ? 1 : 0);
   }
-#if LUCE_HAS_LCD
   if (attach_lcd) {
     g_lcd_present = false;
   }
-#endif
   if (!attach_lcd) {
     return init_result_success();
   }
 
-#if LUCE_HAS_LCD
   if (scan.lcd) {
     const bool lcd_present = g_lcd.begin();
     if (!lcd_present) {
@@ -411,7 +396,6 @@ InitPathResult run_i2c_scan_flow(I2cScanResult& scan, const char* context, bool 
       update_lcd_status();
     }
   }
-#endif
   (void)attach_lcd;
   return init_result_success();
 }
@@ -582,43 +566,34 @@ void configure_int_pin() {
   }
 }
 
-void run_stage2_diagnostics() {
-  luce_log_heap_integrity("run_stage2_diagnostics_enter");
+void run_i2c_diagnostics() {
+  luce_log_heap_integrity("run_i2c_diagnostics_enter");
   I2cScanResult scan{};
   const InitPathResult scan_result = run_i2c_scan_flow(scan, nullptr, true);
   if (!scan_result.ok) {
-    ESP_LOGW(kTag, "Stage2 abort: I2C bus init failed");
+    ESP_LOGW(kTag, "I/O diagnostics abort: I2C bus init failed");
     return;
   }
   g_i2c_initialized = true;
   bool lcd_present = false;
 
-#if LUCE_HAS_LCD
   g_lcd_present = scan_result.ok && g_lcd_present;
   lcd_present = g_lcd_present;
-#else
-  (void)scan;
-  (void)lcd_present;
-#endif
 
   Mcp23017State mcp_state;
   if (!init_mcp23017(mcp_state)) {
-    ESP_LOGW(kTag, "Stage2 diagnostics degraded: MCP23017 missing or unresponsive");
-#if LUCE_HAS_LCD
-  if (lcd_present) {
-    update_lcd_status();
-  }
-#endif
+    ESP_LOGW(kTag, "I/O diagnostics degraded: MCP23017 missing or unresponsive");
+    if (lcd_present) {
+      update_lcd_status();
+    }
     g_mcp_available = false;
     g_relay_mask = kRelayOffValue;
     g_button_mask = 0x00;
     update_lcd_status();
     while (true) {
-#if LUCE_HAS_LCD
       if (lcd_present) {
         update_lcd_status();
       }
-#endif
       vTaskDelay(pdMS_TO_TICKS(100));
     }
   }
@@ -629,17 +604,15 @@ void run_stage2_diagnostics() {
   g_button_mask = 0x00;
 
   if (set_relay_mask(mcp_state, kRelayOffValue) != ESP_OK) {
-    ESP_LOGW(kTag, "Stage2 diagnostics degraded: cannot write initial relay state");
+    ESP_LOGW(kTag, "I/O diagnostics degraded: cannot write initial relay state");
     g_mcp_available = false;
     return;
   }
 
-#if LUCE_HAS_LCD
   g_lcd.set_mcp_ok(scan.mcp);
   if (lcd_present) {
     update_lcd_status();
   }
-#endif
 
   uint8_t debounce_counts[8] = {0};
   uint8_t debounced_buttons = 0x00;
@@ -651,13 +624,11 @@ void run_stage2_diagnostics() {
   TickType_t last_int_tick = 0;
   TickType_t last_sensor_tick = 0;
   int last_int_level = gpio_get_level(kMcpIntPin);
-#if LUCE_HAS_LCD
   TickType_t last_lcd_tick = 0;
-#endif
 
   relay_mask = g_relay_mask;
 
-  ESP_LOGI(kTag, "Entering Stage2 runtime diagnostics loop (button-toggle relay control)");
+  ESP_LOGI(kTag, "Entering I/O runtime diagnostics loop (button-toggle relay control)");
   while (true) {
     const TickType_t now = xTaskGetTickCount();
 
@@ -682,8 +653,6 @@ void run_stage2_diagnostics() {
             }
 
             if (++debounce_counts[bit] >= kButtonDebounceThreshold) {
-              const bool prev_pressed =
-                  kButtonActiveLow ? ((debounced_buttons & bit_mask) == 0) : ((debounced_buttons & bit_mask) != 0);
               debounced_buttons ^= bit_mask;
               debounce_counts[bit] = 0;
               changed = true;
@@ -730,19 +699,16 @@ void run_stage2_diagnostics() {
       log_sensor_readings();
     }
 
-#if LUCE_HAS_LCD
     if (lcd_present && (now - last_lcd_tick) >= kLcdStatusUpdateTicks) {
       last_lcd_tick = now;
       update_lcd_status();
     }
-#endif
 
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 
-bool stage2_lcd_write_text(const char* text) {
-#if LUCE_HAS_LCD
+bool i2c_lcd_write_text(const char* text) {
   if (!g_lcd_present) {
     ESP_LOGW(kTag, "CLI command lcd_print: LCD not initialized or absent");
     return false;
@@ -754,88 +720,4 @@ bool stage2_lcd_write_text(const char* text) {
   const bool ok = g_lcd.write_text(0, text);
   ESP_LOGI(kTag, "CLI command lcd_print: rc=%s text='%s'", ok ? "OK" : "ERR", text);
   return ok;
-#else
-  (void)text;
-  return false;
-#endif
 }
-
-#else  // !LUCE_HAS_I2C
-
-enum class InitPathStatus : uint8_t {
-  kUnknown = 0,
-  kSuccess,
-  kFailure,
-};
-
-struct InitPathResult {
-  bool ok;
-  esp_err_t error;
-  InitPathStatus status;
-};
-
-struct I2cScanResult {
-  bool mcp = false;
-  bool lcd = false;
-  int found_count = 0;
-  char addresses[64] = {0};
-};
-
-struct Mcp23017State {
-  bool connected = false;
-  uint8_t relay_mask = 0xFF;
-};
-
-InitPathResult init_result_success() {
-  return InitPathResult{true, ESP_OK, InitPathStatus::kSuccess};
-}
-
-InitPathResult init_result_failure(esp_err_t error) {
-  return InitPathResult{false, error, InitPathStatus::kFailure};
-}
-
-const char* init_status_name(InitPathStatus) {
-  return "disabled";
-}
-
-I2cScanResult scan_i2c_bus() {
-  return I2cScanResult{};
-}
-
-InitPathResult run_i2c_scan_flow(I2cScanResult&, const char*, bool) {
-  return InitPathResult{false, ESP_ERR_NOT_SUPPORTED, InitPathStatus::kFailure};
-}
-
-esp_err_t i2c_probe_device(uint8_t, TickType_t) {
-  return ESP_ERR_NOT_SUPPORTED;
-}
-
-esp_err_t mcp_read_reg(uint8_t, uint8_t*) {
-  return ESP_ERR_NOT_SUPPORTED;
-}
-
-uint8_t relay_mask_for_channel(int) {
-  return 0;
-}
-
-esp_err_t set_relay_mask_safe(uint8_t) {
-  return ESP_ERR_NOT_SUPPORTED;
-}
-
-uint8_t relay_mask_for_channel_state(int, bool, uint8_t) {
-  return 0;
-}
-
-bool read_button_inputs(uint8_t*) {
-  return false;
-}
-
-void configure_int_pin() {}
-
-void run_stage2_diagnostics() {}
-
-bool stage2_lcd_write_text(const char*) {
-  return false;
-}
-
-#endif  // LUCE_HAS_I2C

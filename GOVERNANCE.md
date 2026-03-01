@@ -19,12 +19,12 @@ This repository is governed by the `.codex/system.md` runtime instructions and `
 
 - Build system: PlatformIO + ESP-IDF
 - Canonical build environments:
-  - `luce_core` — minimal strategy (`LUCE_STRATEGY_CORE`)
-  - `luce_net0` — CORE + networking control plane (`LUCE_STRATEGY_NET0`)
-  - `luce_net1` — CORE + NET0 + telemetry plane (`LUCE_STRATEGY_NET1`)
+  - `default` — minimal baseline (NVS, I2C, LCD, CLI)
+  - `net0` — `LUCE_NET_CORE=1` (Wi-Fi/NTP/mDNS/TCP CLI)
+  - `net1` — `LUCE_NET_CORE=1`, `LUCE_NET_MQTT=1`, `LUCE_NET_HTTP=1`
 - Canonical sdkconfig: `sdkconfig`
 - Removed/legacy stage artifacts are intentionally deprecated:
-  - `luce_stage*` env naming in PlatformIO/docs plans
+  - `luce_stage*` environment naming is retained only in historical artifacts
   - duplicate stage sdkconfig variants
 
 ## Source of Truth for Tooling

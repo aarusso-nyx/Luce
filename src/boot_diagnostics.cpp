@@ -15,10 +15,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-#if LUCE_HAS_I2C
 #include "luce/i2c_io.h"
-#endif
 
 constexpr const char* kTag = "luce_boot";
 
@@ -64,15 +61,11 @@ std::size_t luce_init_path_reset_reason_line(char* out, std::size_t out_size,
 }
 
 void luce_log_heap_integrity(const char* context) {
-#if LUCE_HAS_CLI
   if (!context) {
     context = "unknown";
   }
   const bool ok = heap_caps_check_integrity_all(true);
   ESP_LOGI(kTag, "Heap integrity (%s): %s", context, ok ? "OK" : "CORRUPTED");
-#else
-  (void)context;
-#endif
 }
 
 void luce_log_startup_banner() {
@@ -140,8 +133,7 @@ void luce_print_heap_stats() {
 
 void luce_print_feature_flags() {
   ESP_LOGI(kTag,
-           "Feature flags: NVS=%d I2C=%d LCD=%d CLI=%d WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d",
-           LUCE_HAS_NVS, LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI,
+           "Feature flags: NVS=1 I2C=1 LCD=1 CLI=1 WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d", LUCE_HAS_WIFI,
            LUCE_HAS_NTP, LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
 }
 
@@ -157,18 +149,13 @@ void luce_log_status_health() {
            heap_caps_get_free_size(MALLOC_CAP_8BIT),
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag,
-           "status: feature i2c=%d lcd=%d cli=%d wifi=%d ntp=%d mdns=%d mqtt=%d http=%d",
-           LUCE_HAS_I2C, LUCE_HAS_LCD, LUCE_HAS_CLI, LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS,
+           "status: feature i2c=1 lcd=1 cli=1 wifi=%d ntp=%d mdns=%d mqtt=%d http=%d", LUCE_HAS_WIFI,
+           LUCE_HAS_NTP, LUCE_HAS_MDNS,
            LUCE_HAS_MQTT, LUCE_HAS_HTTP);
-
-#if LUCE_HAS_I2C
   relay_mask = g_relay_mask;
   button_mask = g_button_mask;
   ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d REL:0x%02X BTN:0x%02X", g_i2c_initialized ? 1 : 0,
            g_mcp_available ? 1 : 0, relay_mask, button_mask);
-#else
-  ESP_LOGI(kTag, "status: i2c_init=0 mcp=0 REL:0x%02X BTN:0x%02X", relay_mask, button_mask);
-#endif
 }
 
 void luce_log_runtime_status(std::uint64_t uptime_s, bool i2c_ok, bool mcp_ok,

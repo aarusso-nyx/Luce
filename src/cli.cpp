@@ -8,7 +8,6 @@
 #include <cstring>
 #include "luce_build.h"
 
-#if LUCE_HAS_CLI
 #include "driver/uart.h"
 #include "esp_err.h"
 #include "esp_system.h"
@@ -125,17 +124,12 @@ void cli_cmd_status() {
 }
 
 void cli_cmd_nvs_dump() {
-#if LUCE_HAS_NVS
   ESP_LOGI(kTag, "CLI command nvs_dump: executing");
   dump_nvs_entries();
   ESP_LOGI(kTag, "CLI command nvs_dump: done");
-#else
-  ESP_LOGW(kTag, "CLI command nvs_dump: unsupported (LUCE_HAS_NVS=0)");
-#endif
 }
 
 void cli_cmd_i2c_scan() {
-#if LUCE_HAS_I2C
   I2cScanResult scan {};
   const InitPathResult scan_result = run_i2c_scan_flow(scan, "CLI command i2c_scan", false);
   ESP_LOGI(kTag, "CLI command i2c_scan: found=%d mcp=%d lcd=%d ok=%d", scan.found_count,
@@ -143,13 +137,9 @@ void cli_cmd_i2c_scan() {
   if (!scan_result.ok) {
     ESP_LOGW(kTag, "CLI command i2c_scan: init failed");
   }
-#else
-  ESP_LOGW(kTag, "CLI command i2c_scan: unsupported (LUCE_HAS_I2C=0)");
-#endif
 }
 
 void cli_cmd_mcp_read(const char* port) {
-#if LUCE_HAS_I2C
   if (!g_mcp_available) {
     ESP_LOGW(kTag, "CLI command mcp_read: MCP unavailable");
     return;
@@ -160,14 +150,9 @@ void cli_cmd_mcp_read(const char* port) {
   std::uint8_t value = 0x00;
   const esp_err_t err = mcp_read_reg(reg, &value);
   ESP_LOGI(kTag, "CLI command mcp_read %s rc=%s value=0x%02X", port, esp_err_to_name(err), value);
-#else
-  (void)port;
-  ESP_LOGW(kTag, "CLI command mcp_read: unsupported (LUCE_HAS_I2C=0)");
-#endif
 }
 
 void cli_cmd_relay_set(int channel, int on_off) {
-#if LUCE_HAS_I2C
   const std::uint8_t new_mask = relay_mask_for_channel_state(channel, on_off != 0, g_relay_mask);
   const esp_err_t err = set_relay_mask_safe(new_mask);
   if (err == ESP_OK) {
@@ -175,29 +160,18 @@ void cli_cmd_relay_set(int channel, int on_off) {
   }
   ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d new_mask=0x%02X rc=%s", channel, on_off,
            new_mask, esp_err_to_name(err));
-#else
-  (void)channel;
-  (void)on_off;
-  ESP_LOGW(kTag, "CLI command relay_set: unsupported (LUCE_HAS_I2C=0)");
-#endif
 }
 
 void cli_cmd_relay_mask(std::uint32_t value) {
-#if LUCE_HAS_I2C
   const std::uint8_t mask = static_cast<std::uint8_t>(value & 0xFF);
   const esp_err_t err = set_relay_mask_safe(mask);
   if (err == ESP_OK) {
     g_relay_mask = mask;
   }
   ESP_LOGI(kTag, "CLI command relay_mask: mask=0x%02X rc=%s", mask, esp_err_to_name(err));
-#else
-  (void)value;
-  ESP_LOGW(kTag, "CLI command relay_mask: unsupported (LUCE_HAS_I2C=0)");
-#endif
 }
 
 void cli_cmd_buttons() {
-#if LUCE_HAS_I2C
   if (!g_mcp_available) {
     ESP_LOGW(kTag, "CLI command buttons: MCP unavailable");
     return;
@@ -205,23 +179,15 @@ void cli_cmd_buttons() {
   std::uint8_t value = 0x00;
   const esp_err_t err = mcp_read_reg(kMcpRegGpioB, &value);
   ESP_LOGI(kTag, "CLI command buttons: rc=%s gpiob=0x%02X", esp_err_to_name(err), value);
-#else
-  ESP_LOGW(kTag, "CLI command buttons: unsupported (LUCE_HAS_I2C=0)");
-#endif
 }
 
 void cli_cmd_lcd_print(const char* text) {
-#if LUCE_HAS_LCD
   if (!text || !*text) {
     ESP_LOGW(kTag, "CLI command lcd_print: missing text argument");
     return;
   }
-  const bool ok = stage2_lcd_write_text(text);
+  const bool ok = i2c_lcd_write_text(text);
   ESP_LOGI(kTag, "CLI command lcd_print: rc=%s text='%s'", ok ? "OK" : "ERR", text);
-#else
-  (void)text;
-  ESP_LOGW(kTag, "CLI command lcd_print: unsupported (LUCE_HAS_LCD=0)");
-#endif
 }
 
 int cli_execute_command(int argc, char* argv[]) {
@@ -434,10 +400,3 @@ void cli_startup() {
     ESP_LOGW(kTag, "CLI task create failed");
   }
 }
-
-#else  // LUCE_HAS_CLI
-
-void cli_startup() {
-}
-
-#endif  // LUCE_HAS_CLI

@@ -1,6 +1,3 @@
-# This file was automatically generated for projects
-# without default 'CMakeLists.txt' file.
-
 FILE(GLOB_RECURSE app_sources ${CMAKE_SOURCE_DIR}/src/*.*)
 if(NOT DEFINED IDF_LWIP_ROOT)
   set(IDF_LWIP_ROOT "$ENV{IDF_PATH}")
@@ -18,10 +15,6 @@ set(IDF_LWIP_MDNS_SRCS
 idf_component_register(
   SRCS ${app_sources}
   INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/include
-  PRIV_INCLUDE_DIRS
-    ${IDF_LWIP_ROOT}/components/lwip/include
-    ${IDF_LWIP_ROOT}/components/lwip/lwip/src/include
-    ${IDF_LWIP_ROOT}/components/lwip/lwip/src/apps/mdns
   REQUIRES
     app_update
     esp_http_server
@@ -34,7 +27,11 @@ idf_component_register(
     nvs_flash
 )
 
-if(NOT "${IDF_LWIP_ROOT}" STREQUAL "")
-  target_sources(${COMPONENT_LIB} PRIVATE ${IDF_LWIP_MDNS_SRCS})
-  target_compile_definitions(${COMPONENT_LIB} PRIVATE LWIP_MDNS_RESPONDER=1)
-endif()
+foreach(mdns_src IN LISTS IDF_LWIP_MDNS_SRCS)
+  if(EXISTS "${mdns_src}")
+    target_sources(${COMPONENT_LIB} PRIVATE "${mdns_src}")
+  endif()
+endforeach()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+  LWIP_MDNS_RESPONDER=1
+)
