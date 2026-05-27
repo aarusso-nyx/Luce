@@ -201,8 +201,12 @@ bool validate_auth(httpd_req_t* req) {
     return false;
   }
   char expected[80] = {0};
-  std::snprintf(expected, sizeof(expected), "Bearer %s", g_cfg.token);
-  return std::strncmp(header, expected, sizeof(expected)) == 0;
+  const int written = std::snprintf(expected, sizeof(expected), "Bearer %s", g_cfg.token);
+  if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(expected)) {
+    return false;
+  }
+  return std::strlen(header) == static_cast<std::size_t>(written) &&
+         std::strcmp(header, expected) == 0;
 }
 
 bool parse_bool_token(const char* text, bool* out_value) {
