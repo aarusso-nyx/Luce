@@ -62,7 +62,7 @@ PY
 
 - `default` — no `LUCE_NET_*` flags (baseline): NVS, I2C, LCD, CLI
 - `net0` — `-DLUCE_NET_CORE=1`: baseline + Wi-Fi + NTP + mDNS + TCP CLI
-- `net1` — `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1`: net0 + MQTT + HTTP
+- `net1` — `-DLUCE_NET_CORE=1 -DLUCE_NET_MQTT=1 -DLUCE_NET_HTTP=1 -DLUCE_NET_OTA=1`: net0 + MQTT + HTTP + OTA
 
 In `scripts/luce.sh build`, `LUCE_ENV` can optionally build a single env. If unset, all declared envs are built.
 Default PlatformIO environment is `default`.
