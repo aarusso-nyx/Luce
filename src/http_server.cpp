@@ -191,6 +191,22 @@ esp_err_t send_bad_request(httpd_req_t* req, const char* message) {
   return send_json(req, 400, payload, 0);
 }
 
+// Common method+auth prologue used by every JSON API handler. Evaluates
+// the method check first (so unauthorised callers cannot probe for a
+// route's allowed methods) and bails with the standard 405 / 401 JSON
+// response on failure. The macro lets each route keep its handler body
+// linear and removes ~5 lines of repeated boilerplate per route.
+#define LUCE_ROUTE_PROLOGUE(req_ptr, methods_label, method_ok, requires_auth_expr) \
+  do {                                                                              \
+    httpd_req_t* const _luce_req = (req_ptr);                                       \
+    if (!(method_ok)) {                                                             \
+      return send_method_not_allowed(_luce_req, (methods_label));                   \
+    }                                                                               \
+    if ((requires_auth_expr) && !validate_auth(_luce_req)) {                        \
+      return send_unauthorized(_luce_req);                                          \
+    }                                                                               \
+  } while (0)
+
 bool validate_auth(httpd_req_t* req) {
   char header[64] = {0};
   if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK) {
@@ -398,21 +414,14 @@ void ws_broadcast_snapshot(httpd_handle_t server) {
 }
 
 esp_err_t route_health(httpd_req_t* req) {
-  if (req->method != HTTP_GET) {
-    return send_method_not_allowed(req, "GET");
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, false);
   char payload[256] = {0};
   get_uptime_payload(payload, sizeof(payload));
   return send_json(req, 200, payload, 0);
 }
 
 esp_err_t route_info(httpd_req_t* req) {
-  if (req->method != HTTP_GET) {
-    return send_method_not_allowed(req, "GET");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, true);
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
   I2cSensorSnapshot snapshot {};
@@ -441,9 +450,7 @@ esp_err_t route_info(httpd_req_t* req) {
 }
 
 esp_err_t route_version(httpd_req_t* req) {
-  if (req->method != HTTP_GET) {
-    return send_method_not_allowed(req, "GET");
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, false);
   char payload[192] = {0};
   std::snprintf(payload, sizeof(payload),
                 "{\"service\":\"luce\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\",\"build\":\"%s %s\"}",
@@ -452,12 +459,7 @@ esp_err_t route_version(httpd_req_t* req) {
 }
 
 esp_err_t route_state(httpd_req_t* req) {
-  if (req->method != HTTP_GET) {
-    return send_method_not_allowed(req, "GET");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, true);
   char payload[384] = {0};
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
@@ -470,24 +472,15 @@ esp_err_t route_state(httpd_req_t* req) {
 }
 
 esp_err_t route_ota(httpd_req_t* req) {
-  if (req->method != HTTP_GET) {
-    return send_method_not_allowed(req, "GET");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, true);
   char payload[512] = {0};
   ota_build_status_payload(payload, sizeof(payload));
   return send_json(req, 200, payload, 0);
 }
 
 esp_err_t route_ota_check(httpd_req_t* req) {
-  if (req->method != HTTP_POST && req->method != HTTP_PUT) {
-    return send_method_not_allowed(req, "POST, PUT");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "POST, PUT",
+                      req->method == HTTP_POST || req->method == HTTP_PUT, true);
   char query[64] = {0};
   char query_url[256] = {0};
   char body_url[256] = {0};
@@ -539,12 +532,8 @@ esp_err_t build_leds_payload(char* out, std::size_t out_size) {
 }
 
 esp_err_t route_leds_state(httpd_req_t* req) {
-  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
-    return send_method_not_allowed(req, "GET, PUT");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
+                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
 
   if (req->method == HTTP_PUT) {
     char value[64] = {0};
@@ -574,12 +563,8 @@ esp_err_t route_leds_state(httpd_req_t* req) {
 }
 
 esp_err_t route_leds_state_0(httpd_req_t* req) {
-  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
-    return send_method_not_allowed(req, "GET, PUT");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
+                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
   if (req->method == HTTP_PUT) {
     char value[32] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
@@ -603,12 +588,8 @@ esp_err_t route_leds_state_0(httpd_req_t* req) {
 }
 
 esp_err_t route_leds_state_1(httpd_req_t* req) {
-  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
-    return send_method_not_allowed(req, "GET, PUT");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
+                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
   if (req->method == HTTP_PUT) {
     char value[32] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
@@ -632,12 +613,8 @@ esp_err_t route_leds_state_1(httpd_req_t* req) {
 }
 
 esp_err_t route_leds_state_2(httpd_req_t* req) {
-  if (req->method != HTTP_GET && req->method != HTTP_PUT) {
-    return send_method_not_allowed(req, "GET, PUT");
-  }
-  if (!validate_auth(req)) {
-    return send_unauthorized(req);
-  }
+  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
+                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
   if (req->method == HTTP_PUT) {
     char value[32] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
