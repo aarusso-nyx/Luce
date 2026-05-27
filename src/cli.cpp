@@ -27,6 +27,7 @@
 
 #include "luce/boot_diagnostics.h"
 #include "luce/boot_state.h"
+#include "luce/id_set_parser.h"
 #include "luce/led_status.h"
 #include "luce/i2c_io.h"
 #include "luce/net_wifi.h"
@@ -703,65 +704,30 @@ int cli_handle_set(int argc, char* argv[]) {
       return 1;
     }
 
-    std::size_t cursor = 0;
     std::uint16_t applied = 0;
-    while (cursor < ids.size()) {
-      std::size_t comma_pos = ids.find(',', cursor);
-      const std::string token = ids.substr(cursor, comma_pos == std::string::npos ? std::string::npos : (comma_pos - cursor));
-      if (!token.empty()) {
-        if (token == "all") {
-          for (std::uint8_t idx = 0; idx < 3; ++idx) {
-            (void)led_status_set_manual_mode(idx, led_mode);
-          }
-          applied = 3;
-        } else {
-          std::uint32_t start = 0;
-          std::uint32_t end = 0;
-          const std::size_t dash = token.find('-');
-          if (dash == std::string::npos) {
-            char* end_ptr = nullptr;
-            start = static_cast<std::uint32_t>(std::strtoul(token.c_str(), &end_ptr, 10));
-            if (end_ptr == token.c_str() || *end_ptr != '\0') {
-              ESP_LOGW(kTag, "CLI command set: invalid led token '%s'", token.c_str());
-              return 1;
-            }
-            end = start;
-          } else {
-            const std::string start_str = token.substr(0, dash);
-            const std::string end_str = token.substr(dash + 1);
-            if (start_str.empty() || end_str.empty()) {
-              ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", token.c_str());
-              return 1;
-            }
-            char* end_ptr = nullptr;
-            start = static_cast<std::uint32_t>(std::strtoul(start_str.c_str(), &end_ptr, 10));
-            if (end_ptr == start_str.c_str() || *end_ptr != '\0') {
-              ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", token.c_str());
-              return 1;
-            }
-            end_ptr = nullptr;
-            end = static_cast<std::uint32_t>(std::strtoul(end_str.c_str(), &end_ptr, 10));
-            if (end_ptr == end_str.c_str() || *end_ptr != '\0') {
-              ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", token.c_str());
-              return 1;
-            }
-          }
-          const std::uint32_t lo = (start <= end) ? start : end;
-          const std::uint32_t hi = (start <= end) ? end : start;
-          for (std::uint32_t idx = lo; idx <= hi; ++idx) {
-            if (idx > 2u) {
-              ESP_LOGW(kTag, "CLI command set: invalid led id %lu (expected 0..2)", static_cast<unsigned long>(idx));
-              return 1;
-            }
-            (void)led_status_set_manual_mode(static_cast<std::uint8_t>(idx), led_mode);
-            ++applied;
-          }
-        }
-      }
-      if (comma_pos == std::string::npos) {
+    luce::parse::IdSetIssue issue {};
+    const auto result = luce::parse::parse_id_set(
+        ids.c_str(), /*min_id=*/0, /*max_id=*/2, /*allow_all=*/true, &applied,
+        [&](std::uint32_t id) {
+          (void)led_status_set_manual_mode(static_cast<std::uint8_t>(id), led_mode);
+        },
+        &issue);
+    switch (result) {
+      case luce::parse::IdSetError::kOk:
         break;
-      }
-      cursor = comma_pos + 1;
+      case luce::parse::IdSetError::kEmpty:
+        ESP_LOGW(kTag, "CLI command set: no led ids selected");
+        return 1;
+      case luce::parse::IdSetError::kInvalidToken:
+        ESP_LOGW(kTag, "CLI command set: invalid led token '%s'", issue.token);
+        return 1;
+      case luce::parse::IdSetError::kInvalidRange:
+        ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", issue.token);
+        return 1;
+      case luce::parse::IdSetError::kOutOfRange:
+        ESP_LOGW(kTag, "CLI command set: invalid led id %lu (expected 0..2)",
+                 static_cast<unsigned long>(issue.bad_id));
+        return 1;
     }
     if (applied == 0) {
       ESP_LOGW(kTag, "CLI command set: no led ids selected");
@@ -791,62 +757,30 @@ int cli_handle_set(int argc, char* argv[]) {
 
   std::uint8_t next_mask = g_relay_mask;
   std::uint16_t applied = 0;
-  std::size_t cursor = 0;
-  while (cursor < ids.size()) {
-    std::size_t comma_pos = ids.find(',', cursor);
-    const std::string token = ids.substr(cursor, comma_pos == std::string::npos ? std::string::npos : (comma_pos - cursor));
-    if (!token.empty()) {
-      std::uint32_t start = 0;
-      std::uint32_t end = 0;
-      const std::size_t dash = token.find('-');
-      if (dash == std::string::npos) {
-        const char* start_cstr = token.c_str();
-        char* end_ptr = nullptr;
-        start = static_cast<std::uint32_t>(std::strtoul(start_cstr, &end_ptr, 10));
-        if (end_ptr == start_cstr || *end_ptr != '\0') {
-          ESP_LOGW(kTag, "CLI command set: invalid id token '%s'", token.c_str());
-          return 1;
-        }
-        end = start;
-      } else {
-        const std::string start_str = token.substr(0, dash);
-        const std::string end_str = token.substr(dash + 1);
-        if (start_str.empty() || end_str.empty()) {
-          ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", token.c_str());
-          return 1;
-        }
-        char* end_ptr = nullptr;
-        start = static_cast<std::uint32_t>(std::strtoul(start_str.c_str(), &end_ptr, 10));
-        if (end_ptr == start_str.c_str() || *end_ptr != '\0') {
-          ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", token.c_str());
-          return 1;
-        }
-        end_ptr = nullptr;
-        end = static_cast<std::uint32_t>(std::strtoul(end_str.c_str(), &end_ptr, 10));
-        if (end_ptr == end_str.c_str() || *end_ptr != '\0') {
-          ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", token.c_str());
-          return 1;
-        }
-      }
-
-      const std::uint32_t lo = (start <= end) ? start : end;
-      const std::uint32_t hi = (start <= end) ? end : start;
-      for (std::uint32_t ch1 = lo; ch1 <= hi; ++ch1) {
-        if (ch1 == 0 || ch1 > 8) {
-          ESP_LOGW(kTag, "CLI command set: invalid relay id %lu", static_cast<unsigned long>(ch1));
-          return 1;
-        }
+  luce::parse::IdSetIssue issue {};
+  const auto result = luce::parse::parse_id_set(
+      ids.c_str(), /*min_id=*/1, /*max_id=*/8, /*allow_all=*/false, &applied,
+      [&](std::uint32_t ch1) {
         const std::uint8_t next_channel = static_cast<std::uint8_t>(ch1 - 1);
         next_mask = relay_mask_for_channel_state(static_cast<int>(next_channel), value, next_mask);
-        if (applied < 16) {
-          ++applied;
-        }
-      }
-    }
-    if (comma_pos == std::string::npos) {
+      },
+      &issue);
+  switch (result) {
+    case luce::parse::IdSetError::kOk:
       break;
-    }
-    cursor = comma_pos + 1;
+    case luce::parse::IdSetError::kEmpty:
+      ESP_LOGW(kTag, "CLI command set: no channels selected");
+      return 1;
+    case luce::parse::IdSetError::kInvalidToken:
+      ESP_LOGW(kTag, "CLI command set: invalid id token '%s'", issue.token);
+      return 1;
+    case luce::parse::IdSetError::kInvalidRange:
+      ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", issue.token);
+      return 1;
+    case luce::parse::IdSetError::kOutOfRange:
+      ESP_LOGW(kTag, "CLI command set: invalid relay id %lu",
+               static_cast<unsigned long>(issue.bad_id));
+      return 1;
   }
 
   if (applied == 0) {
