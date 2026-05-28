@@ -70,6 +70,18 @@
 - Avoid introducing legacy compatibility shims when the canonical interface has changed.
 - Use canonical HTTP routes and MQTT topics only (no `/v2` aliases).
 
+## Code Review Notes
+- `extern "C"` blocks declaring symbols from a generated translation
+  unit (e.g. the `xxd`-embedded webapp assets in
+  `.pio/build/<env>/esp-idf/src/generated_webapp_assets.cpp`) MUST sit
+  at file scope, never inside an anonymous namespace. GCC 15 (the v6
+  toolchain) honours the namespace's internal linkage over the
+  `extern "C"` language-linkage specifier and produces C++-mangled
+  symbol names that fail to resolve against the actual C-linkage
+  definitions. Place such forward declarations above any `namespace { }`
+  block in the consuming TU and add an inline note explaining why.
+  See `src/http_server.cpp` for the canonical placement.
+
 ## Operational Notes
 - Keep security and resilience features in sync across CLI/HTTP/MQTT and docs.
 - Any plan or intervention touching behavior should include matching doc updates under `docs/user/`.
