@@ -79,6 +79,7 @@ the serial transport regardless of `tcp_ro`.
 | --- | --- | --- | --- |
 | `http.status` | no | yes | `http.status` |
 | `tls.status` | no | yes | `tls.status` |
+| `tls.clear` | yes | no  | `tls.clear` |
 
 ### OTA (`LUCE_NET_OTA=1`)
 

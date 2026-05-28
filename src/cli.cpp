@@ -126,6 +126,7 @@ int cli_handle_mqtt_pubtest(int, char*[]);
 #if LUCE_HAS_HTTP
 int cli_handle_http_status(int, char*[]);
 int cli_handle_tls_status(int, char*[]);
+int cli_handle_tls_clear(int, char*[]);
 #endif
 
 constexpr CliCommandInfo kCliCommands[] = {
@@ -175,6 +176,7 @@ constexpr CliCommandInfo kCliCommands[] = {
 #if LUCE_HAS_HTTP
     {"http.status", false, true, "http.status", cli_handle_http_status},
     {"tls.status", false, true, "tls.status", cli_handle_tls_status},
+    {"tls.clear", true, false, "tls.clear", cli_handle_tls_clear},
 #endif
 #if LUCE_HAS_OTA
     {"ota.status", false, true, "ota.status", cli_handle_ota_status},
@@ -792,7 +794,6 @@ int cli_handle_set(int argc, char* argv[]) {
 
   const esp_err_t err = set_relay_mask_safe(next_mask);
   if (err == ESP_OK) {
-    g_relay_mask = next_mask;
     ESP_LOGI(kTag, "CLI command set: %s=%s mask=0x%02X", target_is_mask ? "mask" : "relay",
              value ? "on" : "off", next_mask);
     return 0;
@@ -981,6 +982,16 @@ int cli_handle_tls_status(int, char*[]) {
   http_tls_status_for_cli();
   return 0;
 }
+
+int cli_handle_tls_clear(int, char*[]) {
+  const esp_err_t err = http_tls_clear_provisioned();
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "CLI command tls.clear: failed (%s)", esp_err_to_name(err));
+    return 1;
+  }
+  http_tls_status_for_cli();
+  return 0;
+}
 #endif
 
 void cli_cmd_status() {
@@ -1081,16 +1092,13 @@ void cli_cmd_test() {
   for (int i = 0; i < 8; ++i) {
     const std::uint8_t on_mask = relay_mask_for_channel_state(i, true, g_relay_mask);
     (void)set_relay_mask_safe(on_mask);
-    g_relay_mask = on_mask;
     vTaskDelay(pdMS_TO_TICKS(250));
 
     const std::uint8_t off_mask = relay_mask_for_channel_state(i, false, g_relay_mask);
     (void)set_relay_mask_safe(off_mask);
-    g_relay_mask = off_mask;
     vTaskDelay(pdMS_TO_TICKS(120));
   }
   (void)set_relay_mask_safe(start_mask);
-  g_relay_mask = start_mask;
   ESP_LOGI(kTag, "CLI command test: done");
 }
 
@@ -1131,9 +1139,6 @@ void cli_cmd_mcp_read(const char* port) {
 void cli_cmd_relay_set(int channel, int on_off) {
   const std::uint8_t new_mask = relay_mask_for_channel_state(channel, on_off != 0, g_relay_mask);
   const esp_err_t err = set_relay_mask_safe(new_mask);
-  if (err == ESP_OK) {
-    g_relay_mask = new_mask;
-  }
   ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d new_mask=0x%02X rc=%s", channel, on_off,
            new_mask, esp_err_to_name(err));
 }
@@ -1141,9 +1146,6 @@ void cli_cmd_relay_set(int channel, int on_off) {
 void cli_cmd_relay_mask(std::uint32_t value) {
   const std::uint8_t mask = static_cast<std::uint8_t>(value & 0xFF);
   const esp_err_t err = set_relay_mask_safe(mask);
-  if (err == ESP_OK) {
-    g_relay_mask = mask;
-  }
   ESP_LOGI(kTag, "CLI command relay_mask: mask=0x%02X rc=%s", mask, esp_err_to_name(err));
 }
 

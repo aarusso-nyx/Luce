@@ -1016,6 +1016,37 @@ void http_status_for_cli() {
            g_cfg.port, static_cast<unsigned>(kCaptiveHttpPort));
 }
 
+esp_err_t http_tls_clear_provisioned() {
+  auto nvs = luce::nvs::Handle::Open(kHttpNs, NVS_READWRITE);
+  if (!nvs.ok()) {
+    ESP_LOGW(kTag, "[HTTP] tls.clear: nvs_open failed: %s", esp_err_to_name(nvs.error()));
+    return nvs.error();
+  }
+  // erase_key returns ESP_ERR_NVS_NOT_FOUND when the key is absent —
+  // treat that as a no-op success.
+  esp_err_t cert_err = nvs_erase_key(nvs.raw(), "cert_pem");
+  if (cert_err == ESP_ERR_NVS_NOT_FOUND) cert_err = ESP_OK;
+  esp_err_t key_err = nvs_erase_key(nvs.raw(), "key_pem");
+  if (key_err == ESP_ERR_NVS_NOT_FOUND) key_err = ESP_OK;
+  const esp_err_t commit_err = nvs_commit(nvs.raw());
+
+  if (cert_err != ESP_OK || key_err != ESP_OK || commit_err != ESP_OK) {
+    ESP_LOGW(kTag, "[HTTP] tls.clear: cert=%s key=%s commit=%s",
+             esp_err_to_name(cert_err), esp_err_to_name(key_err),
+             esp_err_to_name(commit_err));
+    return (cert_err != ESP_OK) ? cert_err : (key_err != ESP_OK ? key_err : commit_err);
+  }
+
+  // Wipe runtime state so tls.status and /api/info reflect the change
+  // immediately. The running HTTPS server keeps its currently-loaded
+  // cert+key until the next start_http_server cycle.
+  std::memset(g_cfg.cert_pem, 0, sizeof(g_cfg.cert_pem));
+  std::memset(g_cfg.key_pem, 0, sizeof(g_cfg.key_pem));
+  g_cfg.cert_source = CertSource::kNone;
+  ESP_LOGW(kTag, "[HTTP] tls.clear: NVS cert+key erased — reboot required for HTTPS to pick up the change");
+  return ESP_OK;
+}
+
 bool http_tls_dev_mode() {
   return g_cfg.tls_dev_mode;
 }

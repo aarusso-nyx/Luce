@@ -40,7 +40,58 @@ the script to rotate. Set `LUCE_FORBID_DEV_CERT=1` in the build
 environment to refuse to build if the dev cert files exist (use this on
 CI/release pipelines).
 
-Per-device cert provisioning (production path) is the next PR.
+## Production-mode cert provisioning
+
+Production firmware (`tls_dev_mode=0`) refuses to use the build-embedded
+dev fallback — only `http/cert_pem` + `http/key_pem` written to NVS will
+unlock HTTPS. There are two supported provisioning paths today:
+
+### A. Bake into the NVS partition before flashing (recommended)
+
+Use the IDF NVS partition generator to produce a binary image that
+already contains the cert+key, then flash it as the `nvs` partition
+alongside the firmware. The cert+key never traverse a runtime channel.
+
+```bash
+# Build a CSV with the http namespace populated:
+cat > /tmp/luce_nvs.csv <<'CSV'
+key,type,encoding,value
+http,namespace,,
+enabled,data,u8,1
+port,data,u16,443
+tls_dev_mode,data,u8,0
+token,data,string,"<bearer-token-here>"
+cert_pem,file,string,/abs/path/to/cert.pem
+key_pem,file,string,/abs/path/to/key.pem
+CSV
+
+python3 ${IDF_PATH}/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py \
+    generate /tmp/luce_nvs.csv /tmp/luce_nvs.bin 0x4000
+
+esptool.py --chip esp32 --port /dev/cu.usbserial-0001 write_flash 0x9000 /tmp/luce_nvs.bin
+```
+
+The cert+key live only on the unit being flashed.
+
+### B. Runtime overwrite via the serial CLI (lab/bench)
+
+For a unit that is already in the field, the path is:
+
+1. Connect serial monitor with an authenticated session.
+2. Run `tls.clear` — wipes any existing NVS cert+key. Confirm via
+   `tls.status` that `cert_present=0`.
+3. Use the IDF runtime NVS commands (`idf.py monitor` + Ctrl-T to drop
+   into the IDF console) to `nvs_set http:cert_pem str "<pem>"` and
+   `nvs_set http:key_pem str "<pem>"`. This requires the IDF NVS
+   console component, which is *not* compiled in to Luce by default;
+   the bake-and-flash path (A) is the supported workflow.
+4. Reboot via `reboot`. Boot diagnostics should report
+   `source=nvs cert_present=1 key_present=1`.
+
+`tls.clear` is the only TLS write-side CLI command shipped today. A
+future PR may add a captive-portal HTTP POST endpoint for runtime
+provisioning behind a one-time setup token; until then, NVS partition
+bake is the canonical production path.
 
 ## Endpoints
 
