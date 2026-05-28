@@ -12,12 +12,35 @@ NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a c
 - `http/port` (u16, default `443`) for HTTPS API
 - `http/token` (string, required for protected routes)
 - `http/tls_dev_mode` (u8, default `0`)
-  - `1` = dev mode; future PR enables first-boot self-signed cert generation.
-  - `0` = production mode; cert+key must be provisioned externally.
-  - The flag is surfaced as `tls_mode = "dev" | "prod"` in `/api/info` and CLI `tls.status`. It does not currently change start-up behaviour; both modes require `cert_pem`+`key_pem` to be present.
+  - `1` = dev mode; if NVS has no `cert_pem`/`key_pem` and the firmware was built with `tools/dev_cert.pem` + `tools/dev_key.pem` present, the build-embedded dev cert is used as a fallback.
+  - `0` = production mode; cert+key must be provisioned in NVS — no fallback.
+  - Surfaced as `tls_mode = "dev" | "prod"` in `/api/info` and CLI `tls.status`. The `cert_source` field on the same surfaces distinguishes `"nvs"`, `"dev-fallback"`, and `"none"`.
 - `http/cert_pem` (string, PEM-encoded X.509 certificate, max ~2 KB)
 - `http/key_pem` (string, PEM-encoded private key, max ~2 KB)
-  - Both PEMs are loaded at boot, never logged (only their presence is reported), and never returned by any API endpoint. Provisioning is currently manual (out-of-band NVS write); follow-up PR adds a serial CLI provisioning command.
+  - Both PEMs are loaded at boot, never logged (only their presence is reported), and never returned by any API endpoint. Provisioning is currently manual (out-of-band NVS write); a follow-up PR adds a serial CLI provisioning command.
+
+## Dev-mode certificate workflow
+
+For bench testing and lab fleets, generate a shared self-signed cert+key
+locally and let the build embed them:
+
+```bash
+./tools/gen_dev_cert.sh                  # default CN/SAN luce-dev.local
+./tools/gen_dev_cert.sh luce-bench.local # custom CN/SAN
+```
+
+This writes `tools/dev_cert.pem` and `tools/dev_key.pem` (both
+git-ignored). Rebuild the firmware; CMake xxd-embeds the pair as the
+`luce_dev_cert_pem` / `luce_dev_key_pem` symbols, and dev-mode firmware
+uses them as a fallback when NVS has no cert+key.
+
+The dev cert is **shared across all units built from the same
+`tools/dev_*.pem` pair**. It does not carry per-device identity. Re-run
+the script to rotate. Set `LUCE_FORBID_DEV_CERT=1` in the build
+environment to refuse to build if the dev cert files exist (use this on
+CI/release pipelines).
+
+Per-device cert provisioning (production path) is the next PR.
 
 ## Endpoints
 

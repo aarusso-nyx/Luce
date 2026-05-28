@@ -47,6 +47,17 @@ extern const unsigned char webapp_app_css[];
 extern const unsigned int webapp_app_css_len;
 extern const unsigned char webapp_script_js[];
 extern const unsigned int webapp_script_js_len;
+
+// Dev-only TLS material, embedded by src/CMakeLists.txt only when
+// tools/dev_cert.pem and tools/dev_key.pem exist locally. Guarded by
+// LUCE_HAS_DEV_CERT so production builds compile cleanly without these
+// symbols. Same anonymous-namespace caveat as the webapp assets above.
+#if LUCE_HAS_DEV_CERT
+extern const unsigned char luce_dev_cert_pem[];
+extern const unsigned int luce_dev_cert_pem_len;
+extern const unsigned char luce_dev_key_pem[];
+extern const unsigned int luce_dev_key_pem_len;
+#endif
 }
 
 namespace {
@@ -73,6 +84,21 @@ enum class HttpState : std::uint8_t {
   kFailed,
 };
 
+enum class CertSource : std::uint8_t {
+  kNone = 0,
+  kNvs,
+  kDevEmbedded,
+};
+
+const char* cert_source_name(CertSource s) {
+  switch (s) {
+    case CertSource::kNvs: return "nvs";
+    case CertSource::kDevEmbedded: return "dev-fallback";
+    case CertSource::kNone:
+    default: return "none";
+  }
+}
+
 struct HttpConfig {
   bool enabled = false;
   uint16_t port = kDefaultHttpPort;
@@ -80,6 +106,7 @@ struct HttpConfig {
   bool tls_dev_mode = false;
   char cert_pem[kPemBufferSize] = {};
   char key_pem[kPemBufferSize] = {};
+  CertSource cert_source = CertSource::kNone;
 };
 
 HttpConfig g_cfg {};
@@ -168,12 +195,40 @@ void load_http_config() {
   (void)luce::nvs::read_string(handle, "cert_pem", g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "");
   (void)luce::nvs::read_string(handle, "key_pem", g_cfg.key_pem, sizeof(g_cfg.key_pem), "");
   nvs_close(handle);
+
+  if (g_cfg.cert_pem[0] != '\0' && g_cfg.key_pem[0] != '\0') {
+    g_cfg.cert_source = CertSource::kNvs;
+  }
+
+  // Dev-mode fallback: when NVS has no cert/key and the build embedded a
+  // dev cert via tools/dev_cert.pem, copy it into the runtime buffers so
+  // the HTTPS server can boot for bench testing. The dev cert is shared
+  // across all units built from the same tools/dev_*.pem pair and is not
+  // persisted to NVS — write to NVS (PR C provisioning) to overwrite.
+#if LUCE_HAS_DEV_CERT
+  if (g_cfg.tls_dev_mode && g_cfg.cert_source == CertSource::kNone) {
+    if (luce_dev_cert_pem_len < sizeof(g_cfg.cert_pem) &&
+        luce_dev_key_pem_len < sizeof(g_cfg.key_pem)) {
+      std::memcpy(g_cfg.cert_pem, luce_dev_cert_pem, luce_dev_cert_pem_len);
+      g_cfg.cert_pem[luce_dev_cert_pem_len] = '\0';
+      std::memcpy(g_cfg.key_pem, luce_dev_key_pem, luce_dev_key_pem_len);
+      g_cfg.key_pem[luce_dev_key_pem_len] = '\0';
+      g_cfg.cert_source = CertSource::kDevEmbedded;
+      ESP_LOGW(kTag, "[HTTP] tls_dev_mode: using build-embedded dev cert (shared across builds; not for production)");
+    } else {
+      ESP_LOGE(kTag, "[HTTP] embedded dev cert exceeds %u-byte buffer; ignoring",
+               static_cast<unsigned>(sizeof(g_cfg.cert_pem)));
+    }
+  }
+#endif
+
   set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled, g_cfg.enabled ? "config_enabled" : "config_disabled");
-  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls_mode=%s cert_present=%d key_present=%d",
+  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls_mode=%s cert_present=%d key_present=%d source=%s",
            g_cfg.enabled ? 1 : 0, g_cfg.port,
            g_cfg.tls_dev_mode ? "dev" : "prod",
            g_cfg.cert_pem[0] != '\0' ? 1 : 0,
-           g_cfg.key_pem[0] != '\0' ? 1 : 0);
+           g_cfg.key_pem[0] != '\0' ? 1 : 0,
+           cert_source_name(g_cfg.cert_source));
 }
 
 const char* as_n_a(const char* value) {
@@ -463,7 +518,7 @@ esp_err_t route_info_impl(httpd_req_t* req) {
                 "{\"service\":\"luce\",\"name\":\"%s\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\","
                 "\"build\":\"%s %s\",\"uptimeMs\":%llu,\"uptime_s\":%llu,\"wifi_ip\":\"%s\","
                 "\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,"
-                "\"tls_mode\":\"%s\",\"cert_present\":%s,\"key_present\":%s,"
+                "\"tls_mode\":\"%s\",\"cert_present\":%s,\"key_present\":%s,\"cert_source\":\"%s\","
                 "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"threshold\":%u,"
                 "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
                 "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
@@ -472,6 +527,7 @@ esp_err_t route_info_impl(httpd_req_t* req) {
                 static_cast<unsigned long long>(esp_timer_get_time() / 1000000ULL), as_n_a(ip),
                 g_cfg.enabled ? "true" : "false", g_cfg.port, g_cfg.tls_dev_mode ? 1 : 0,
                 tls_mode_str, cert_present ? "true" : "false", key_present ? "true" : "false",
+                cert_source_name(g_cfg.cert_source),
                 static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
                 static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
                 has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
@@ -977,9 +1033,9 @@ void http_tls_status_for_cli() {
   const std::size_t key_len = std::strlen(g_cfg.key_pem);
   const bool ready = (cert_len > 0 && key_len > 0);
   ESP_LOGI(kTag,
-           "tls.status mode=%s cert_present=%d cert_pem_bytes=%u key_present=%d "
-           "key_pem_bytes=%u http_state=%s ready=%d",
-           g_cfg.tls_dev_mode ? "dev" : "prod",
+           "tls.status mode=%s source=%s cert_present=%d cert_pem_bytes=%u "
+           "key_present=%d key_pem_bytes=%u http_state=%s ready=%d",
+           g_cfg.tls_dev_mode ? "dev" : "prod", cert_source_name(g_cfg.cert_source),
            cert_len > 0 ? 1 : 0, static_cast<unsigned>(cert_len),
            key_len > 0 ? 1 : 0, static_cast<unsigned>(key_len),
            state_name(g_state), ready ? 1 : 0);
