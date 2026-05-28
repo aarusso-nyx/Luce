@@ -13,14 +13,29 @@
 
 #if LUCE_HAS_HTTP
 
+#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
+
 #include "esp_err.h"
+#include "esp_check.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_http_server.h"
 #include "esp_https_server.h"
+extern "C" {
+#include "mbedtls/error.h"
+#include "mbedtls/md.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/private/ctr_drbg.h"
+#include "mbedtls/private/ecp.h"
+#include "mbedtls/private/pk_private.h"
+#include "mbedtls/x509_crt.h"
+#include "mbedtls/x509_csr.h"
+}
 #include "nvs.h"
 
 #include "luce/net_wifi.h"
@@ -61,10 +76,19 @@ constexpr const char* kUnauthorizedPayload = "{\"error\":\"unauthorized\"}";
 constexpr const char* kMethodNotAllowedPayload = "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
 constexpr const char* kBadRequestPayload = "{\"error\":\"bad_request\",\"message\":\"%s\"}";
 
-// PEM buffers sized for a 2048-bit RSA cert+key plus a comfortable
-// margin (a 2048-bit RSA cert PEM is typically ~1400B; the key ~1700B).
-// Backed by NVS keys http/cert_pem and http/key_pem.
-constexpr std::size_t kPemBufferSize = 2048;
+// HTTPS identity is CSR-based: the device generates and keeps the private key
+// locally, while only the CSR leaves the unit and only a signed certificate
+// returns. Externally generated private-key imports are intentionally absent.
+constexpr std::size_t kTlsKeyPemBufferSize = 768;
+constexpr std::size_t kTlsCertPemBufferSize = 4096;
+constexpr std::size_t kTlsCsrPemBufferSize = 1536;
+constexpr std::size_t kTlsSubjectBufferSize = 128;
+constexpr std::size_t kTlsFingerprintBufferSize = 96;
+constexpr const char* kTlsKeyPemKey = "tls_key_pem";
+constexpr const char* kTlsCertPemKey = "tls_cert_pem";
+constexpr const char* kTlsCertStagedKey = "tls_cert_staged";
+constexpr const char* kTlsKeyAlgKey = "tls_key_alg";
+constexpr const char* kTlsKeyAlgEcP256 = "ec-p256";
 
 enum class HttpState : std::uint8_t {
   kDisabled = 0,
@@ -77,9 +101,11 @@ struct HttpConfig {
   bool enabled = false;
   uint16_t port = kDefaultHttpPort;
   char token[64] = {};
-  bool tls_dev_mode = false;
-  char cert_pem[kPemBufferSize] = {};
-  char key_pem[kPemBufferSize] = {};
+  char cert_pem[kTlsCertPemBufferSize] = {};
+  char key_pem[kTlsKeyPemBufferSize] = {};
+  char cert_subject[kTlsSubjectBufferSize] = {};
+  char cert_issuer[kTlsSubjectBufferSize] = {};
+  char cert_fingerprint[kTlsFingerprintBufferSize] = {};
 };
 
 HttpConfig g_cfg {};
@@ -94,10 +120,9 @@ bool g_key_pem_read_error = false;
 const char* g_tls_last_error = "none";
 esp_err_t g_tls_start_err = ESP_OK;
 
-// Runtime HTTPS certificate provisioning is intentionally absent. Cert/key
-// material must already exist in NVS keys http/cert_pem and http/key_pem at
-// boot; this module consumes those values, reports status, and fails closed
-// when the material is missing or too large for the configured buffers.
+// Runtime HTTPS private-key import is intentionally absent. The private key is
+// generated on-device, stored under http/tls_key_pem, and never printed. The
+// only import path accepts a CA-signed certificate that must match that key.
 
 struct WebAsset {
   const char* uri;
@@ -148,8 +173,105 @@ bool tls_material_oversized() {
   return g_cert_pem_oversized || g_key_pem_oversized;
 }
 
-bool tls_material_present() {
-  return g_cfg.cert_pem[0] != '\0' && g_cfg.key_pem[0] != '\0';
+bool tls_key_present() {
+  return g_cfg.key_pem[0] != '\0';
+}
+
+bool tls_cert_present() {
+  return g_cfg.cert_pem[0] != '\0';
+}
+
+void clear_cert_metadata() {
+  g_cfg.cert_subject[0] = '\0';
+  g_cfg.cert_issuer[0] = '\0';
+  g_cfg.cert_fingerprint[0] = '\0';
+}
+
+void format_sha256_fingerprint(const unsigned char* data, std::size_t len, char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  out[0] = '\0';
+  if (!data || len == 0) {
+    return;
+  }
+  unsigned char digest[32] = {};
+  const mbedtls_md_info_t* sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (sha256 == nullptr || mbedtls_md(sha256, data, len, digest) != 0) {
+    return;
+  }
+  std::size_t used = 0;
+  for (std::size_t i = 0; i < sizeof(digest) && used + 3 < out_size; ++i) {
+    const int written = std::snprintf(out + used, out_size - used, "%s%02X", i == 0 ? "" : ":", digest[i]);
+    if (written <= 0) {
+      break;
+    }
+    used += static_cast<std::size_t>(written);
+  }
+}
+
+bool validate_cert_matches_key(const char* cert_pem, char* subject, std::size_t subject_size,
+                               char* issuer, std::size_t issuer_size,
+                               char* fingerprint, std::size_t fingerprint_size) {
+  if (!cert_pem || cert_pem[0] == '\0' || g_cfg.key_pem[0] == '\0') {
+    return false;
+  }
+
+  mbedtls_x509_crt crt;
+  mbedtls_pk_context key;
+  mbedtls_x509_crt_init(&crt);
+  mbedtls_pk_init(&key);
+
+  bool ok = false;
+  int rc = mbedtls_x509_crt_parse(&crt, reinterpret_cast<const unsigned char*>(cert_pem), std::strlen(cert_pem) + 1);
+  if (rc != 0) {
+    set_tls_error("cert_parse_failed");
+    goto done;
+  }
+
+  rc = mbedtls_pk_parse_key(&key, reinterpret_cast<const unsigned char*>(g_cfg.key_pem),
+                            std::strlen(g_cfg.key_pem) + 1, nullptr, 0);
+  if (rc != 0) {
+    set_tls_error("key_parse_failed");
+    goto done;
+  }
+
+  rc = mbedtls_pk_check_pair(&crt.pk, &key);
+  if (rc != 0) {
+    set_tls_error("cert_key_mismatch");
+    goto done;
+  }
+
+  if (subject && subject_size > 0) {
+    subject[0] = '\0';
+    (void)mbedtls_x509_dn_gets(subject, subject_size, &crt.subject);
+  }
+  if (issuer && issuer_size > 0) {
+    issuer[0] = '\0';
+    (void)mbedtls_x509_dn_gets(issuer, issuer_size, &crt.issuer);
+  }
+  if (fingerprint && fingerprint_size > 0) {
+    format_sha256_fingerprint(crt.raw.p, crt.raw.len, fingerprint, fingerprint_size);
+  }
+  ok = true;
+
+done:
+  mbedtls_pk_free(&key);
+  mbedtls_x509_crt_free(&crt);
+  return ok;
+}
+
+void make_csr_subject(char* out, std::size_t out_size) {
+  if (!out || out_size == 0) {
+    return;
+  }
+  std::uint8_t mac[6] = {};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+    std::snprintf(out, out_size, "CN=luce-%02x%02x%02x%02x%02x%02x,O=LUCE",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return;
+  }
+  std::snprintf(out, out_size, "CN=luce-device,O=LUCE");
 }
 
 const char* tls_status_name() {
@@ -162,8 +284,11 @@ const char* tls_status_name() {
   if (tls_material_oversized()) {
     return "material_oversized";
   }
-  if (!tls_material_present()) {
-    return "material_missing";
+  if (!tls_key_present()) {
+    return "key_missing";
+  }
+  if (!tls_cert_present()) {
+    return "csr_ready";
   }
   if (g_httpd != nullptr) {
     return "started";
@@ -177,16 +302,51 @@ const char* tls_status_name() {
   return "material_present";
 }
 
+esp_err_t nvs_set_http_str(const char* key, const char* value) {
+  auto nvs = luce::nvs::Handle::Open(kHttpNs, NVS_READWRITE);
+  if (!nvs.ok()) {
+    return nvs.error();
+  }
+  ESP_RETURN_ON_ERROR(nvs_set_str(nvs.raw(), key, value ? value : ""), kTag, "nvs_set_str(%s)", key);
+  ESP_RETURN_ON_ERROR(nvs_commit(nvs.raw()), kTag, "nvs_commit(%s)", key);
+  return ESP_OK;
+}
+
+esp_err_t nvs_erase_http_key(const char* key) {
+  auto nvs = luce::nvs::Handle::Open(kHttpNs, NVS_READWRITE);
+  if (!nvs.ok()) {
+    return nvs.error();
+  }
+  esp_err_t err = nvs_erase_key(nvs.raw(), key);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    err = ESP_OK;
+  }
+  ESP_RETURN_ON_ERROR(err, kTag, "nvs_erase_key(%s)", key);
+  ESP_RETURN_ON_ERROR(nvs_commit(nvs.raw()), kTag, "nvs_commit erase %s", key);
+  return ESP_OK;
+}
+
+int tls_hardware_rng(void*, unsigned char* output, std::size_t output_len) {
+  if (output_len == 0) {
+    return 0;
+  }
+  if (!output) {
+    return -1;
+  }
+  esp_fill_random(output, output_len);
+  return 0;
+}
+
 void load_http_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   g_cfg.enabled = false;
   g_cfg.port = kDefaultHttpPort;
   std::snprintf(g_cfg.token, sizeof(g_cfg.token), "%s", kDefaultToken);
-  g_cfg.tls_dev_mode = false;
   g_cert_pem_oversized = false;
   g_key_pem_oversized = false;
   g_cert_pem_read_error = false;
   g_key_pem_read_error = false;
+  clear_cert_metadata();
   set_tls_error("none");
 
   nvs_handle_t handle = 0;
@@ -197,7 +357,6 @@ void load_http_config() {
   }
 
   std::uint8_t enabled = 0;
-  std::uint8_t tls = 0;
   std::uint16_t port = kDefaultHttpPort;
   if (luce::nvs::read_u8(handle, "enabled", enabled, 0)) {
     g_cfg.enabled = (enabled != 0);
@@ -205,15 +364,11 @@ void load_http_config() {
   if (luce::nvs::read_u16(handle, "port", port, kDefaultHttpPort) && port != 0) {
     g_cfg.port = port;
   }
-  if (luce::nvs::read_u8(handle, "tls_dev_mode", tls, 0)) {
-    g_cfg.tls_dev_mode = (tls != 0);
-  }
   (void)luce::nvs::read_string(handle, "token", g_cfg.token, sizeof(g_cfg.token), kDefaultToken);
-  // PEM cert and key: read silently into the runtime buffers. Never log
-  // either body — the key is a secret. Presence is reported via tls.status
-  // / /api/info instead.
-  const auto cert_status = luce::nvs::read_string_status(handle, "cert_pem", g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "");
-  const auto key_status = luce::nvs::read_string_status(handle, "key_pem", g_cfg.key_pem, sizeof(g_cfg.key_pem), "");
+  // TLS key/cert: read silently into runtime buffers. The key body is never
+  // logged or returned; only presence and status are reported.
+  const auto cert_status = luce::nvs::read_string_status(handle, kTlsCertPemKey, g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "");
+  const auto key_status = luce::nvs::read_string_status(handle, kTlsKeyPemKey, g_cfg.key_pem, sizeof(g_cfg.key_pem), "");
   g_cert_pem_oversized = (cert_status == luce::nvs::StringReadStatus::kOversized);
   g_key_pem_oversized = (key_status == luce::nvs::StringReadStatus::kOversized);
   g_cert_pem_read_error = (cert_status == luce::nvs::StringReadStatus::kReadError);
@@ -225,19 +380,23 @@ void load_http_config() {
     ESP_LOGE(kTag,
              "[HTTP] TLS material rejected: cert_oversized=%d key_oversized=%d max_pem_bytes=%u",
              g_cert_pem_oversized ? 1 : 0, g_key_pem_oversized ? 1 : 0,
-             static_cast<unsigned>(kPemBufferSize - 1));
+             static_cast<unsigned>(kTlsCertPemBufferSize - 1));
   } else if (g_cert_pem_read_error || g_key_pem_read_error) {
     set_tls_error("tls_material_read_error");
     ESP_LOGW(kTag, "[HTTP] TLS material read error: cert_read_error=%d key_read_error=%d",
              g_cert_pem_read_error ? 1 : 0, g_key_pem_read_error ? 1 : 0);
+  } else if (g_cfg.cert_pem[0] != '\0' && g_cfg.key_pem[0] != '\0') {
+    if (!validate_cert_matches_key(g_cfg.cert_pem, g_cfg.cert_subject, sizeof(g_cfg.cert_subject),
+                                   g_cfg.cert_issuer, sizeof(g_cfg.cert_issuer),
+                                   g_cfg.cert_fingerprint, sizeof(g_cfg.cert_fingerprint))) {
+      ESP_LOGW(kTag, "[HTTP] TLS certificate does not validate against local key");
+    }
   }
 
   set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled, g_cfg.enabled ? "config_enabled" : "config_disabled");
-  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls_mode=%s cert_present=%d key_present=%d tls_status=%s",
+  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u key_present=%d cert_present=%d tls_status=%s",
            g_cfg.enabled ? 1 : 0, g_cfg.port,
-           g_cfg.tls_dev_mode ? "dev" : "prod",
-           g_cfg.cert_pem[0] != '\0' ? 1 : 0,
-           g_cfg.key_pem[0] != '\0' ? 1 : 0,
+           g_cfg.key_pem[0] != '\0' ? 1 : 0, g_cfg.cert_pem[0] != '\0' ? 1 : 0,
            tls_status_name());
 }
 
@@ -522,15 +681,14 @@ esp_err_t route_info_impl(httpd_req_t* req) {
   const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   const bool cert_present = (g_cfg.cert_pem[0] != '\0');
   const bool key_present = (g_cfg.key_pem[0] != '\0');
-  const char* tls_mode_str = g_cfg.tls_dev_mode ? "dev" : "prod";
-  char payload[1536] = {0};
+  char payload[1792] = {0};
   std::snprintf(payload, sizeof(payload),
                 "{\"service\":\"luce\",\"name\":\"%s\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\","
                 "\"build\":\"%s %s\",\"uptimeMs\":%llu,\"uptime_s\":%llu,\"wifi_ip\":\"%s\","
                 "\"http_enabled\":%s,\"http_port\":%u,\"http_state\":\"%s\","
-                "\"https_running\":%s,\"tls\":%d,\"tls_dev_mode\":%s,"
-                "\"tls_mode\":\"%s\",\"tls_status\":\"%s\",\"tls_last_error\":\"%s\","
-                "\"cert_present\":%s,\"key_present\":%s,"
+                "\"https_running\":%s,\"tls_state\":\"%s\",\"tls_status\":\"%s\",\"tls_last_error\":\"%s\","
+                "\"key_present\":%s,\"csr_ready\":%s,\"cert_present\":%s,"
+                "\"cert_fingerprint\":\"%s\",\"cert_subject\":\"%s\",\"cert_issuer\":\"%s\","
                 "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"threshold\":%u,"
                 "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
                 "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
@@ -538,10 +696,9 @@ esp_err_t route_info_impl(httpd_req_t* req) {
                 static_cast<unsigned long long>(esp_timer_get_time() / 1000ULL),
                 static_cast<unsigned long long>(esp_timer_get_time() / 1000000ULL), as_n_a(ip),
                 g_cfg.enabled ? "true" : "false", g_cfg.port, state_name(g_state),
-                g_httpd != nullptr ? "true" : "false", g_cfg.tls_dev_mode ? 1 : 0,
-                g_cfg.tls_dev_mode ? "true" : "false",
-                tls_mode_str, tls_status_name(), g_tls_last_error,
-                cert_present ? "true" : "false", key_present ? "true" : "false",
+                g_httpd != nullptr ? "true" : "false", tls_status_name(), tls_status_name(), g_tls_last_error,
+                key_present ? "true" : "false", key_present ? "true" : "false", cert_present ? "true" : "false",
+                g_cfg.cert_fingerprint, g_cfg.cert_subject, g_cfg.cert_issuer,
                 static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
                 static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
                 has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
@@ -896,19 +1053,33 @@ void start_http_server() {
     ESP_LOGE(kTag,
              "[HTTP] start refused: TLS material oversized (cert_oversized=%d key_oversized=%d max_pem_bytes=%u)",
              g_cert_pem_oversized ? 1 : 0, g_key_pem_oversized ? 1 : 0,
-             static_cast<unsigned>(kPemBufferSize - 1));
+             static_cast<unsigned>(kTlsCertPemBufferSize - 1));
     set_tls_error("tls_material_oversized");
     set_state(HttpState::kFailed, "tls_material_oversized");
     return;
   }
 
-  if (g_cfg.cert_pem[0] == '\0' || g_cfg.key_pem[0] == '\0') {
+  if (g_cfg.key_pem[0] == '\0') {
     ESP_LOGE(kTag,
-             "[HTTP] start refused: missing TLS material (cert_present=%d key_present=%d) — "
-             "provision http/cert_pem and http/key_pem in NVS",
-             g_cfg.cert_pem[0] != '\0' ? 1 : 0, g_cfg.key_pem[0] != '\0' ? 1 : 0);
-    set_tls_error("tls_material_missing");
-    set_state(HttpState::kFailed, "tls_material_missing");
+             "[HTTP] start refused: missing local TLS key; run tls.keygen then tls.csr/sign/import");
+    set_tls_error("tls_key_missing");
+    set_state(HttpState::kFailed, "tls_key_missing");
+    return;
+  }
+
+  if (g_cfg.cert_pem[0] == '\0') {
+    ESP_LOGE(kTag,
+             "[HTTP] start refused: missing signed TLS certificate; export CSR with tls.csr and import cert with tls.cert.*");
+    set_tls_error("tls_cert_missing");
+    set_state(HttpState::kFailed, "tls_cert_missing");
+    return;
+  }
+
+  if (!validate_cert_matches_key(g_cfg.cert_pem, g_cfg.cert_subject, sizeof(g_cfg.cert_subject),
+                                 g_cfg.cert_issuer, sizeof(g_cfg.cert_issuer),
+                                 g_cfg.cert_fingerprint, sizeof(g_cfg.cert_fingerprint))) {
+    ESP_LOGE(kTag, "[HTTP] start refused: signed certificate does not match local key");
+    set_state(HttpState::kFailed, g_tls_last_error);
     return;
   }
 
@@ -1054,31 +1225,236 @@ void http_status_for_cli() {
            g_cfg.port, g_captive_httpd != nullptr ? 1 : 0, static_cast<unsigned>(kCaptiveHttpPort));
 }
 
-bool http_tls_dev_mode() {
-  return g_cfg.tls_dev_mode;
-}
-
-bool http_tls_cert_present() {
-  return g_cfg.cert_pem[0] != '\0';
-}
-
-bool http_tls_key_present() {
-  return g_cfg.key_pem[0] != '\0';
-}
-
 void http_tls_status_for_cli() {
   const std::size_t cert_len = std::strlen(g_cfg.cert_pem);
   const std::size_t key_len = std::strlen(g_cfg.key_pem);
   const bool ready = (cert_len > 0 && key_len > 0 && !tls_material_read_error() && !tls_material_oversized());
   ESP_LOGI(kTag,
-           "tls.status mode=%s cert_present=%d cert_pem_bytes=%u key_present=%d "
-           "key_pem_bytes=%u http_state=%s https_running=%d tls_status=%s "
-           "last_error=%s start_err=%s ready=%d",
-           g_cfg.tls_dev_mode ? "dev" : "prod",
-           cert_len > 0 ? 1 : 0, static_cast<unsigned>(cert_len),
-           key_len > 0 ? 1 : 0, static_cast<unsigned>(key_len),
+           "tls.status workflow=csr key_alg=%s key_present=%d key_pem_bytes=%u "
+           "csr_ready=%d cert_present=%d cert_pem_bytes=%u http_state=%s "
+           "https_running=%d tls_state=%s last_error=%s start_err=%s ready=%d "
+           "fingerprint=%s subject='%s' issuer='%s'",
+           kTlsKeyAlgEcP256, key_len > 0 ? 1 : 0, static_cast<unsigned>(key_len),
+           key_len > 0 ? 1 : 0, cert_len > 0 ? 1 : 0, static_cast<unsigned>(cert_len),
            state_name(g_state), g_httpd != nullptr ? 1 : 0, tls_status_name(),
-           g_tls_last_error, esp_err_to_name(g_tls_start_err), ready ? 1 : 0);
+           g_tls_last_error, esp_err_to_name(g_tls_start_err), ready ? 1 : 0,
+           g_cfg.cert_fingerprint[0] != '\0' ? g_cfg.cert_fingerprint : "n/a",
+           g_cfg.cert_subject[0] != '\0' ? g_cfg.cert_subject : "n/a",
+           g_cfg.cert_issuer[0] != '\0' ? g_cfg.cert_issuer : "n/a");
+}
+
+esp_err_t http_tls_keygen_for_cli() {
+  if (g_cfg.key_pem[0] != '\0') {
+    ESP_LOGW(kTag, "tls.keygen refused: key already exists; run tls.reset to reprovision");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_pk_context key;
+  mbedtls_ctr_drbg_init(&ctr_drbg);
+  mbedtls_pk_init(&key);
+
+  int rc = 0;
+  const char* personalization = "luce-http-tls-keygen";
+  rc = mbedtls_ctr_drbg_seed(&ctr_drbg, tls_hardware_rng, nullptr,
+                             reinterpret_cast<const unsigned char*>(personalization),
+                             std::strlen(personalization));
+  if (rc != 0) {
+    set_tls_error("keygen_rng_failed");
+    goto done;
+  }
+
+  rc = mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+  if (rc != 0) {
+    set_tls_error("keygen_pk_setup_failed");
+    goto done;
+  }
+  rc = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key),
+                           mbedtls_ctr_drbg_random, &ctr_drbg);
+  if (rc != 0) {
+    set_tls_error("keygen_ec_failed");
+    goto done;
+  }
+
+  std::memset(g_cfg.key_pem, 0, sizeof(g_cfg.key_pem));
+  rc = mbedtls_pk_write_key_pem(&key, reinterpret_cast<unsigned char*>(g_cfg.key_pem), sizeof(g_cfg.key_pem));
+  if (rc != 0) {
+    set_tls_error("keygen_pem_failed");
+    goto done;
+  }
+
+  if (nvs_set_http_str(kTlsKeyPemKey, g_cfg.key_pem) != ESP_OK ||
+      nvs_set_http_str(kTlsKeyAlgKey, kTlsKeyAlgEcP256) != ESP_OK) {
+    set_tls_error("keygen_nvs_failed");
+    rc = -1;
+    goto done;
+  }
+  (void)nvs_erase_http_key(kTlsCertPemKey);
+  g_cfg.cert_pem[0] = '\0';
+  clear_cert_metadata();
+  set_tls_error("none");
+  ESP_LOGI(kTag, "tls.keygen generated local %s private key; export CSR with tls.csr", kTlsKeyAlgEcP256);
+
+done:
+  mbedtls_pk_free(&key);
+  mbedtls_ctr_drbg_free(&ctr_drbg);
+  if (rc != 0) {
+    ESP_LOGE(kTag, "tls.keygen failed rc=-0x%04X", static_cast<unsigned>(-rc));
+    return ESP_FAIL;
+  }
+  return ESP_OK;
+}
+
+bool make_csr(char* out, std::size_t out_size) {
+  if (!out || out_size == 0 || g_cfg.key_pem[0] == '\0') {
+    return false;
+  }
+
+  mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_pk_context key;
+  mbedtls_x509write_csr csr;
+  mbedtls_ctr_drbg_init(&ctr_drbg);
+  mbedtls_pk_init(&key);
+  mbedtls_x509write_csr_init(&csr);
+
+  int rc = 0;
+  char subject[kTlsSubjectBufferSize] = {};
+  const char* personalization = "luce-http-tls-csr";
+  rc = mbedtls_ctr_drbg_seed(&ctr_drbg, tls_hardware_rng, nullptr,
+                             reinterpret_cast<const unsigned char*>(personalization),
+                             std::strlen(personalization));
+  if (rc != 0) {
+    set_tls_error("csr_rng_failed");
+    goto done;
+  }
+
+  rc = mbedtls_pk_parse_key(&key, reinterpret_cast<const unsigned char*>(g_cfg.key_pem),
+                            std::strlen(g_cfg.key_pem) + 1, nullptr, 0);
+  if (rc != 0) {
+    set_tls_error("csr_key_parse_failed");
+    goto done;
+  }
+
+  mbedtls_x509write_csr_set_key(&csr, &key);
+  mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
+  make_csr_subject(subject, sizeof(subject));
+  rc = mbedtls_x509write_csr_set_subject_name(&csr, subject);
+  if (rc != 0) {
+    set_tls_error("csr_subject_failed");
+    goto done;
+  }
+  rc = mbedtls_x509write_csr_set_key_usage(&csr, MBEDTLS_X509_KU_DIGITAL_SIGNATURE);
+  if (rc != 0) {
+    set_tls_error("csr_key_usage_failed");
+    goto done;
+  }
+  rc = mbedtls_x509write_csr_pem(&csr, reinterpret_cast<unsigned char*>(out), out_size);
+  if (rc != 0) {
+    set_tls_error("csr_write_failed");
+    goto done;
+  }
+
+done:
+  mbedtls_x509write_csr_free(&csr);
+  mbedtls_pk_free(&key);
+  mbedtls_ctr_drbg_free(&ctr_drbg);
+  return rc == 0;
+}
+
+esp_err_t http_tls_csr_for_cli() {
+  if (g_cfg.key_pem[0] == '\0') {
+    ESP_LOGW(kTag, "tls.csr unavailable: key missing; run tls.keygen");
+    return ESP_ERR_INVALID_STATE;
+  }
+  char csr[kTlsCsrPemBufferSize] = {};
+  if (!make_csr(csr, sizeof(csr))) {
+    ESP_LOGE(kTag, "tls.csr failed: %s", g_tls_last_error);
+    return ESP_FAIL;
+  }
+  ESP_LOGI(kTag, "tls.csr begin");
+  char* line = std::strtok(csr, "\n");
+  while (line != nullptr) {
+    ESP_LOGI(kTag, "%s", line);
+    line = std::strtok(nullptr, "\n");
+  }
+  ESP_LOGI(kTag, "tls.csr end");
+  return ESP_OK;
+}
+
+esp_err_t http_tls_cert_begin_for_cli() {
+  ESP_RETURN_ON_ERROR(nvs_set_http_str(kTlsCertStagedKey, ""), kTag, "stage cert begin");
+  ESP_LOGI(kTag, "tls.cert.begin ok");
+  return ESP_OK;
+}
+
+esp_err_t http_tls_cert_append_for_cli(const char* line) {
+  if (!line || line[0] == '\0') {
+    return ESP_ERR_INVALID_ARG;
+  }
+  char staged[kTlsCertPemBufferSize] = {};
+  auto nvs = luce::nvs::Handle::Open(kHttpNs, NVS_READONLY);
+  if (nvs.ok()) {
+    (void)nvs.read_string(kTlsCertStagedKey, staged, sizeof(staged), "");
+  }
+  const std::size_t current = std::strlen(staged);
+  const std::size_t add = std::strlen(line);
+  if (current + add + 2 >= sizeof(staged)) {
+    ESP_LOGE(kTag, "tls.cert.append refused: staged cert too large");
+    return ESP_ERR_NO_MEM;
+  }
+  std::strncat(staged, line, sizeof(staged) - std::strlen(staged) - 1);
+  std::strncat(staged, "\n", sizeof(staged) - std::strlen(staged) - 1);
+  ESP_RETURN_ON_ERROR(nvs_set_http_str(kTlsCertStagedKey, staged), kTag, "stage cert append");
+  ESP_LOGI(kTag, "tls.cert.append ok bytes=%u", static_cast<unsigned>(std::strlen(staged)));
+  return ESP_OK;
+}
+
+esp_err_t http_tls_cert_commit_for_cli() {
+  if (g_cfg.key_pem[0] == '\0') {
+    ESP_LOGE(kTag, "tls.cert.commit refused: key missing; run tls.keygen first");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  char staged[kTlsCertPemBufferSize] = {};
+  auto nvs = luce::nvs::Handle::Open(kHttpNs, NVS_READONLY);
+  if (!nvs.ok()) {
+    return nvs.error();
+  }
+  if (!nvs.read_string(kTlsCertStagedKey, staged, sizeof(staged), "") || staged[0] == '\0') {
+    ESP_LOGE(kTag, "tls.cert.commit refused: staged certificate missing");
+    return ESP_ERR_NOT_FOUND;
+  }
+
+  char subject[kTlsSubjectBufferSize] = {};
+  char issuer[kTlsSubjectBufferSize] = {};
+  char fingerprint[kTlsFingerprintBufferSize] = {};
+  if (!validate_cert_matches_key(staged, subject, sizeof(subject), issuer, sizeof(issuer), fingerprint, sizeof(fingerprint))) {
+    ESP_LOGE(kTag, "tls.cert.commit refused: %s", g_tls_last_error);
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  ESP_RETURN_ON_ERROR(nvs_set_http_str(kTlsCertPemKey, staged), kTag, "promote cert");
+  (void)nvs_erase_http_key(kTlsCertStagedKey);
+  std::snprintf(g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "%s", staged);
+  std::snprintf(g_cfg.cert_subject, sizeof(g_cfg.cert_subject), "%s", subject);
+  std::snprintf(g_cfg.cert_issuer, sizeof(g_cfg.cert_issuer), "%s", issuer);
+  std::snprintf(g_cfg.cert_fingerprint, sizeof(g_cfg.cert_fingerprint), "%s", fingerprint);
+  set_tls_error("none");
+  ESP_LOGI(kTag, "tls.cert.commit ok fingerprint=%s subject='%s'", g_cfg.cert_fingerprint, g_cfg.cert_subject);
+  return ESP_OK;
+}
+
+esp_err_t http_tls_reset_for_cli() {
+  (void)nvs_erase_http_key(kTlsCertStagedKey);
+  (void)nvs_erase_http_key(kTlsCertPemKey);
+  (void)nvs_erase_http_key(kTlsKeyPemKey);
+  (void)nvs_erase_http_key(kTlsKeyAlgKey);
+  std::memset(g_cfg.key_pem, 0, sizeof(g_cfg.key_pem));
+  std::memset(g_cfg.cert_pem, 0, sizeof(g_cfg.cert_pem));
+  clear_cert_metadata();
+  set_tls_error("none");
+  ESP_LOGW(kTag, "tls.reset erased local key and certificate; reboot recommended");
+  return ESP_OK;
 }
 
 #else

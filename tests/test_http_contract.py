@@ -68,28 +68,33 @@ def test_info_payload_contract(http_requester, luce_host, luce_http_token):
         "http_port",
         "http_state",
         "https_running",
-        "tls",
-        "tls_dev_mode",
-        "tls_mode",
+        "tls_state",
         "tls_status",
         "tls_last_error",
+        "csr_ready",
         "cert_present",
         "key_present",
+        "cert_fingerprint",
+        "cert_subject",
+        "cert_issuer",
         "relays",
         "nightMask",
         "threshold",
         "network",
     }
     assert required_keys.issubset(set(payload.keys()))
-    assert payload["tls_mode"] in {"dev", "prod"}
     assert isinstance(payload["http_enabled"], bool)
     assert isinstance(payload["https_running"], bool)
-    assert isinstance(payload["tls_dev_mode"], bool)
+    assert isinstance(payload["csr_ready"], bool)
     assert isinstance(payload["cert_present"], bool)
     assert isinstance(payload["key_present"], bool)
     assert isinstance(payload["http_state"], str)
+    assert isinstance(payload["tls_state"], str)
     assert isinstance(payload["tls_status"], str)
     assert isinstance(payload["tls_last_error"], str)
+    assert isinstance(payload["cert_fingerprint"], str)
+    assert isinstance(payload["cert_subject"], str)
+    assert isinstance(payload["cert_issuer"], str)
 
     network = payload["network"]
     assert {"ip", "wifiConnected", "mqttConnected", "ntpSynced"}.issubset(set(network.keys()))

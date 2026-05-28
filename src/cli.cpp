@@ -126,6 +126,12 @@ int cli_handle_mqtt_pubtest(int, char*[]);
 #if LUCE_HAS_HTTP
 int cli_handle_http_status(int, char*[]);
 int cli_handle_tls_status(int, char*[]);
+int cli_handle_tls_keygen(int, char*[]);
+int cli_handle_tls_csr(int, char*[]);
+int cli_handle_tls_cert_begin(int, char*[]);
+int cli_handle_tls_cert_append(int, char*[]);
+int cli_handle_tls_cert_commit(int, char*[]);
+int cli_handle_tls_reset(int, char*[]);
 #endif
 
 constexpr CliCommandInfo kCliCommands[] = {
@@ -175,6 +181,12 @@ constexpr CliCommandInfo kCliCommands[] = {
 #if LUCE_HAS_HTTP
     {"http.status", false, true, "http.status", cli_handle_http_status},
     {"tls.status", false, true, "tls.status", cli_handle_tls_status},
+    {"tls.keygen", true, false, "tls.keygen", cli_handle_tls_keygen},
+    {"tls.csr", false, false, "tls.csr", cli_handle_tls_csr},
+    {"tls.cert.begin", true, false, "tls.cert.begin", cli_handle_tls_cert_begin},
+    {"tls.cert.append", true, false, "tls.cert.append <pem-line>", cli_handle_tls_cert_append},
+    {"tls.cert.commit", true, false, "tls.cert.commit", cli_handle_tls_cert_commit},
+    {"tls.reset", true, false, "tls.reset", cli_handle_tls_reset},
 #endif
 #if LUCE_HAS_OTA
     {"ota.status", false, true, "ota.status", cli_handle_ota_status},
@@ -979,6 +991,36 @@ int cli_handle_http_status(int, char*[]) {
 int cli_handle_tls_status(int, char*[]) {
   http_tls_status_for_cli();
   return 0;
+}
+
+int cli_handle_tls_keygen(int, char*[]) {
+  return http_tls_keygen_for_cli() == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_csr(int, char*[]) {
+  return http_tls_csr_for_cli() == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_cert_begin(int, char*[]) {
+  return http_tls_cert_begin_for_cli() == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_cert_append(int argc, char* argv[]) {
+  if (argc < 2) {
+    ESP_LOGW(kTag, "CLI command tls.cert.append usage: tls.cert.append <pem-line>");
+    return 1;
+  }
+  char line[kCliLineBuffer] = {};
+  append_argv_tokens(argc, argv, 1, line, sizeof(line));
+  return http_tls_cert_append_for_cli(line) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_cert_commit(int, char*[]) {
+  return http_tls_cert_commit_for_cli() == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_reset(int, char*[]) {
+  return http_tls_reset_for_cli() == ESP_OK ? 0 : 1;
 }
 #endif
 

@@ -224,7 +224,7 @@ def generate_dev_tls_material(cert_path: Path, key_path: Path) -> None:
     try:
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.x509.oid import NameOID
     except ModuleNotFoundError:
         openssl = shutil.which("openssl")
@@ -236,7 +236,9 @@ def generate_dev_tls_material(cert_path: Path, key_path: Path) -> None:
                 "req",
                 "-x509",
                 "-newkey",
-                "rsa:2048",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
                 "-nodes",
                 "-keyout",
                 str(key_path),
@@ -255,7 +257,7 @@ def generate_dev_tls_material(cert_path: Path, key_path: Path) -> None:
         )
         return
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = ec.generate_private_key(ec.SECP256R1())
     subject = issuer = x509.Name(
         [
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
@@ -307,9 +309,9 @@ def write_wokwi_nvs_csv(args: argparse.Namespace, csv_path: Path, cert_path: Pat
         ["enabled", "data", "u8", "1"],
         ["port", "data", "u16", "443"],
         ["token", "data", "string", http_token],
-        ["tls_dev_mode", "data", "u8", "1"],
-        ["cert_pem", "file", "string", str(cert_path)],
-        ["key_pem", "file", "string", str(key_path)],
+        ["tls_key_alg", "data", "string", "ec-p256"],
+        ["tls_key_pem", "file", "string", str(key_path)],
+        ["tls_cert_pem", "file", "string", str(cert_path)],
         ["cli_net", "namespace", "", ""],
         ["enabled", "data", "u8", "1"],
         ["port", "data", "u16", "2323"],

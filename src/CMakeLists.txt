@@ -11,6 +11,7 @@ idf_component_register(
     esp_event
     esp_wifi
     lwip
+    mbedtls
     mqtt
     nvs_flash
 )

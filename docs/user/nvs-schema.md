@@ -47,9 +47,10 @@ LUCE uses namespace-scoped key-value configuration.
   - `enabled` u8
   - `port` u16
   - `token` string (secret)
-  - `tls_dev_mode` u8 (0 = prod, 1 = dev)
-  - `cert_pem` string (PEM X.509 cert, ~2 KB max; required for HTTPS start)
-  - `key_pem` string (PEM private key, ~2 KB max, secret; required for HTTPS start)
+  - `tls_key_alg` string (`ec-p256`)
+  - `tls_key_pem` string (device-generated EC P-256 private key, secret; required for HTTPS start)
+  - `tls_cert_pem` string (PEM X.509 certificate signed from device CSR; required for HTTPS start)
+  - `tls_cert_staged` string (temporary serial CLI import buffer)
 - `ota`
   - `enabled` u8
   - `url` string
@@ -72,6 +73,7 @@ LUCE uses namespace-scoped key-value configuration.
 - Missing keys are logged and defaulted to safe values.
 - Network service booleans default to disabled unless explicitly enabled.
 - Wi-Fi has no compiled SSID or password fallback; `wifi/enabled=1` and `wifi/ssid` must be provisioned before station connection starts.
+- HTTP server identity uses `tls.keygen` -> `tls.csr` -> external signing -> `tls.cert.*` import.
 - MQTT and OTA HTTPS verification require `*_ca_pem_source=nvs` with matching `*_ca_pem` material. Unsupported CA sources fail closed before connection/download.
 
 ## Verification

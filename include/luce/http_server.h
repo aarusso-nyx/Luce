@@ -1,5 +1,6 @@
 #pragma once
 
+#include "esp_err.h"
 #include "luce_build.h"
 
 void http_startup();
@@ -9,17 +10,22 @@ bool http_is_running();
 
 #if LUCE_HAS_HTTP
 const char* http_state_name();
-// TLS material introspection. cert_pem / key_pem bodies are deliberately
-// not exposed — only their presence is reported. Used by tls.status CLI
-// and the /api/info endpoint.
-bool http_tls_dev_mode();
-bool http_tls_cert_present();
-bool http_tls_key_present();
+// TLS identity lifecycle. The private key is generated and kept on-device;
+// only key/certificate presence and certificate metadata are exposed.
 void http_tls_status_for_cli();
+esp_err_t http_tls_keygen_for_cli();
+esp_err_t http_tls_csr_for_cli();
+esp_err_t http_tls_cert_begin_for_cli();
+esp_err_t http_tls_cert_append_for_cli(const char* line);
+esp_err_t http_tls_cert_commit_for_cli();
+esp_err_t http_tls_reset_for_cli();
 #else
 inline const char* http_state_name() { return "DISABLED"; }
-inline bool http_tls_dev_mode() { return false; }
-inline bool http_tls_cert_present() { return false; }
-inline bool http_tls_key_present() { return false; }
 inline void http_tls_status_for_cli() {}
+inline esp_err_t http_tls_keygen_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
+inline esp_err_t http_tls_csr_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
+inline esp_err_t http_tls_cert_begin_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
+inline esp_err_t http_tls_cert_append_for_cli(const char*) { return ESP_ERR_NOT_SUPPORTED; }
+inline esp_err_t http_tls_cert_commit_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
+inline esp_err_t http_tls_reset_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
 #endif  // LUCE_HAS_HTTP

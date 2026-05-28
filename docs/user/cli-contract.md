@@ -79,10 +79,19 @@ the serial transport regardless of `tcp_ro`.
 | --- | --- | --- | --- |
 | `http.status` | no | yes | `http.status` |
 | `tls.status` | no | yes | `tls.status` |
+| `tls.keygen` | yes | no | `tls.keygen` |
+| `tls.csr` | no | no | `tls.csr` |
+| `tls.cert.begin` | yes | no | `tls.cert.begin` |
+| `tls.cert.append` | yes | no | `tls.cert.append <pem-line>` |
+| `tls.cert.commit` | yes | no | `tls.cert.commit` |
+| `tls.reset` | yes | no | `tls.reset` |
 
-`tls.status` is diagnostic only. It reports HTTPS cert/key presence and byte
-counts, `https_running`, `tls_status`, and the last TLS startup error reason;
-it never prints PEM bodies.
+`tls.keygen` creates the device-local EC P-256 private key. `tls.csr` prints a
+CSR for external signing and never prints the private key. `tls.cert.*` imports
+the signed certificate line-by-line over serial and rejects certificates that do
+not match the local key. `tls.status` reports workflow, cert/key presence and
+byte counts, `https_running`, `tls_status`, the last TLS startup error reason,
+and certificate metadata without printing private-key material.
 
 ### OTA (`LUCE_NET_OTA=1`)
 
