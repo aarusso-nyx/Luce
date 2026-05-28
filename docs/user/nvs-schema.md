@@ -1,6 +1,6 @@
 # LUCE NVS Schema Reference
 
-Date: 2026-02-23
+Date: 2026-05-28
 
 LUCE uses namespace-scoped key-value configuration.
 
@@ -46,12 +46,19 @@ LUCE uses namespace-scoped key-value configuration.
 - `http`
   - `enabled` u8
   - `port` u16
-  - `token` string
-  - `tls_dev_mode` u8
+  - `token` string (secret)
+  - `tls_dev_mode` u8 (0 = prod, 1 = dev)
+  - `cert_pem` string (PEM X.509 cert, ~2 KB max; required for HTTPS start)
+  - `key_pem` string (PEM private key, ~2 KB max, secret; required for HTTPS start)
+- `ota`
+  - `enabled` u8
+  - `url` string
+  - `check_interval_s` u32
+  - `request_timeout_ms` u32
 - `relays`
-- `state` u32 (stored relay request mask, loaded at startup)
-- `state_fmt` u8 = 1 when `state` is stored as request-mask (internal migration marker)
-- `night_mask` u8 (relay policy: suppresses these relays during day)
+  - `state` u32 (stored relay request mask, loaded at startup)
+  - `state_fmt` u8 = 1 when `state` is stored as request-mask (internal migration marker)
+  - `night_mask` u8 (relay policy: suppresses these relays during day)
 - `compat`
   - `log_console_fmt` string
   - `log_file_fmt` string
@@ -61,9 +68,8 @@ LUCE uses namespace-scoped key-value configuration.
 ## Defaults
 
 - Missing keys are logged and defaulted to safe values.
-- Booleans default to disabled for all network namespaces unless explicitly enabled.
+- Network service booleans default to disabled unless explicitly enabled, except current Wi-Fi firmware code still falls back to a compiled default profile when the `wifi` namespace is missing. That Wi-Fi default is a known implementation gap against the intended safe-default policy.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
-- Evidence SHA: `2a3b9df`
+- Generate current local evidence under `docs/work/diag/` with `./scripts/luce.sh health` and `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45`.

@@ -125,6 +125,7 @@ int cli_handle_mqtt_pubtest(int, char*[]);
 #endif
 #if LUCE_HAS_HTTP
 int cli_handle_http_status(int, char*[]);
+int cli_handle_tls_status(int, char*[]);
 #endif
 
 constexpr CliCommandInfo kCliCommands[] = {
@@ -173,6 +174,7 @@ constexpr CliCommandInfo kCliCommands[] = {
 #endif
 #if LUCE_HAS_HTTP
     {"http.status", false, true, "http.status", cli_handle_http_status},
+    {"tls.status", false, true, "tls.status", cli_handle_tls_status},
 #endif
 #if LUCE_HAS_OTA
     {"ota.status", false, true, "ota.status", cli_handle_ota_status},
@@ -972,6 +974,11 @@ int cli_handle_mqtt_pubtest(int, char*[]) {
 #if LUCE_HAS_HTTP
 int cli_handle_http_status(int, char*[]) {
   http_status_for_cli();
+  return 0;
+}
+
+int cli_handle_tls_status(int, char*[]) {
+  http_tls_status_for_cli();
   return 0;
 }
 #endif
