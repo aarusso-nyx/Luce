@@ -197,21 +197,25 @@ esp_err_t send_bad_request(httpd_req_t* req, const char* message) {
   return send_json(req, 400, payload, 0);
 }
 
-// Common method+auth prologue used by every JSON API handler. Evaluates
-// the method check first (so unauthorised callers cannot probe for a
-// route's allowed methods) and bails with the standard 405 / 401 JSON
-// response on failure. The macro lets each route keep its handler body
-// linear and removes ~5 lines of repeated boilerplate per route.
-#define LUCE_ROUTE_PROLOGUE(req_ptr, methods_label, method_ok, requires_auth_expr) \
-  do {                                                                              \
-    httpd_req_t* const _luce_req = (req_ptr);                                       \
-    if (!(method_ok)) {                                                             \
-      return send_method_not_allowed(_luce_req, (methods_label));                   \
-    }                                                                               \
-    if ((requires_auth_expr) && !validate_auth(_luce_req)) {                        \
-      return send_unauthorized(_luce_req);                                          \
-    }                                                                               \
-  } while (0)
+// Route table — one row per JSON API endpoint. Each route's implementation
+// runs through route_dispatch_trampoline below, which performs the method
+// check then the optional auth check before delegating to `impl`. The
+// method check runs first so unauthenticated callers cannot probe for a
+// route's allowed methods. Method mask uses a bitset of httpd_method_t
+// values (HTTP_GET, HTTP_POST, …) so a single route can advertise GET+PUT
+// or POST+PUT cleanly. methods_label is the Allow-header / 405-payload
+// string used when a request misses the mask.
+struct RouteSpec {
+  const char* uri;
+  std::uint16_t method_mask;
+  bool requires_auth;
+  esp_err_t (*impl)(httpd_req_t* req);
+  const char* methods_label;
+};
+
+constexpr std::uint16_t kMethodGet = 1u << HTTP_GET;
+constexpr std::uint16_t kMethodPost = 1u << HTTP_POST;
+constexpr std::uint16_t kMethodPut = 1u << HTTP_PUT;
 
 bool validate_auth(httpd_req_t* req) {
   char header[64] = {0};
@@ -419,15 +423,13 @@ void ws_broadcast_snapshot(httpd_handle_t server) {
   }
 }
 
-esp_err_t route_health(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, false);
+esp_err_t route_health_impl(httpd_req_t* req) {
   char payload[256] = {0};
   get_uptime_payload(payload, sizeof(payload));
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_info(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, true);
+esp_err_t route_info_impl(httpd_req_t* req) {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
   I2cSensorSnapshot snapshot {};
@@ -455,8 +457,7 @@ esp_err_t route_info(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_version(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, false);
+esp_err_t route_version_impl(httpd_req_t* req) {
   char payload[192] = {0};
   std::snprintf(payload, sizeof(payload),
                 "{\"service\":\"luce\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\",\"build\":\"%s %s\"}",
@@ -464,8 +465,7 @@ esp_err_t route_version(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_state(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, true);
+esp_err_t route_state_impl(httpd_req_t* req) {
   char payload[384] = {0};
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
@@ -477,16 +477,13 @@ esp_err_t route_state(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_ota(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET", req->method == HTTP_GET, true);
+esp_err_t route_ota_impl(httpd_req_t* req) {
   char payload[512] = {0};
   ota_build_status_payload(payload, sizeof(payload));
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_ota_check(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "POST, PUT",
-                      req->method == HTTP_POST || req->method == HTTP_PUT, true);
+esp_err_t route_ota_check_impl(httpd_req_t* req) {
   char query[64] = {0};
   char query_url[256] = {0};
   char body_url[256] = {0};
@@ -537,10 +534,7 @@ esp_err_t build_leds_payload(char* out, std::size_t out_size) {
   return ESP_OK;
 }
 
-esp_err_t route_leds_state(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
-                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
-
+esp_err_t route_leds_state_impl(httpd_req_t* req) {
   if (req->method == HTTP_PUT) {
     char value[64] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
@@ -568,9 +562,7 @@ esp_err_t route_leds_state(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_leds_state_0(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
-                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
+esp_err_t route_leds_state_0_impl(httpd_req_t* req) {
   if (req->method == HTTP_PUT) {
     char value[32] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
@@ -593,9 +585,7 @@ esp_err_t route_leds_state_0(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_leds_state_1(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
-                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
+esp_err_t route_leds_state_1_impl(httpd_req_t* req) {
   if (req->method == HTTP_PUT) {
     char value[32] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
@@ -618,9 +608,7 @@ esp_err_t route_leds_state_1(httpd_req_t* req) {
   return send_json(req, 200, payload, 0);
 }
 
-esp_err_t route_leds_state_2(httpd_req_t* req) {
-  LUCE_ROUTE_PROLOGUE(req, "GET, PUT",
-                      req->method == HTTP_GET || req->method == HTTP_PUT, true);
+esp_err_t route_leds_state_2_impl(httpd_req_t* req) {
   if (req->method == HTTP_PUT) {
     char value[32] = {0};
     if (!read_request_value(req, value, sizeof(value))) {
@@ -723,105 +711,41 @@ esp_err_t route_captive(httpd_req_t* req) {
   return httpd_resp_send(req, reinterpret_cast<const char*>(asset->data), asset->size);
 }
 
-httpd_uri_t g_uri_health = {
-    .uri = "/api/health",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_health,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
+constexpr RouteSpec kJsonApiRoutes[] = {
+    {"/api/health",       kMethodGet,                false, route_health_impl,       "GET"},
+    {"/api/info",         kMethodGet,                true,  route_info_impl,         "GET"},
+    {"/api/version",      kMethodGet,                false, route_version_impl,      "GET"},
+    {"/api/state",        kMethodGet,                true,  route_state_impl,        "GET"},
+    {"/api/ota",          kMethodGet,                true,  route_ota_impl,          "GET"},
+    {"/api/ota/check",    kMethodPost | kMethodPut,  true,  route_ota_check_impl,    "POST, PUT"},
+    {"/api/leds/state",   kMethodGet | kMethodPut,   true,  route_leds_state_impl,   "GET, PUT"},
+    {"/api/leds/state/0", kMethodGet | kMethodPut,   true,  route_leds_state_0_impl, "GET, PUT"},
+    {"/api/leds/state/1", kMethodGet | kMethodPut,   true,  route_leds_state_1_impl, "GET, PUT"},
+    {"/api/leds/state/2", kMethodGet | kMethodPut,   true,  route_leds_state_2_impl, "GET, PUT"},
 };
+constexpr std::size_t kJsonApiRouteCount = sizeof(kJsonApiRoutes) / sizeof(kJsonApiRoutes[0]);
 
-httpd_uri_t g_uri_info = {
-    .uri = "/api/info",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_info,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
+// httpd_uri_t entries point user_ctx at the corresponding RouteSpec so the
+// single trampoline can read method/auth metadata at dispatch time. Built
+// at first call to start_http_server() to keep this TU header-light.
+httpd_uri_t g_json_uri_handlers[kJsonApiRouteCount] = {};
 
-httpd_uri_t g_uri_version = {
-    .uri = "/api/version",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_version,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_state = {
-    .uri = "/api/state",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_state,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_ota = {
-    .uri = "/api/ota",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_ota,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_ota_check = {
-    .uri = "/api/ota/check",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_ota_check,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_leds_state = {
-    .uri = "/api/leds/state",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_leds_state,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_leds_state_0 = {
-    .uri = "/api/leds/state/0",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_leds_state_0,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_leds_state_1 = {
-    .uri = "/api/leds/state/1",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_leds_state_1,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
-
-httpd_uri_t g_uri_leds_state_2 = {
-    .uri = "/api/leds/state/2",
-    .method = static_cast<httpd_method_t>(HTTP_ANY),
-    .handler = route_leds_state_2,
-    .user_ctx = nullptr,
-    .is_websocket = false,
-    .handle_ws_control_frames = false,
-    .supported_subprotocol = nullptr,
-};
+esp_err_t route_dispatch_trampoline(httpd_req_t* req) {
+  const auto* spec = static_cast<const RouteSpec*>(req->user_ctx);
+  if (spec == nullptr) {
+    return send_method_not_allowed(req, "GET");
+  }
+  const std::uint16_t method_bit = (req->method >= 0 && req->method < 16)
+                                       ? static_cast<std::uint16_t>(1u << req->method)
+                                       : 0u;
+  if ((spec->method_mask & method_bit) == 0u) {
+    return send_method_not_allowed(req, spec->methods_label);
+  }
+  if (spec->requires_auth && !validate_auth(req)) {
+    return send_unauthorized(req);
+  }
+  return spec->impl(req);
+}
 
 httpd_uri_t g_uri_ws = {
     .uri = "/ws",
@@ -884,16 +808,19 @@ void start_http_server() {
     return;
   }
 
-  httpd_register_uri_handler(g_httpd, &g_uri_health);
-  httpd_register_uri_handler(g_httpd, &g_uri_info);
-  httpd_register_uri_handler(g_httpd, &g_uri_version);
-  httpd_register_uri_handler(g_httpd, &g_uri_state);
-  httpd_register_uri_handler(g_httpd, &g_uri_ota);
-  httpd_register_uri_handler(g_httpd, &g_uri_ota_check);
-  httpd_register_uri_handler(g_httpd, &g_uri_leds_state);
-  httpd_register_uri_handler(g_httpd, &g_uri_leds_state_0);
-  httpd_register_uri_handler(g_httpd, &g_uri_leds_state_1);
-  httpd_register_uri_handler(g_httpd, &g_uri_leds_state_2);
+  for (std::size_t i = 0; i < kJsonApiRouteCount; ++i) {
+    const RouteSpec& spec = kJsonApiRoutes[i];
+    g_json_uri_handlers[i] = httpd_uri_t{
+        .uri = spec.uri,
+        .method = static_cast<httpd_method_t>(HTTP_ANY),
+        .handler = route_dispatch_trampoline,
+        .user_ctx = const_cast<RouteSpec*>(&spec),
+        .is_websocket = false,
+        .handle_ws_control_frames = false,
+        .supported_subprotocol = nullptr,
+    };
+    httpd_register_uri_handler(g_httpd, &g_json_uri_handlers[i]);
+  }
   httpd_register_uri_handler(g_httpd, &g_uri_ws);
   ESP_LOGI(kTag, "[HTTP] started");
   ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, /api/ota/check, /api/leds/state, /api/leds/state/{0,1,2}, /ws");
