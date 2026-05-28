@@ -4,14 +4,20 @@ Date: 2026-03-01
 
 ## Scope
 
-NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a captive portal UI served from `./data/webapp` on plain HTTP port `80`.
+NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a captive portal UI served from `./data/webapp` on plain HTTP port `80`. The HTTPS server reads its certificate and private key from NVS at boot; if either is absent the server logs an explicit `[HTTP] start refused: missing TLS material` error and stays in the `FAILED` state. Use `tls.status` (CLI) or `/api/info`'s `tls_mode`/`cert_present`/`key_present` fields to diagnose.
 
 ## NVS schema (`http`)
 
 - `http/enabled` (u8, default `0`)
 - `http/port` (u16, default `443`) for HTTPS API
 - `http/token` (string, required for protected routes)
-- `http/tls_dev_mode` (u8, optional for dev cert mode)
+- `http/tls_dev_mode` (u8, default `0`)
+  - `1` = dev mode; future PR enables first-boot self-signed cert generation.
+  - `0` = production mode; cert+key must be provisioned externally.
+  - The flag is surfaced as `tls_mode = "dev" | "prod"` in `/api/info` and CLI `tls.status`. It does not currently change start-up behaviour; both modes require `cert_pem`+`key_pem` to be present.
+- `http/cert_pem` (string, PEM-encoded X.509 certificate, max ~2 KB)
+- `http/key_pem` (string, PEM-encoded private key, max ~2 KB)
+  - Both PEMs are loaded at boot, never logged (only their presence is reported), and never returned by any API endpoint. Provisioning is currently manual (out-of-band NVS write); follow-up PR adds a serial CLI provisioning command.
 
 ## Endpoints
 
@@ -24,6 +30,7 @@ NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a c
     - relay/sensor: `relays`, `nightMask`, `day`, `threshold`, `light`, `temperature`, `humidity`, `sensor_ok`
     - network: `wifi_ip` and nested `network.{ip,wifiConnected,mqttConnected,ntpSynced}`
     - current HTTP flags: `http_enabled`, `http_port`, `tls`
+    - TLS material status: `tls_mode` ("dev"/"prod"), `cert_present` (bool), `key_present` (bool)
 - `GET /api/state`
   - requires bearer token
 - `GET /api/ota`
@@ -76,6 +83,7 @@ NET1 provides a TLS-protected HTTPS API surface (state + control routes) and a c
   - POST/PUT `/api/ota/check` accepted.
   - unsupported methods return `405`.
   - unauthenticated protected endpoints return `401` (unless `--skip-unauth`).
+- Or run the wrapper: `./scripts/luce.sh http-smoke --host https://<device-ip> --token <http-token>`.
 
 ## Logging
 

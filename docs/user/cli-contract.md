@@ -78,6 +78,7 @@ the serial transport regardless of `tcp_ro`.
 | Command | mut | tcp_ro | Usage |
 | --- | --- | --- | --- |
 | `http.status` | no | yes | `http.status` |
+| `tls.status` | no | yes | `tls.status` |
 
 ### OTA (`LUCE_NET_OTA=1`)
 
@@ -112,5 +113,5 @@ the serial transport regardless of `tcp_ro`.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
-- Evidence SHA: `2a3b9df`
+- Command-table alignment can be checked from source/docs without hardware.
+- Runtime evidence should be regenerated under `docs/work/diag/` with `./scripts/luce.sh test --layers boot,serial --env net1 --boot-duration 45` when hardware is attached.
