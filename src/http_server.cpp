@@ -34,6 +34,21 @@
 #include "luce/runtime_state.h"
 #include "luce/task_budgets.h"
 
+// Captive-portal webapp assets are embedded by src/CMakeLists.txt as
+// `extern "C"` symbols in a generated TU. The declarations must live at
+// file scope, NOT inside the anonymous namespace below — GCC 15 honours
+// the internal linkage of the surrounding anonymous namespace over the
+// `extern "C"` linkage specifier and gives the symbols namespace-mangled
+// names, which then fail to resolve against the C-linkage definitions.
+extern "C" {
+extern const unsigned char webapp_index_html[];
+extern const unsigned int webapp_index_html_len;
+extern const unsigned char webapp_app_css[];
+extern const unsigned int webapp_app_css_len;
+extern const unsigned char webapp_script_js[];
+extern const unsigned int webapp_script_js_len;
+}
+
 namespace {
 
 constexpr const char* kTag = "[HTTP]";
@@ -74,15 +89,6 @@ static const char kServerKeyPgm[] = R"EOF(-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9...
 -----END PRIVATE KEY-----
 )EOF";
-
-extern "C" {
-extern const unsigned char webapp_index_html[];
-extern const unsigned int webapp_index_html_len;
-extern const unsigned char webapp_app_css[];
-extern const unsigned int webapp_app_css_len;
-extern const unsigned char webapp_script_js[];
-extern const unsigned int webapp_script_js_len;
-}
 
 struct WebAsset {
   const char* uri;

@@ -1,0 +1,32 @@
+# sdkconfig.defaults — project-specific overrides ported during the
+# IDF v5.x → v6.0.1 migration. Anything not listed here keeps the v6
+# Kconfig default. The full materialised sdkconfig is regenerated on
+# build and committed alongside this file.
+#
+# When changing a setting, update this file (the intent), then delete
+# sdkconfig and let PIO regenerate it on the next build.
+
+# --- Flash layout: board has 4MB, project uses a custom partitions.csv ---
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+# CONFIG_PARTITION_TABLE_SINGLE_APP is not set
+# CONFIG_ESPTOOLPY_FLASHSIZE_2MB is not set
+
+# --- HTTP server: WebSocket route handlers (/ws) ---
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# --- lwIP: extra netif client data slots required by inline mDNS responder ---
+CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4
+# Captive portal DHCP server returns DNS option
+CONFIG_LWIP_DHCPS_ADD_DNS=y
+
+# --- mbedTLS: ciphersuites and peer-cert retention used by HTTPS server / OTA ---
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_ECDH_RSA=y
+CONFIG_MBEDTLS_ECP_DP_SECP192K1_ENABLED=y
+CONFIG_MBEDTLS_ECP_DP_SECP192R1_ENABLED=y
+CONFIG_MBEDTLS_ECP_DP_SECP224K1_ENABLED=y
+CONFIG_MBEDTLS_ECP_DP_SECP224R1_ENABLED=y
