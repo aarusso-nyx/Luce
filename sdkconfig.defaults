@@ -17,9 +17,7 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 # --- HTTP server: WebSocket route handlers (/ws) ---
 CONFIG_HTTPD_WS_SUPPORT=y
 
-# --- lwIP: extra netif client data slots required by inline mDNS responder ---
-CONFIG_LWIP_NUM_NETIF_CLIENT_DATA=4
-# Captive portal DHCP server returns DNS option
+# --- lwIP: captive-portal DHCP server returns DNS option ---
 CONFIG_LWIP_DHCPS_ADD_DNS=y
 
 # --- mbedTLS: ciphersuites and peer-cert retention used by HTTPS server / OTA ---

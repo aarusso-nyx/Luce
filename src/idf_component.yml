@@ -7,7 +7,11 @@
 ## next build.
 ##
 ##   espressif/mqtt — pulls esp-mqtt back in for `REQUIRES mqtt`
+##   espressif/mdns — official mDNS responder; replaces the previous
+##                    inline-compiled lwIP mdns sources (see commit log
+##                    of the mdns.cpp port for the API mapping)
 dependencies:
   idf:
     version: ">=5.0"
   espressif/mqtt: "^1.0"
+  espressif/mdns: "^1.8"

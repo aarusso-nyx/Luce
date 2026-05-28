@@ -1,4 +1,11 @@
-// mDNS responder implementation.
+// mDNS responder — espressif/mdns managed component.
+//
+// Previously this file used lwIP's built-in mdns_resp_* responder
+// (compiled inline via src/CMakeLists.txt). That worked but coupled
+// the project to lwIP API drift; on the v6.0.1 upgrade lwIP renamed
+// netif_alloc_client_data_id and we had to flip a Kconfig to keep it
+// compiling. Switch to the supported espressif/mdns component fetched
+// via idf_component.yml.
 #include "luce/mdns.h"
 
 #include <cinttypes>
@@ -9,16 +16,13 @@
 
 #if LUCE_HAS_MDNS
 
+#include "esp_check.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_netif.h"
-#include "esp_netif_net_stack.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "lwip/apps/mdns.h"
-#include "lwip/err.h"
-#include "lwip/netif.h"
+#include "mdns.h"
 #include "nvs.h"
 
 #include "luce/net_wifi.h"
@@ -34,6 +38,8 @@ constexpr const char* kMdnsNs = "mdns";
 constexpr const char* kNetNs = "net";
 constexpr const char* kDefaultInstance = "Luce Strategy";
 constexpr const char* kDefaultHostnameFallback = "luce-";
+constexpr const char* kServiceType = "_luce";
+constexpr const char* kServiceProto = "_tcp";
 constexpr std::uint32_t kPollPeriodMs = 1000;
 constexpr std::uint16_t kDefaultPort = 80;
 constexpr std::size_t kTxtFieldMax = 64;
@@ -53,14 +59,18 @@ struct MdnsConfig {
 MdnsConfig g_cfg {};
 MdnsState g_state = MdnsState::kDisabledByConfig;
 char g_hostname[33] = {0};
-uint16_t g_port = kDefaultPort;
+std::uint16_t g_port = kDefaultPort;
 TaskHandle_t g_task_handle = nullptr;
-bool g_registered = false;
-s8_t g_service_slot = -1;
-char g_txt_fw[kTxtFieldMax] = {};
-char g_txt_strategy[kTxtFieldMax] = {};
-char g_txt_device[kTxtFieldMax] = {};
-char g_txt_build[kTxtFieldMax] = {};
+bool g_stack_inited = false;
+bool g_service_registered = false;
+
+// Static value buffers for the four TXT records. espressif/mdns wants
+// {key, value} pairs as plain strings (it adds the `=` on the wire),
+// rather than the lwip responder's "key=value" pre-formatted strings.
+char g_txt_fw_value[kTxtFieldMax] = {};
+char g_txt_strategy_value[kTxtFieldMax] = {};
+char g_txt_device_value[kTxtFieldMax] = {};
+char g_txt_build_value[kTxtFieldMax] = {};
 
 const char* state_name(MdnsState state) {
   switch (state) {
@@ -85,37 +95,12 @@ void set_state(MdnsState next, const char* reason = nullptr) {
   luce::runtime::set_state(g_state, next, state_name, "[mDNS]", reason);
 }
 
-void refresh_mdns_txt_fields() {
-  std::snprintf(g_txt_fw, sizeof(g_txt_fw), "fw=%s", LUCE_PROJECT_VERSION);
-  std::snprintf(g_txt_strategy, sizeof(g_txt_strategy), "strategy=%s", LUCE_STRATEGY_NAME);
-  std::snprintf(g_txt_device, sizeof(g_txt_device), "device=%s", g_hostname[0] != '\0' ? g_hostname : "luce-device");
-  std::snprintf(g_txt_build, sizeof(g_txt_build), "build=%s", __DATE__ " " __TIME__);
-}
-
-void mdns_service_txt_cb(mdns_service* service, void* /*txt_userdata*/) {
-  if (!service) {
-    return;
-  }
-  if (g_txt_fw[0] != '\0') {
-    mdns_resp_add_service_txtitem(service, g_txt_fw, static_cast<uint8_t>(std::strlen(g_txt_fw)));
-  }
-  if (g_txt_strategy[0] != '\0') {
-    mdns_resp_add_service_txtitem(service, g_txt_strategy, static_cast<uint8_t>(std::strlen(g_txt_strategy)));
-  }
-  if (g_txt_device[0] != '\0') {
-    mdns_resp_add_service_txtitem(service, g_txt_device, static_cast<uint8_t>(std::strlen(g_txt_device)));
-  }
-  if (g_txt_build[0] != '\0') {
-    mdns_resp_add_service_txtitem(service, g_txt_build, static_cast<uint8_t>(std::strlen(g_txt_build)));
-  }
-}
-
-netif* get_lwip_sta() {
-  esp_netif_t* esp_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-  if (!esp_netif) {
-    return nullptr;
-  }
-  return static_cast<netif*>(esp_netif_get_netif_impl(esp_netif));
+void refresh_mdns_txt_values() {
+  std::snprintf(g_txt_fw_value, sizeof(g_txt_fw_value), "%s", LUCE_PROJECT_VERSION);
+  std::snprintf(g_txt_strategy_value, sizeof(g_txt_strategy_value), "%s", LUCE_STRATEGY_NAME);
+  std::snprintf(g_txt_device_value, sizeof(g_txt_device_value), "%s",
+                g_hostname[0] != '\0' ? g_hostname : "luce-device");
+  std::snprintf(g_txt_build_value, sizeof(g_txt_build_value), "%s", __DATE__ " " __TIME__);
 }
 
 void load_hostname(char* out, std::size_t out_size) {
@@ -171,7 +156,7 @@ void load_mdns_config() {
 
   g_port = configured_port != 0 ? configured_port : kDefaultPort;
   load_hostname(g_hostname, sizeof(g_hostname));
-  refresh_mdns_txt_fields();
+  refresh_mdns_txt_values();
 
   ESP_LOGI(kTag, "[mDNS] enabled=%d instance='%s' port=%u", g_cfg.enabled ? 1 : 0,
            g_cfg.instance[0] != '\0' ? g_cfg.instance : kDefaultInstance, g_port);
@@ -182,8 +167,33 @@ void load_mdns_config() {
   }
 }
 
+// Bring up the stack + service. Pulled into an esp_err_t helper so the
+// step list is linear and the void caller (start_mdns_service) only
+// owns lifecycle bookkeeping.
+esp_err_t start_mdns_stack_and_service() {
+  if (!g_stack_inited) {
+    ESP_RETURN_ON_ERROR(mdns_init(), kTag, "mdns_init");
+    g_stack_inited = true;
+  }
+  ESP_RETURN_ON_ERROR(mdns_hostname_set(g_hostname), kTag, "mdns_hostname_set");
+  ESP_RETURN_ON_ERROR(mdns_instance_name_set(g_cfg.instance), kTag, "mdns_instance_name_set");
+
+  refresh_mdns_txt_values();
+  mdns_txt_item_t items[] = {
+      {"fw", g_txt_fw_value},
+      {"strategy", g_txt_strategy_value},
+      {"device", g_txt_device_value},
+      {"build", g_txt_build_value},
+  };
+  ESP_RETURN_ON_ERROR(
+      mdns_service_add(g_cfg.instance, kServiceType, kServiceProto, g_port, items,
+                       sizeof(items) / sizeof(items[0])),
+      kTag, "mdns_service_add");
+  return ESP_OK;
+}
+
 void start_mdns_service() {
-  if (!g_cfg.enabled || g_registered) {
+  if (!g_cfg.enabled || g_service_registered) {
     return;
   }
 
@@ -192,56 +202,33 @@ void start_mdns_service() {
     return;
   }
 
-  netif* lwip_netif = get_lwip_sta();
-  if (!lwip_netif) {
-    set_state(MdnsState::kFailed, "netif_missing");
+  const esp_err_t err = start_mdns_stack_and_service();
+  if (err != ESP_OK) {
+    set_state(MdnsState::kFailed, esp_err_to_name(err));
     return;
   }
 
-  mdns_resp_init();
-
-  const err_t add_netif_err = mdns_resp_add_netif(lwip_netif, g_hostname);
-  if (add_netif_err != ERR_OK) {
-    set_state(MdnsState::kFailed, "add_netif_failed");
-    ESP_LOGW(kTag, "[mDNS] FAILED err=%d", static_cast<int>(add_netif_err));
-    return;
-  }
-
-  refresh_mdns_txt_fields();
-  g_service_slot = mdns_resp_add_service(lwip_netif, g_cfg.instance, "_luce", DNSSD_PROTO_TCP, g_port, mdns_service_txt_cb,
-                                         nullptr);
-  if (g_service_slot < 0) {
-    mdns_resp_remove_netif(lwip_netif);
-    set_state(MdnsState::kFailed, "add_service_failed");
-    ESP_LOGW(kTag, "[mDNS] FAILED err=%d", static_cast<int>(g_service_slot));
-    return;
-  }
-
-  g_registered = true;
+  g_service_registered = true;
   set_state(MdnsState::kStarted, "started");
   ESP_LOGI(kTag, "[mDNS] started hostname=%s instance=%s port=%u", g_hostname, g_cfg.instance, g_port);
 }
 
 void stop_mdns_service() {
-  if (!g_registered) {
+  if (!g_service_registered) {
     return;
   }
-  netif* lwip_netif = get_lwip_sta();
-  if (lwip_netif) {
-    if (g_service_slot >= 0) {
-      mdns_resp_del_service(lwip_netif, g_service_slot);
-      g_service_slot = -1;
-    }
-    mdns_resp_remove_netif(lwip_netif);
+  const esp_err_t err = mdns_service_remove(kServiceType, kServiceProto);
+  if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+    ESP_LOGW(kTag, "[mDNS] mdns_service_remove failed: %s", esp_err_to_name(err));
   }
-  g_registered = false;
+  g_service_registered = false;
   set_state(MdnsState::kInit, "stopped");
 }
 
 void mdns_task(void*) {
   for (;;) {
     if (!g_cfg.enabled) {
-      if (g_registered) {
+      if (g_service_registered) {
         stop_mdns_service();
       }
       set_state(MdnsState::kDisabledByConfig, "disabled");
@@ -249,11 +236,11 @@ void mdns_task(void*) {
       continue;
     }
 
-    if (!wifi_is_ip_ready() && g_registered) {
+    if (!wifi_is_ip_ready() && g_service_registered) {
       stop_mdns_service();
-    } else if (wifi_is_ip_ready() && !g_registered) {
+    } else if (wifi_is_ip_ready() && !g_service_registered) {
       start_mdns_service();
-    } else if (wifi_is_ip_ready() && g_registered) {
+    } else if (wifi_is_ip_ready() && g_service_registered) {
       set_state(MdnsState::kStarted, "running");
     }
 
@@ -272,7 +259,7 @@ bool mdns_is_enabled() {
 }
 
 bool mdns_is_running() {
-  return g_registered;
+  return g_service_registered;
 }
 
 void mdns_startup() {
@@ -294,7 +281,7 @@ void mdns_status_for_cli() {
            "mdns.status state=%s enabled=%d hostname=%s instance=%s service=%s wifi_ip=%s fw=%s strategy=%s",
            state_name(g_state), g_cfg.enabled ? 1 : 0, g_hostname[0] != '\0' ? g_hostname : "(unset)",
            g_cfg.instance[0] != '\0' ? g_cfg.instance : kDefaultInstance,
-           g_registered ? "1" : "0", wifi_ip, LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME);
+           g_service_registered ? "1" : "0", wifi_ip, LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME);
 }
 
 #else
