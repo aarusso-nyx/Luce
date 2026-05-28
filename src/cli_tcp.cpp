@@ -73,8 +73,8 @@ void load_cli_net_config() {
   std::snprintf(g_cfg.token, sizeof(g_cfg.token), "luce-cli");
   g_cfg.idle_timeout_s = kDefaultIdleTimeoutS;
 
-  nvs_handle_t nvs_handle = 0;
-  if (nvs_open(kCliNetNs, NVS_READONLY, &nvs_handle) != ESP_OK) {
+  auto nvs = luce::nvs::Handle::Open(kCliNetNs, NVS_READONLY);
+  if (!nvs.ok()) {
     ESP_LOGW(kTag, "[CLI_NET] namespace '%s' not found; defaults active", kCliNetNs);
     return;
   }
@@ -82,22 +82,22 @@ void load_cli_net_config() {
   std::uint8_t enabled = 0;
   std::uint16_t port = kDefaultPort;
   std::uint32_t timeout = kDefaultIdleTimeoutS;
-  if (luce::nvs::read_u8(nvs_handle, "enabled", enabled, 0)) {
+  if (nvs.read_u8("enabled", enabled, 0)) {
     g_cfg.enabled = (enabled != 0);
   }
 
-  if (luce::nvs::read_u16(nvs_handle, "port", port, kDefaultPort) && port != 0) {
+  if (nvs.read_u16("port", port, kDefaultPort) && port != 0) {
     g_cfg.port = port;
   }
 
-  if (luce::nvs::read_u32(nvs_handle, "idle_timeout_s", timeout, kDefaultIdleTimeoutS)) {
+  if (nvs.read_u32("idle_timeout_s", timeout, kDefaultIdleTimeoutS)) {
     if (timeout > 0 && timeout <= 1800) {
       g_cfg.idle_timeout_s = timeout;
     }
   }
 
-  (void)luce::nvs::read_string(nvs_handle, "token", g_cfg.token, sizeof(g_cfg.token), "luce-cli");
-  nvs_close(nvs_handle);
+  (void)nvs.read_string("token", g_cfg.token, sizeof(g_cfg.token), "luce-cli");
+  // nvs handle closes automatically as `nvs` goes out of scope
 }
 
 void send_line(int sock, const char* text) {

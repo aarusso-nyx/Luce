@@ -110,12 +110,10 @@ void load_hostname(char* out, std::size_t out_size) {
   std::memset(out, 0, out_size);
   bool got_name = false;
 
-  nvs_handle_t handle = 0;
-  if (nvs_open(kNetNs, NVS_READONLY, &handle) == ESP_OK) {
-    if (luce::nvs::read_string(handle, "hostname", out, out_size, "")) {
+  if (auto nvs = luce::nvs::Handle::Open(kNetNs, NVS_READONLY); nvs.ok()) {
+    if (nvs.read_string("hostname", out, out_size, "")) {
       got_name = (out[0] != '\0');
     }
-    nvs_close(handle);
   }
 
   if (got_name) {
@@ -135,8 +133,8 @@ void load_mdns_config() {
   std::snprintf(g_cfg.instance, sizeof(g_cfg.instance), "%s", kDefaultInstance);
   g_cfg.enabled = false;
 
-  nvs_handle_t handle = 0;
-  if (nvs_open(kMdnsNs, NVS_READONLY, &handle) != ESP_OK) {
+  auto nvs = luce::nvs::Handle::Open(kMdnsNs, NVS_READONLY);
+  if (!nvs.ok()) {
     ESP_LOGW(kTag, "[mDNS] config namespace '%s' not found; defaults active", kMdnsNs);
     g_port = kDefaultPort;
     g_cfg.enabled = false;
@@ -147,12 +145,11 @@ void load_mdns_config() {
   }
 
   std::uint8_t enabled = 0;
-  (void)luce::nvs::read_u8(handle, "enabled", enabled, 0);
+  (void)nvs.read_u8("enabled", enabled, 0);
   g_cfg.enabled = (enabled != 0);
-  (void)luce::nvs::read_string(handle, "instance", g_cfg.instance, sizeof(g_cfg.instance), kDefaultInstance);
+  (void)nvs.read_string("instance", g_cfg.instance, sizeof(g_cfg.instance), kDefaultInstance);
   std::uint16_t configured_port = kDefaultPort;
-  (void)luce::nvs::read_u16(handle, "port", configured_port, kDefaultPort);
-  nvs_close(handle);
+  (void)nvs.read_u16("port", configured_port, kDefaultPort);
 
   g_port = configured_port != 0 ? configured_port : kDefaultPort;
   load_hostname(g_hostname, sizeof(g_hostname));
