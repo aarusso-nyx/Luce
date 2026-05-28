@@ -27,7 +27,7 @@
 
 namespace {
 
-constexpr const char* kTag = "luce_boot";
+constexpr const char* kTag = "[BOOT]";
 }  // namespace
 
 extern "C" void app_main(void) {

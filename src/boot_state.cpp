@@ -10,7 +10,7 @@
 
 #include <string>
 
-constexpr const char* kTag = "luce_boot";
+constexpr const char* kTag = "[BOOT]";
 
 const char* nvs_type_name(nvs_type_t type) {
   switch (type) {

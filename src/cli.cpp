@@ -46,7 +46,7 @@
 #include "luce/http_server.h"
 #endif
 #include "luce/ota.h"
-constexpr const char* kTag = "luce_boot";
+constexpr const char* kTag = "[CLI]";
 constexpr std::size_t kCliLineBuffer = 128;
 
 using CliCommandHandler = int (*)(int argc, char* argv[]);

@@ -17,7 +17,7 @@
 #include "freertos/task.h"
 #include "luce/i2c_io.h"
 
-constexpr const char* kTag = "luce_boot";
+constexpr const char* kTag = "[BOOT]";
 
 const char* luce_reset_reason_to_string(esp_reset_reason_t reason) {
   switch (reason) {

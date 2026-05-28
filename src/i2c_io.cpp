@@ -26,7 +26,7 @@
 #include "luce/led_status.h"
 #include "luce/task_budgets.h"
 
-constexpr const char* kTag = "luce_boot";
+constexpr const char* kTag = "[IO]";
 
 constexpr i2c_port_t kI2CPort = I2C_NUM_0;
 constexpr gpio_num_t kI2CSclPin = GPIO_NUM_22;
