@@ -3,6 +3,7 @@
 #include <cinttypes>
 #include <cstdio>
 
+#include "esp_check.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs.h"
@@ -184,6 +185,34 @@ void dump_nvs_entries() {
   }
 }
 
+// Inner helper that does the open/get/set/commit sequence; uses
+// ESP_RETURN_ON_ERROR so the body reads as a linear list of steps. The
+// outer void function owns the handle's lifetime so failures inside this
+// helper still release the handle on return.
+esp_err_t bump_boot_state_in_handle(nvs_handle_t handle, uint32_t* boot_count_out,
+                                    uint32_t* reset_reason_out) {
+  uint32_t boot_count = 0;
+  esp_err_t err = nvs_get_u32(handle, "boot_count", &boot_count);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    boot_count = 0;
+  } else if (err != ESP_OK) {
+    ESP_LOGW(kTag, "NVS get boot_count failed: %s", esp_err_to_name(err));
+    return err;
+  }
+  boot_count += 1;
+  const uint32_t reset_reason = static_cast<uint32_t>(esp_reset_reason());
+
+  ESP_RETURN_ON_ERROR(nvs_set_u32(handle, "boot_count", boot_count), kTag,
+                      "NVS set boot_count");
+  ESP_RETURN_ON_ERROR(nvs_set_u32(handle, "last_reset_reason", reset_reason), kTag,
+                      "NVS set last_reset_reason");
+  ESP_RETURN_ON_ERROR(nvs_commit(handle), kTag, "NVS commit");
+
+  *boot_count_out = boot_count;
+  *reset_reason_out = reset_reason;
+  return ESP_OK;
+}
+
 void update_boot_state_record() {
   ESP_LOGI(kTag, "NVS init: starting");
   esp_err_t err = nvs_flash_init();
@@ -195,13 +224,12 @@ void update_boot_state_record() {
       err = nvs_flash_init();
     }
   }
-
   if (err != ESP_OK) {
     ESP_LOGW(kTag, "NVS init failed: %s", esp_err_to_name(err));
     return;
   }
 
-  nvs_handle_t handle;
+  nvs_handle_t handle = 0;
   err = nvs_open("boot", NVS_READWRITE, &handle);
   if (err != ESP_OK) {
     ESP_LOGW(kTag, "NVS open failed: %s", esp_err_to_name(err));
@@ -209,40 +237,12 @@ void update_boot_state_record() {
   }
 
   uint32_t boot_count = 0;
-  err = nvs_get_u32(handle, "boot_count", &boot_count);
-  if (err == ESP_ERR_NVS_NOT_FOUND) {
-    boot_count = 0;
-  } else if (err != ESP_OK) {
-    ESP_LOGW(kTag, "NVS get boot_count failed: %s", esp_err_to_name(err));
-    nvs_close(handle);
-    return;
-  }
-
-  boot_count += 1;
-  err = nvs_set_u32(handle, "boot_count", boot_count);
-  if (err != ESP_OK) {
-    ESP_LOGW(kTag, "NVS set boot_count failed: %s", esp_err_to_name(err));
-    nvs_close(handle);
-    return;
-  }
-
-  const uint32_t reset_reason = static_cast<uint32_t>(esp_reset_reason());
-  err = nvs_set_u32(handle, "last_reset_reason", reset_reason);
-  if (err != ESP_OK) {
-    ESP_LOGW(kTag, "NVS set last_reset_reason failed: %s", esp_err_to_name(err));
-    nvs_close(handle);
-    return;
-  }
-
-  err = nvs_commit(handle);
-  if (err != ESP_OK) {
-    ESP_LOGW(kTag, "NVS commit failed: %s", esp_err_to_name(err));
-    nvs_close(handle);
-    return;
-  }
+  uint32_t reset_reason = 0;
+  const esp_err_t inner = bump_boot_state_in_handle(handle, &boot_count, &reset_reason);
   nvs_close(handle);
-
-  ESP_LOGI(kTag, "NVS state: boot_count=%lu last_reset_reason=%lu", (unsigned long)boot_count,
-           (unsigned long)reset_reason);
+  if (inner == ESP_OK) {
+    ESP_LOGI(kTag, "NVS state: boot_count=%lu last_reset_reason=%lu",
+             (unsigned long)boot_count, (unsigned long)reset_reason);
+  }
   dump_nvs_entries();
 }

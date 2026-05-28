@@ -70,6 +70,20 @@
 - Avoid introducing legacy compatibility shims when the canonical interface has changed.
 - Use canonical HTTP routes and MQTT topics only (no `/v2` aliases).
 
+## Error Handling Convention
+- For functions that return `esp_err_t`, prefer `ESP_RETURN_ON_ERROR`
+  / `ESP_GOTO_ON_ERROR` from `esp_check.h` over hand-rolled
+  `if (err != ESP_OK) { ESP_LOGW(...); return err; }`.
+- For void-returning functions that own a resource (NVS handle, socket,
+  task handle), keep the function void and extract the multi-step
+  esp_err_t-returning body into a small inner helper. The outer owns
+  the resource lifetime and the inner becomes a linear list of
+  `ESP_RETURN_ON_ERROR` calls. See `update_boot_state_record` in
+  `src/boot_state.cpp` for the canonical shape.
+- Reach for `ESP_GOTO_ON_ERROR` only when multiple distinct cleanup
+  steps need to share a single label — usually a sign the resource
+  ownership wants its own inner function instead.
+
 ## Code Review Notes
 - `extern "C"` blocks declaring symbols from a generated translation
   unit (e.g. the `xxd`-embedded webapp assets in
