@@ -36,5 +36,4 @@ Configured by namespace `mdns` plus fallback hostname from `net/hostname`.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
-- Evidence SHA: `2a3b9df`
+- Generate current local evidence under `docs/work/diag/` with `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45` plus `mdns.status` capture on a device with Wi-Fi IP.

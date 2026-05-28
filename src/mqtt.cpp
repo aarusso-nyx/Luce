@@ -4,6 +4,7 @@
 #include <cinttypes>
 #include <cctype>
 #include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,6 +40,7 @@ constexpr std::uint16_t kPayloadBufferBytes = 256;
 constexpr std::uint16_t kPayloadTextBufferBytes = 128;
 constexpr std::uint16_t kTopicSuffixBufferBytes = 128;
 constexpr std::uint16_t kTopicTextBufferBytes = 128;
+constexpr std::size_t kCaPemBufferBytes = 4096;
 constexpr std::uint8_t kRelayCount = 8;
 constexpr const char* kRelaysNs = "relays";
 constexpr const char* kRelaysNightKey = "night_mask";
@@ -61,6 +63,7 @@ struct MqttConfig {
   char password[64] = {};
   bool tls_enabled = false;
   char ca_pem_source[16] = {};
+  char ca_pem[kCaPemBufferBytes] = {};
   std::uint32_t qos = 0;
   std::uint32_t keepalive_s = 120;
 };
@@ -122,6 +125,38 @@ bool parse_bool_value(const char* text, bool* out_value) {
     *out_value = false;
     return true;
   }
+  return false;
+}
+
+bool starts_with(const char* text, const char* prefix) {
+  if (!text || !prefix) {
+    return false;
+  }
+  return std::strncmp(text, prefix, std::strlen(prefix)) == 0;
+}
+
+bool mqtt_requires_tls() {
+  return g_cfg.tls_enabled || starts_with(g_cfg.uri, "mqtts://") || starts_with(g_cfg.uri, "wss://");
+}
+
+bool configure_mqtt_tls(esp_mqtt_client_config_t& client_cfg) {
+  if (!mqtt_requires_tls()) {
+    return true;
+  }
+
+  if (std::strcmp(g_cfg.ca_pem_source, "nvs") == 0) {
+    if (g_cfg.ca_pem[0] == '\0') {
+      ESP_LOGE(kTag, "[MQTT][TLS] mqtt/ca_pem_source=nvs but mqtt/ca_pem is empty");
+      return false;
+    }
+    client_cfg.broker.verification.certificate = g_cfg.ca_pem;
+    client_cfg.broker.verification.certificate_len = 0;
+    client_cfg.broker.verification.skip_cert_common_name_check = false;
+    ESP_LOGI(kTag, "[MQTT][TLS] broker verification via mqtt/ca_pem");
+    return true;
+  }
+
+  ESP_LOGE(kTag, "[MQTT][TLS] unsupported mqtt/ca_pem_source='%s'", g_cfg.ca_pem_source);
   return false;
 }
 
@@ -360,7 +395,6 @@ void handle_relay_state_index(const char* index_text, const char* payload) {
     led_status_notify_user_error();
     return;
   }
-  g_relay_mask = next_mask;
   led_status_notify_user_input();
   ESP_LOGI(kTag, "[MQTT][IN] relays/state/%u=%s", static_cast<unsigned>(index), on ? "on" : "off");
 }
@@ -379,7 +413,6 @@ void handle_relay_state(const char* payload) {
     led_status_notify_user_error();
     return;
   }
-  g_relay_mask = next_mask;
   led_status_notify_user_input();
   ESP_LOGI(kTag, "[MQTT][IN] relays/state=%u", static_cast<unsigned>(next_mask));
 }
@@ -787,6 +820,7 @@ void load_mqtt_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   std::snprintf(g_cfg.uri, sizeof(g_cfg.uri), "mqtt://localhost:1883");
   std::snprintf(g_cfg.base_topic, sizeof(g_cfg.base_topic), "luce/net1");
+  std::snprintf(g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "nvs");
   g_cfg.qos = 0;
   g_cfg.keepalive_s = 120;
   g_cfg.enabled = false;
@@ -810,6 +844,7 @@ void load_mqtt_config() {
   bool f_user = false;
   bool f_pass = false;
   bool f_ca = false;
+  bool f_ca_pem = false;
   bool f_tls = false;
   bool f_qos = false;
   bool f_keepalive = false;
@@ -820,7 +855,8 @@ void load_mqtt_config() {
   f_base = luce::nvs::read_string(handle, "base_topic", g_cfg.base_topic, sizeof(g_cfg.base_topic), "luce/net1");
   f_user = luce::nvs::read_string(handle, "username", g_cfg.username, sizeof(g_cfg.username), "");
   f_pass = luce::nvs::read_string(handle, "password", g_cfg.password, sizeof(g_cfg.password), "");
-  f_ca = luce::nvs::read_string(handle, "ca_pem_source", g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "embedded");
+  f_ca = luce::nvs::read_string(handle, "ca_pem_source", g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "nvs");
+  f_ca_pem = luce::nvs::read_string(handle, "ca_pem", g_cfg.ca_pem, sizeof(g_cfg.ca_pem), "");
   f_tls = luce::nvs::read_u8(handle, "tls_enabled", tls, 0);
   g_cfg.tls_enabled = (tls != 0);
   f_qos = luce::nvs::read_u32(handle, "qos", u32, 0);
@@ -838,7 +874,8 @@ void load_mqtt_config() {
   luce::nvs::log_nvs_string(kMqttNvsTag, "base_topic", g_cfg.base_topic, f_base, "luce/net1", true);
   luce::nvs::log_nvs_string(kMqttNvsTag, "username", g_cfg.username, f_user, "", true);
   luce::nvs::log_nvs_string(kMqttNvsTag, "password", g_cfg.password, f_pass, "", true, true);
-  luce::nvs::log_nvs_string(kMqttNvsTag, "ca_pem_source", g_cfg.ca_pem_source, f_ca, "embedded", true);
+  luce::nvs::log_nvs_string(kMqttNvsTag, "ca_pem_source", g_cfg.ca_pem_source, f_ca, "nvs", true);
+  luce::nvs::log_nvs_string(kMqttNvsTag, "ca_pem", g_cfg.ca_pem, f_ca_pem, "", false, true);
   luce::nvs::log_nvs_u8(kMqttNvsTag, "tls_enabled", tls, f_tls, 0);
   luce::nvs::log_nvs_u32(kMqttNvsTag, "qos", g_cfg.qos, f_qos, g_cfg.qos);
   luce::nvs::log_nvs_u32(kMqttNvsTag, "keepalive_s", g_cfg.keepalive_s, f_keepalive, g_cfg.keepalive_s);
@@ -884,6 +921,11 @@ void setup_client() {
 
   if (g_cfg.keepalive_s != 0) {
     client_cfg.network.timeout_ms = 3000;
+  }
+
+  if (!configure_mqtt_tls(client_cfg)) {
+    set_state(MqttState::kFailed, "tls_config");
+    return;
   }
 
   g_client = esp_mqtt_client_init(&client_cfg);
@@ -1068,8 +1110,11 @@ void mqtt_startup() {
 }
 
 void mqtt_status_for_cli() {
-  ESP_LOGI(kTag, "mqtt.status state=%s enabled=%d connected=%d connect_count=%u publish_count=%u uri=%s qos=%lu keepalive=%lu",
-           state_name(g_state), g_cfg.enabled ? 1 : 0, g_connected ? 1 : 0, g_connect_count, g_publish_count, g_cfg.uri,
+  ESP_LOGI(kTag,
+           "mqtt.status state=%s enabled=%d connected=%d tls=%d ca_source=%s ca_present=%d "
+           "connect_count=%u publish_count=%u uri=%s qos=%lu keepalive=%lu",
+           state_name(g_state), g_cfg.enabled ? 1 : 0, g_connected ? 1 : 0, mqtt_requires_tls() ? 1 : 0,
+           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, g_connect_count, g_publish_count, g_cfg.uri,
            static_cast<unsigned long>(g_cfg.qos), static_cast<unsigned long>(g_cfg.keepalive_s));
 }
 

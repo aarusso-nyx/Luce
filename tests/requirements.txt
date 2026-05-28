@@ -2,3 +2,4 @@ pytest>=8.0
 paho-mqtt>=2.0
 amqtt>=0.11
 pyserial>=3.5
+esp-idf-nvs-partition-gen>=0.1

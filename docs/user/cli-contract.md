@@ -79,7 +79,10 @@ the serial transport regardless of `tcp_ro`.
 | --- | --- | --- | --- |
 | `http.status` | no | yes | `http.status` |
 | `tls.status` | no | yes | `tls.status` |
-| `tls.clear` | yes | no  | `tls.clear` |
+
+`tls.status` is diagnostic only. It reports HTTPS cert/key presence and byte
+counts, `https_running`, `tls_status`, and the last TLS startup error reason;
+it never prints PEM bodies.
 
 ### OTA (`LUCE_NET_OTA=1`)
 

@@ -22,6 +22,7 @@ import pytest
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--luce-host", action="store", default=os.getenv("LUCE_HOST", "https://127.0.0.1"))
+    parser.addoption("--luce-captive-host", action="store", default=os.getenv("LUCE_CAPTIVE_HOST", ""))
     parser.addoption("--luce-http-token", action="store", default=os.getenv("LUCE_HTTP_TOKEN", ""))
     parser.addoption("--luce-tcp-host", action="store", default=os.getenv("LUCE_TCP_HOST", "127.0.0.1"))
     parser.addoption("--luce-tcp-port", action="store", type=int, default=int(os.getenv("LUCE_TCP_PORT", "2323")))
@@ -69,6 +70,11 @@ def repo_root() -> Path:
 @pytest.fixture(scope="session")
 def luce_host(pytestconfig: pytest.Config) -> str:
     return str(pytestconfig.getoption("--luce-host")).rstrip("/")
+
+
+@pytest.fixture(scope="session")
+def luce_captive_host(pytestconfig: pytest.Config) -> str:
+    return str(pytestconfig.getoption("--luce-captive-host")).rstrip("/")
 
 
 @pytest.fixture(scope="session")

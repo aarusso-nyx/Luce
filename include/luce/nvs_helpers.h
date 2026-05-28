@@ -10,6 +10,13 @@
 namespace luce {
 namespace nvs {
 
+enum class StringReadStatus : std::uint8_t {
+  kOk = 0,
+  kMissing,
+  kOversized,
+  kReadError,
+};
+
 inline bool read_u8(nvs_handle_t handle, const char* key, std::uint8_t& out, std::uint8_t fallback) {
   std::uint8_t value = fallback;
   if (nvs_get_u8(handle, key, &value) == ESP_OK) {
@@ -40,21 +47,35 @@ inline bool read_u32(nvs_handle_t handle, const char* key, std::uint32_t& out, s
   return false;
 }
 
-inline bool read_string(nvs_handle_t handle, const char* key, char* out, std::size_t out_size, const char* fallback) {
+inline StringReadStatus read_string_status(nvs_handle_t handle, const char* key, char* out, std::size_t out_size,
+                                           const char* fallback) {
   if (!out || out_size == 0) {
-    return false;
+    return StringReadStatus::kReadError;
   }
   std::size_t needed = 0;
-  if (nvs_get_str(handle, key, nullptr, &needed) == ESP_OK && needed > 0) {
-    if (needed >= out_size) {
-      needed = out_size - 1;
-    }
-    if (nvs_get_str(handle, key, out, &needed) == ESP_OK) {
-      return true;
-    }
+  const esp_err_t len_err = nvs_get_str(handle, key, nullptr, &needed);
+  if (len_err == ESP_ERR_NVS_NOT_FOUND || needed == 0) {
+    std::snprintf(out, out_size, "%s", fallback ? fallback : "");
+    return StringReadStatus::kMissing;
+  }
+  if (len_err != ESP_OK) {
+    std::snprintf(out, out_size, "%s", fallback ? fallback : "");
+    return StringReadStatus::kReadError;
+  }
+  if (needed > out_size) {
+    std::snprintf(out, out_size, "%s", fallback ? fallback : "");
+    return StringReadStatus::kOversized;
+  }
+  std::size_t capacity = out_size;
+  if (nvs_get_str(handle, key, out, &capacity) == ESP_OK) {
+    return StringReadStatus::kOk;
   }
   std::snprintf(out, out_size, "%s", fallback ? fallback : "");
-  return false;
+  return StringReadStatus::kReadError;
+}
+
+inline bool read_string(nvs_handle_t handle, const char* key, char* out, std::size_t out_size, const char* fallback) {
+  return read_string_status(handle, key, out, out_size, fallback) == StringReadStatus::kOk;
 }
 
 inline void log_nvs_u8(const char* tag, const char* key, std::uint8_t value, bool found, std::uint8_t fallback) {

@@ -47,17 +47,6 @@ extern const unsigned char webapp_app_css[];
 extern const unsigned int webapp_app_css_len;
 extern const unsigned char webapp_script_js[];
 extern const unsigned int webapp_script_js_len;
-
-// Dev-only TLS material, embedded by src/CMakeLists.txt only when
-// tools/dev_cert.pem and tools/dev_key.pem exist locally. Guarded by
-// LUCE_HAS_DEV_CERT so production builds compile cleanly without these
-// symbols. Same anonymous-namespace caveat as the webapp assets above.
-#if LUCE_HAS_DEV_CERT
-extern const unsigned char luce_dev_cert_pem[];
-extern const unsigned int luce_dev_cert_pem_len;
-extern const unsigned char luce_dev_key_pem[];
-extern const unsigned int luce_dev_key_pem_len;
-#endif
 }
 
 namespace {
@@ -84,21 +73,6 @@ enum class HttpState : std::uint8_t {
   kFailed,
 };
 
-enum class CertSource : std::uint8_t {
-  kNone = 0,
-  kNvs,
-  kDevEmbedded,
-};
-
-const char* cert_source_name(CertSource s) {
-  switch (s) {
-    case CertSource::kNvs: return "nvs";
-    case CertSource::kDevEmbedded: return "dev-fallback";
-    case CertSource::kNone:
-    default: return "none";
-  }
-}
-
 struct HttpConfig {
   bool enabled = false;
   uint16_t port = kDefaultHttpPort;
@@ -106,7 +80,6 @@ struct HttpConfig {
   bool tls_dev_mode = false;
   char cert_pem[kPemBufferSize] = {};
   char key_pem[kPemBufferSize] = {};
-  CertSource cert_source = CertSource::kNone;
 };
 
 HttpConfig g_cfg {};
@@ -114,17 +87,17 @@ HttpState g_state = HttpState::kDisabled;
 httpd_handle_t g_httpd = nullptr;
 httpd_handle_t g_captive_httpd = nullptr;
 TaskHandle_t g_task = nullptr;
+bool g_cert_pem_oversized = false;
+bool g_key_pem_oversized = false;
+bool g_cert_pem_read_error = false;
+bool g_key_pem_read_error = false;
+const char* g_tls_last_error = "none";
+esp_err_t g_tls_start_err = ESP_OK;
 
-// PEM cert+key formerly lived here as hardcoded placeholder string
-// literals. They were truncated and never valid; the HTTPS server failed
-// to start as soon as anyone tried. Real certs now come from NVS keys
-// http/cert_pem and http/key_pem, loaded into HttpConfig.cert_pem /
-// HttpConfig.key_pem. If those are empty at start-up the HTTPS server
-// refuses to start and `tls.status` / /api/info surface the situation.
-//
-// Provisioning of the cert+key is intentionally out of scope for this
-// change — see the follow-up PRs for first-boot self-signed generation
-// (dev) and serial-CLI provisioning (prod).
+// Runtime HTTPS certificate provisioning is intentionally absent. Cert/key
+// material must already exist in NVS keys http/cert_pem and http/key_pem at
+// boot; this module consumes those values, reports status, and fails closed
+// when the material is missing or too large for the configured buffers.
 
 struct WebAsset {
   const char* uri;
@@ -162,12 +135,59 @@ void set_state(HttpState next, const char* reason = nullptr) {
   luce::runtime::set_state(g_state, next, state_name, "[HTTP]", reason);
 }
 
+void set_tls_error(const char* reason, esp_err_t err = ESP_OK) {
+  g_tls_last_error = (reason != nullptr && reason[0] != '\0') ? reason : "none";
+  g_tls_start_err = err;
+}
+
+bool tls_material_read_error() {
+  return g_cert_pem_read_error || g_key_pem_read_error;
+}
+
+bool tls_material_oversized() {
+  return g_cert_pem_oversized || g_key_pem_oversized;
+}
+
+bool tls_material_present() {
+  return g_cfg.cert_pem[0] != '\0' && g_cfg.key_pem[0] != '\0';
+}
+
+const char* tls_status_name() {
+  if (!g_cfg.enabled) {
+    return "disabled";
+  }
+  if (tls_material_read_error()) {
+    return "material_read_error";
+  }
+  if (tls_material_oversized()) {
+    return "material_oversized";
+  }
+  if (!tls_material_present()) {
+    return "material_missing";
+  }
+  if (g_httpd != nullptr) {
+    return "started";
+  }
+  if (g_tls_start_err != ESP_OK) {
+    return "start_failed";
+  }
+  if (!wifi_is_ip_ready()) {
+    return "waiting_ip";
+  }
+  return "material_present";
+}
+
 void load_http_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   g_cfg.enabled = false;
   g_cfg.port = kDefaultHttpPort;
   std::snprintf(g_cfg.token, sizeof(g_cfg.token), "%s", kDefaultToken);
   g_cfg.tls_dev_mode = false;
+  g_cert_pem_oversized = false;
+  g_key_pem_oversized = false;
+  g_cert_pem_read_error = false;
+  g_key_pem_read_error = false;
+  set_tls_error("none");
 
   nvs_handle_t handle = 0;
   if (nvs_open(kHttpNs, NVS_READONLY, &handle) != ESP_OK) {
@@ -192,43 +212,33 @@ void load_http_config() {
   // PEM cert and key: read silently into the runtime buffers. Never log
   // either body — the key is a secret. Presence is reported via tls.status
   // / /api/info instead.
-  (void)luce::nvs::read_string(handle, "cert_pem", g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "");
-  (void)luce::nvs::read_string(handle, "key_pem", g_cfg.key_pem, sizeof(g_cfg.key_pem), "");
+  const auto cert_status = luce::nvs::read_string_status(handle, "cert_pem", g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "");
+  const auto key_status = luce::nvs::read_string_status(handle, "key_pem", g_cfg.key_pem, sizeof(g_cfg.key_pem), "");
+  g_cert_pem_oversized = (cert_status == luce::nvs::StringReadStatus::kOversized);
+  g_key_pem_oversized = (key_status == luce::nvs::StringReadStatus::kOversized);
+  g_cert_pem_read_error = (cert_status == luce::nvs::StringReadStatus::kReadError);
+  g_key_pem_read_error = (key_status == luce::nvs::StringReadStatus::kReadError);
   nvs_close(handle);
 
-  if (g_cfg.cert_pem[0] != '\0' && g_cfg.key_pem[0] != '\0') {
-    g_cfg.cert_source = CertSource::kNvs;
+  if (g_cert_pem_oversized || g_key_pem_oversized) {
+    set_tls_error("tls_material_oversized");
+    ESP_LOGE(kTag,
+             "[HTTP] TLS material rejected: cert_oversized=%d key_oversized=%d max_pem_bytes=%u",
+             g_cert_pem_oversized ? 1 : 0, g_key_pem_oversized ? 1 : 0,
+             static_cast<unsigned>(kPemBufferSize - 1));
+  } else if (g_cert_pem_read_error || g_key_pem_read_error) {
+    set_tls_error("tls_material_read_error");
+    ESP_LOGW(kTag, "[HTTP] TLS material read error: cert_read_error=%d key_read_error=%d",
+             g_cert_pem_read_error ? 1 : 0, g_key_pem_read_error ? 1 : 0);
   }
-
-  // Dev-mode fallback: when NVS has no cert/key and the build embedded a
-  // dev cert via tools/dev_cert.pem, copy it into the runtime buffers so
-  // the HTTPS server can boot for bench testing. The dev cert is shared
-  // across all units built from the same tools/dev_*.pem pair and is not
-  // persisted to NVS — write to NVS (PR C provisioning) to overwrite.
-#if LUCE_HAS_DEV_CERT
-  if (g_cfg.tls_dev_mode && g_cfg.cert_source == CertSource::kNone) {
-    if (luce_dev_cert_pem_len < sizeof(g_cfg.cert_pem) &&
-        luce_dev_key_pem_len < sizeof(g_cfg.key_pem)) {
-      std::memcpy(g_cfg.cert_pem, luce_dev_cert_pem, luce_dev_cert_pem_len);
-      g_cfg.cert_pem[luce_dev_cert_pem_len] = '\0';
-      std::memcpy(g_cfg.key_pem, luce_dev_key_pem, luce_dev_key_pem_len);
-      g_cfg.key_pem[luce_dev_key_pem_len] = '\0';
-      g_cfg.cert_source = CertSource::kDevEmbedded;
-      ESP_LOGW(kTag, "[HTTP] tls_dev_mode: using build-embedded dev cert (shared across builds; not for production)");
-    } else {
-      ESP_LOGE(kTag, "[HTTP] embedded dev cert exceeds %u-byte buffer; ignoring",
-               static_cast<unsigned>(sizeof(g_cfg.cert_pem)));
-    }
-  }
-#endif
 
   set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled, g_cfg.enabled ? "config_enabled" : "config_disabled");
-  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls_mode=%s cert_present=%d key_present=%d source=%s",
+  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls_mode=%s cert_present=%d key_present=%d tls_status=%s",
            g_cfg.enabled ? 1 : 0, g_cfg.port,
            g_cfg.tls_dev_mode ? "dev" : "prod",
            g_cfg.cert_pem[0] != '\0' ? 1 : 0,
            g_cfg.key_pem[0] != '\0' ? 1 : 0,
-           cert_source_name(g_cfg.cert_source));
+           tls_status_name());
 }
 
 const char* as_n_a(const char* value) {
@@ -513,21 +523,25 @@ esp_err_t route_info_impl(httpd_req_t* req) {
   const bool cert_present = (g_cfg.cert_pem[0] != '\0');
   const bool key_present = (g_cfg.key_pem[0] != '\0');
   const char* tls_mode_str = g_cfg.tls_dev_mode ? "dev" : "prod";
-  char payload[1280] = {0};
+  char payload[1536] = {0};
   std::snprintf(payload, sizeof(payload),
                 "{\"service\":\"luce\",\"name\":\"%s\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\","
                 "\"build\":\"%s %s\",\"uptimeMs\":%llu,\"uptime_s\":%llu,\"wifi_ip\":\"%s\","
-                "\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,"
-                "\"tls_mode\":\"%s\",\"cert_present\":%s,\"key_present\":%s,\"cert_source\":\"%s\","
+                "\"http_enabled\":%s,\"http_port\":%u,\"http_state\":\"%s\","
+                "\"https_running\":%s,\"tls\":%d,\"tls_dev_mode\":%s,"
+                "\"tls_mode\":\"%s\",\"tls_status\":\"%s\",\"tls_last_error\":\"%s\","
+                "\"cert_present\":%s,\"key_present\":%s,"
                 "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"threshold\":%u,"
                 "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
                 "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
                 "luce", LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__,
                 static_cast<unsigned long long>(esp_timer_get_time() / 1000ULL),
                 static_cast<unsigned long long>(esp_timer_get_time() / 1000000ULL), as_n_a(ip),
-                g_cfg.enabled ? "true" : "false", g_cfg.port, g_cfg.tls_dev_mode ? 1 : 0,
-                tls_mode_str, cert_present ? "true" : "false", key_present ? "true" : "false",
-                cert_source_name(g_cfg.cert_source),
+                g_cfg.enabled ? "true" : "false", g_cfg.port, state_name(g_state),
+                g_httpd != nullptr ? "true" : "false", g_cfg.tls_dev_mode ? 1 : 0,
+                g_cfg.tls_dev_mode ? "true" : "false",
+                tls_mode_str, tls_status_name(), g_tls_last_error,
+                cert_present ? "true" : "false", key_present ? "true" : "false",
                 static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
                 static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
                 has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
@@ -870,11 +884,30 @@ void start_http_server() {
     return;
   }
 
+  if (tls_material_read_error()) {
+    ESP_LOGE(kTag, "[HTTP] start refused: TLS material read error (cert_read_error=%d key_read_error=%d)",
+             g_cert_pem_read_error ? 1 : 0, g_key_pem_read_error ? 1 : 0);
+    set_tls_error("tls_material_read_error");
+    set_state(HttpState::kFailed, "tls_material_read_error");
+    return;
+  }
+
+  if (tls_material_oversized()) {
+    ESP_LOGE(kTag,
+             "[HTTP] start refused: TLS material oversized (cert_oversized=%d key_oversized=%d max_pem_bytes=%u)",
+             g_cert_pem_oversized ? 1 : 0, g_key_pem_oversized ? 1 : 0,
+             static_cast<unsigned>(kPemBufferSize - 1));
+    set_tls_error("tls_material_oversized");
+    set_state(HttpState::kFailed, "tls_material_oversized");
+    return;
+  }
+
   if (g_cfg.cert_pem[0] == '\0' || g_cfg.key_pem[0] == '\0') {
     ESP_LOGE(kTag,
              "[HTTP] start refused: missing TLS material (cert_present=%d key_present=%d) — "
              "provision http/cert_pem and http/key_pem in NVS",
              g_cfg.cert_pem[0] != '\0' ? 1 : 0, g_cfg.key_pem[0] != '\0' ? 1 : 0);
+    set_tls_error("tls_material_missing");
     set_state(HttpState::kFailed, "tls_material_missing");
     return;
   }
@@ -896,8 +929,11 @@ void start_http_server() {
   if (err != ESP_OK) {
     ESP_LOGW(kTag, "[HTTP] start failed=%s", esp_err_to_name(err));
     g_httpd = nullptr;
+    set_tls_error("httpd_ssl_start_failed", err);
+    set_state(HttpState::kFailed, "httpd_ssl_start_failed");
     return;
   }
+  set_tls_error("none");
 
   for (std::size_t i = 0; i < kJsonApiRouteCount; ++i) {
     const RouteSpec& spec = kJsonApiRoutes[i];
@@ -1012,39 +1048,10 @@ void http_startup() {
 }
 
 void http_status_for_cli() {
-  ESP_LOGI(kTag, "http.status state=%s enabled=%d https_port=%u captive_port=%u", state_name(g_state), g_cfg.enabled ? 1 : 0,
-           g_cfg.port, static_cast<unsigned>(kCaptiveHttpPort));
-}
-
-esp_err_t http_tls_clear_provisioned() {
-  auto nvs = luce::nvs::Handle::Open(kHttpNs, NVS_READWRITE);
-  if (!nvs.ok()) {
-    ESP_LOGW(kTag, "[HTTP] tls.clear: nvs_open failed: %s", esp_err_to_name(nvs.error()));
-    return nvs.error();
-  }
-  // erase_key returns ESP_ERR_NVS_NOT_FOUND when the key is absent —
-  // treat that as a no-op success.
-  esp_err_t cert_err = nvs_erase_key(nvs.raw(), "cert_pem");
-  if (cert_err == ESP_ERR_NVS_NOT_FOUND) cert_err = ESP_OK;
-  esp_err_t key_err = nvs_erase_key(nvs.raw(), "key_pem");
-  if (key_err == ESP_ERR_NVS_NOT_FOUND) key_err = ESP_OK;
-  const esp_err_t commit_err = nvs_commit(nvs.raw());
-
-  if (cert_err != ESP_OK || key_err != ESP_OK || commit_err != ESP_OK) {
-    ESP_LOGW(kTag, "[HTTP] tls.clear: cert=%s key=%s commit=%s",
-             esp_err_to_name(cert_err), esp_err_to_name(key_err),
-             esp_err_to_name(commit_err));
-    return (cert_err != ESP_OK) ? cert_err : (key_err != ESP_OK ? key_err : commit_err);
-  }
-
-  // Wipe runtime state so tls.status and /api/info reflect the change
-  // immediately. The running HTTPS server keeps its currently-loaded
-  // cert+key until the next start_http_server cycle.
-  std::memset(g_cfg.cert_pem, 0, sizeof(g_cfg.cert_pem));
-  std::memset(g_cfg.key_pem, 0, sizeof(g_cfg.key_pem));
-  g_cfg.cert_source = CertSource::kNone;
-  ESP_LOGW(kTag, "[HTTP] tls.clear: NVS cert+key erased — reboot required for HTTPS to pick up the change");
-  return ESP_OK;
+  ESP_LOGI(kTag,
+           "http.status state=%s enabled=%d https_running=%d https_port=%u captive_running=%d captive_port=%u",
+           state_name(g_state), g_cfg.enabled ? 1 : 0, g_httpd != nullptr ? 1 : 0,
+           g_cfg.port, g_captive_httpd != nullptr ? 1 : 0, static_cast<unsigned>(kCaptiveHttpPort));
 }
 
 bool http_tls_dev_mode() {
@@ -1062,14 +1069,16 @@ bool http_tls_key_present() {
 void http_tls_status_for_cli() {
   const std::size_t cert_len = std::strlen(g_cfg.cert_pem);
   const std::size_t key_len = std::strlen(g_cfg.key_pem);
-  const bool ready = (cert_len > 0 && key_len > 0);
+  const bool ready = (cert_len > 0 && key_len > 0 && !tls_material_read_error() && !tls_material_oversized());
   ESP_LOGI(kTag,
-           "tls.status mode=%s source=%s cert_present=%d cert_pem_bytes=%u "
-           "key_present=%d key_pem_bytes=%u http_state=%s ready=%d",
-           g_cfg.tls_dev_mode ? "dev" : "prod", cert_source_name(g_cfg.cert_source),
+           "tls.status mode=%s cert_present=%d cert_pem_bytes=%u key_present=%d "
+           "key_pem_bytes=%u http_state=%s https_running=%d tls_status=%s "
+           "last_error=%s start_err=%s ready=%d",
+           g_cfg.tls_dev_mode ? "dev" : "prod",
            cert_len > 0 ? 1 : 0, static_cast<unsigned>(cert_len),
            key_len > 0 ? 1 : 0, static_cast<unsigned>(key_len),
-           state_name(g_state), ready ? 1 : 0);
+           state_name(g_state), g_httpd != nullptr ? 1 : 0, tls_status_name(),
+           g_tls_last_error, esp_err_to_name(g_tls_start_err), ready ? 1 : 0);
 }
 
 #else

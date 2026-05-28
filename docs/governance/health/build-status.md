@@ -1,17 +1,26 @@
 # Build Status
 
-- timestamp: 2026-02-28T20:17:00.000Z
+- timestamp: 2026-05-28T02:26:30Z
 
 ## Checks
 
-- lint: PASS (`scripts/luce.sh lint`)
-- build: PASS (`pio run -e net1`)
-- test: BLOCKED (`scripts/luce.sh test --env net1 --duration 45`; upload failed because `/dev/cu.usbserial-0001` was not available)
-- upload: SKIPPED (no hardware attached in this evidence run)
-- boot: SKIPPED (no upload path validated in this evidence run)
-- e2e: PREREQ_MISSING for NET1 (credentials/network prerequisites absent)
+- health: PASS (`./scripts/luce.sh health`; environments resolved as `default`, `net0`, `net1`).
+- config: PASS (`pio project config`; `net0` and `net1` inherit common build flags plus their `LUCE_NET_*` flags).
+- lint: PASS (`docs/work/diag/20260527_232624/lint/summary.txt`; `default`, `net0`, `net1`).
+- build: PASS for canonical environments:
+  - `default`: `docs/work/diag/20260527_232623/build/default/build.txt`
+  - `net0`: `docs/work/diag/20260527_232623/build/net0/build.txt`
+  - `net1`: `docs/work/diag/20260527_232610/build/net1/build.txt`
+- test: PARTIAL_PASS; filesystem docs-alignment pytest passed with `.venv/bin/python -m pytest tests/test_docs_alignment.py`. Hardware-backed boot/protocol layers are not reproduced in this run.
+- upload: SKIPPED (no hardware upload validated in this evidence update).
+- boot: SKIPPED (no upload path validated in this evidence update).
+- e2e: PREREQ_MISSING for NET1 (device IP, tokens, broker, and hardware prerequisites required).
 
 ## Notes
 
 - Native host testing retired by policy.
 - Canonical test target is real firmware on `net1`.
+- Historical PASS entries are retained in archived scorecards/logs only; this file describes current reproducibility status.
+- Local `platformio` at `/opt/homebrew/bin/platformio` still has a broken interpreter, but `source ~/.zshrc` exposes a working `pio` at `~/.platformio/penv/bin/pio`.
+- Earlier CMake-generation failures in `docs/work/diag/20260527_224004/build/` were cleared by allowing the concurrent PlatformIO process to finish and rerunning each env from the stable generated tree.
+- Python contract-test dependencies are installed in repo-local `.venv`; Homebrew system Python rejects direct system installs under PEP 668.

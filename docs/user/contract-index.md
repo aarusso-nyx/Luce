@@ -1,6 +1,6 @@
 # LUCE Product Contract Index
 
-Date: 2026-02-28
+Date: 2026-05-28
 
 ## Strategy/Feature Contracts
 
@@ -10,6 +10,7 @@ Date: 2026-02-28
 - `mdns.md` — NET0 hostname + TXT records + `mdns.status`
 - `mqtt.md` — NET1 control subscriptions + telemetry + compatibility aliases + `mqtt.status`, `mqtt.pubtest`
 - `http.md` — NET1 HTTPS-only API + `http.status`
+- `ota.md` — NET1 OTA checks through CLI and HTTP API
 - `architecture.md` — Strategy gating and direct orchestration model
 - `nvs-schema.md` — NVS namespaces and key defaults
 - `hardware-map.md` — pin map and relay/button electrical assumptions
@@ -23,7 +24,7 @@ Date: 2026-02-28
 
 ## Evidence references
 
-- Evidence index (latest anchor): `docs/work/diag/evidence/20260222_221921/90_summary.md`
+- Evidence index: regenerate current local evidence under `docs/work/diag/` with `./scripts/luce.sh health`, `./scripts/luce.sh build --env net1`, and hardware-backed `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45`.
 - Governance scorecard pointer: `docs/governance/compliance/scorecard-current.md`
 
 ## Notes

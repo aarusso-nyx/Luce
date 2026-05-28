@@ -30,14 +30,15 @@ Primary firmware operations runner is `scripts/luce.sh` with PlatformIO-oriented
 - `monitor`
 - `collect`
 - `lint`
+- `test`
 - `health`
 - `http-smoke`
 - `clean`
 
-Primary test runner is `scripts/test_layers.py` (layered test entrypoint).
+Primary test runner is `scripts/test_layers.py` (layered test entrypoint), normally invoked through `scripts/luce.sh test`.
 
 Canonical smoke test flow is firmware-on-device:
-- `python3 scripts/test_layers.py --layers boot --env net1 --boot-duration 45`
+- `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45`
 
 Supporting scripts:
 - `scripts/capture_serial.py` (serial evidence capture)
@@ -47,6 +48,7 @@ Pytest suite (contract/HIL):
 - `scripts/test_layers.py` (single layered entrypoint)
 - `tests/pytest.ini`
 - `tests/conftest.py`
+- `tests/test_docs_alignment.py`
 - `tests/test_http_contract.py`
 - `tests/test_tcp_cli_contract.py`
 - `tests/test_ws_contract.py`
@@ -83,7 +85,7 @@ In `scripts/test_layers.py`:
 - `LUCE_HTTP_TOKEN`/`LUCE_CLI_NET_TOKEN`/`LUCE_MQTT_*`/`LUCE_WS_*` (used by `scripts/test_layers.py` and pytest fixtures)
 
 Tool resolution behavior:
-- `scripts/luce.sh` attempts to locate `pio`; if not found, it refreshes PATH from `~/.zshrc` and falls back to `python3 -m platformio`.
+- `scripts/luce.sh` attempts to locate a working `pio`; if not found, it refreshes PATH from `~/.zshrc` and falls back to `platformio`, then `python3 -m platformio`.
 
 ## 3) Output Directories and Noise Sources
 

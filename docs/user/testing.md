@@ -8,7 +8,7 @@ LUCE test policy is firmware-only on real hardware.
 
 ## Smoke test command
 
-- `python3 scripts/test_layers.py --layers boot --env net1 --boot-duration 45`
+- `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45`
 
 What it does:
 
@@ -36,20 +36,50 @@ Native host tests and stubs were removed.
 
 ## Canonical Test Path
 
-- Build firmware: `pio run -e net1`
+- Build firmware: `./scripts/luce.sh build --env net1`
 - Flash + capture + assert boot markers:
-  - `python3 scripts/test_layers.py --layers boot --env net1 --boot-duration 45`
+  - `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45`
 
 ## Full Contract Suite
 
 Use the integrated layered test entrypoint to validate transport and lifecycle behavior:
 
-- `python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token> --ws-host <device-ip> --mqtt-host <broker-ip>`
-- `python3 scripts/test_layers.py --layers mqtt --spawn-test-mqtt-broker --mqtt-topic luce/net1` (ephemeral Python broker, no Docker)
+- `./scripts/luce.sh test --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token> --ws-host <device-ip> --mqtt-host <broker-ip>`
+- `./scripts/luce.sh test --layers mqtt --spawn-test-mqtt-broker --mqtt-topic luce/net1` (ephemeral Python broker, no Docker)
+
+The wrapper delegates to `python3 scripts/test_layers.py` and writes a wrapper log beside the layered test outputs.
 
 Dependencies:
 
-- `python3 -m pip install -r tests/requirements.txt`
+- `python3 -m venv .venv`
+- `.venv/bin/python -m pip install -r tests/requirements.txt`
+
+Homebrew-managed Python may reject system installs. Use the repo-local `.venv` path above for local contract-test dependencies.
+
+## Wokwi Simulated Lane
+
+The simulator lane is supplementary regression coverage. It does not replace
+hardware-backed release evidence because relay, button, LCD, and I2C peripheral
+behavior is not modeled in this lane.
+
+Run the local Wokwi lane:
+
+- `./scripts/luce.sh test --target wokwi --layers build,boot,http,tcp,ws,mqtt --env net1 --spawn-test-mqtt-broker`
+
+Prerequisites:
+
+- `wokwi-cli` on `PATH`
+- `WOKWI_CLI_TOKEN` set
+- Wokwi Private IoT Gateway support for incoming forwarded ports
+- Python dependencies from `tests/requirements.txt`
+
+Simulator behavior:
+
+- `boot` runs Wokwi, captures serial output, checks NET1 boot markers, and runs a UART CLI smoke scenario for non-I2C commands.
+- `http`, `tcp`, `ws`, and `mqtt` reuse the existing pytest contract layers against forwarded localhost ports.
+- Generated simulator NVS, TLS material, Wokwi project files, merged firmware, serial logs, and pytest evidence are written under `docs/work/diag/<run_id>/`.
+- Runtime simulator tokens default to `LUCE_SIM_HTTP_TOKEN` or `luce-token`, and `LUCE_SIM_CLI_TOKEN` or `luce-cli`.
+- `LUCE_SIM_WOKWI_TIMEOUT_MS` controls the Wokwi CLI simulation timeout.
 
 Modules in the suite:
 
@@ -57,11 +87,11 @@ Modules in the suite:
   - `build` (PlatformIO compile for selected env)
   - `boot` (upload + serial capture + marker assertions)
 - Pytest contract layers:
-- `tests/test_http_contract.py` (auth/method/payload + LED + OTA-check routes)
-- `tests/test_tcp_cli_contract.py` (AUTH, fail-limit disconnect, readonly enforcement)
-- `tests/test_ws_contract.py` (`/ws` handshake + snapshot payload contract)
-- `tests/test_mqtt_contract.py` (compat unsupported responses, control paths, config persistence/reconnect scenarios)
-- `tests/test_serial_cli_contract.py` (serial lifecycle reboot markers + serial CLI parser matrix)
+  - `tests/test_http_contract.py` (auth/method/payload + LED + OTA-check routes)
+  - `tests/test_tcp_cli_contract.py` (AUTH, fail-limit disconnect, readonly enforcement)
+  - `tests/test_ws_contract.py` (`/ws` handshake + snapshot payload contract)
+  - `tests/test_mqtt_contract.py` (compat unsupported responses, control paths, config persistence/reconnect scenarios)
+  - `tests/test_serial_cli_contract.py` (serial lifecycle reboot markers + serial CLI parser matrix)
 
 Notes:
 
@@ -74,6 +104,7 @@ Outputs:
 - `docs/work/diag/<run_id>/test-layers/junit-<layer>.xml` (pytest layers)
 - `docs/work/diag/<run_id>/test-layers/summary.md`
 - `docs/work/diag/<run_id>/test-layers/summary.json`
+- `docs/work/diag/<run_id>/test/test.txt` when invoked through `scripts/luce.sh test`
 
 ## Preconditions
 

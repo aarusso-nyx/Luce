@@ -13,9 +13,16 @@ source ~/.zshrc
 ./scripts/luce.sh build                    # build all environments
 ./scripts/luce.sh upload --env default      # flash a specific environment
 ./scripts/luce.sh monitor --env default     # serial monitor with timestamps
-python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
+./scripts/luce.sh test --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
 ```
-You can also call PlatformIO directly when preferred.
+You can also call PlatformIO directly when preferred. Use `pio` when available; use `python3 -m platformio` only when the module is installed in the active Python.
+
+For Python contract-test dependencies, use a local virtual environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r tests/requirements.txt
+```
 
 ## Serial Ports and Runtime Iteration
 
@@ -27,18 +34,18 @@ Operational serial port policy for Luce CORE/NET workflows:
 Use the following exact commands unless the port assignment is changed intentionally:
 
 ```bash
-python3 -m platformio run -e default -t upload --upload-port /dev/cu.usbserial-0001
-python3 -m platformio device monitor -p /dev/cu.usbserial-40110
-python3 -m platformio run -e net0 -t upload --upload-port /dev/cu.usbserial-0001
+pio run -e default -t upload --upload-port /dev/cu.usbserial-0001
+pio device monitor -p /dev/cu.usbserial-40110
+pio run -e net0 -t upload --upload-port /dev/cu.usbserial-0001
 ```
 
 Autonomous firmware iteration:
 
 ```bash
 source ~/.zshrc
-python3 -m platformio run -e <env>
-python3 -m platformio run -e <env> -t upload --upload-port /dev/cu.usbserial-0001
-python3 -m platformio device monitor -p /dev/cu.usbserial-40110
+./scripts/luce.sh build --env <env>
+./scripts/luce.sh upload --env <env> --upload-port /dev/cu.usbserial-0001
+./scripts/luce.sh monitor --env <env> --monitor-port /dev/cu.usbserial-40110
 ```
 
 For `net0`, run CLI commands (`help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `buttons`, `lcd_print`, `reboot`) and collect the first 80 monitor lines after reset.

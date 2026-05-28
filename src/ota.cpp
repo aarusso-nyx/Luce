@@ -31,6 +31,7 @@ namespace {
 constexpr const char* kTag = "[OTA]";
 constexpr const char* kOtaNs = "ota";
 constexpr std::size_t kUrlBufferSize = 256;
+constexpr std::size_t kCaPemBufferSize = 4096;
 constexpr std::size_t kErrorBufferSize = 128;
 constexpr std::uint32_t kDefaultCheckIntervalS = 0;
 constexpr std::uint32_t kDefaultRequestTimeoutMs = 10000;
@@ -51,6 +52,8 @@ enum class OtaState : std::uint8_t {
 struct OtaConfig {
   bool enabled = false;
   char url[kUrlBufferSize] = {};
+  char ca_pem_source[16] = {};
+  char ca_pem[kCaPemBufferSize] = {};
   std::uint32_t check_interval_s = kDefaultCheckIntervalS;
   std::uint32_t request_timeout_ms = kDefaultRequestTimeoutMs;
 };
@@ -118,12 +121,41 @@ void set_last_error(const char* value) {
   std::snprintf(g_rt.last_error, sizeof(g_rt.last_error), "%s", value);
 }
 
+bool starts_with(const char* text, const char* prefix) {
+  if (!text || !prefix) {
+    return false;
+  }
+  return std::strncmp(text, prefix, std::strlen(prefix)) == 0;
+}
+
+bool configure_ota_tls(esp_http_client_config_t& http_cfg, const char* url) {
+  if (!starts_with(url, "https://")) {
+    return true;
+  }
+
+  http_cfg.skip_cert_common_name_check = false;
+  if (std::strcmp(g_cfg.ca_pem_source, "nvs") == 0) {
+    if (g_cfg.ca_pem[0] == '\0') {
+      ESP_LOGE(kTag, "[OTA][TLS] ota/ca_pem_source=nvs but ota/ca_pem is empty");
+      return false;
+    }
+    http_cfg.cert_pem = g_cfg.ca_pem;
+    http_cfg.cert_len = 0;
+    ESP_LOGI(kTag, "[OTA][TLS] server verification via ota/ca_pem");
+    return true;
+  }
+
+  ESP_LOGE(kTag, "[OTA][TLS] unsupported ota/ca_pem_source='%s'", g_cfg.ca_pem_source);
+  return false;
+}
+
 void load_ota_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
   g_cfg.enabled = false;
   g_cfg.check_interval_s = kDefaultCheckIntervalS;
   g_cfg.request_timeout_ms = kDefaultRequestTimeoutMs;
   g_cfg.url[0] = '\0';
+  std::snprintf(g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "nvs");
 
   nvs_handle_t handle = 0;
   if (nvs_open(kOtaNs, NVS_READONLY, &handle) != ESP_OK) {
@@ -138,6 +170,8 @@ void load_ota_config() {
   std::uint32_t timeout_ms = kDefaultRequestTimeoutMs;
   bool found_enabled = false;
   bool found_url = false;
+  bool found_ca_source = false;
+  bool found_ca_pem = false;
   bool found_interval = false;
   bool found_timeout = false;
 
@@ -147,6 +181,12 @@ void load_ota_config() {
 
   found_url = luce::nvs::read_string(handle, "url", g_cfg.url, sizeof(g_cfg.url), "");
   luce::nvs::log_nvs_string(kTag, "url", g_cfg.url, found_url, "", true);
+
+  found_ca_source = luce::nvs::read_string(handle, "ca_pem_source", g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "nvs");
+  luce::nvs::log_nvs_string(kTag, "ca_pem_source", g_cfg.ca_pem_source, found_ca_source, "nvs", true);
+
+  found_ca_pem = luce::nvs::read_string(handle, "ca_pem", g_cfg.ca_pem, sizeof(g_cfg.ca_pem), "");
+  luce::nvs::log_nvs_string(kTag, "ca_pem", g_cfg.ca_pem, found_ca_pem, "", false, true);
 
   found_interval = luce::nvs::read_u32(handle, "check_interval_s", check_interval, kDefaultCheckIntervalS);
   if (found_interval) {
@@ -212,6 +252,13 @@ bool perform_ota(const char* url) {
   http_cfg.url = url;
   http_cfg.timeout_ms = g_cfg.request_timeout_ms;
   http_cfg.keep_alive_enable = true;
+  if (!configure_ota_tls(http_cfg, url)) {
+    ++g_rt.failure_count;
+    g_rt.last_check_error = ESP_ERR_INVALID_ARG;
+    set_last_error("invalid tls config");
+    set_state(OtaState::kInvalidConfig, "tls_config");
+    return false;
+  }
 
   esp_https_ota_config_t ota_cfg {};
   ota_cfg.http_config = &http_cfg;
@@ -360,11 +407,12 @@ void ota_startup() {
 void ota_status_for_cli() {
   ESP_LOGI(kTag,
            "ota.status state=%s enabled=%d running=%d checks=%lu success=%lu fail=%lu interval_s=%lu "
-           "url='%s' last_error='%s' last_check_s=%llu last_success_s=%llu",
+           "url='%s' ca_source=%s ca_present=%d last_error='%s' last_check_s=%llu last_success_s=%llu",
            state_name(g_state), g_cfg.enabled ? 1 : 0, (g_state == OtaState::kChecking) ? 1 : 0,
            static_cast<unsigned long>(g_rt.total_checks), static_cast<unsigned long>(g_rt.success_count),
            static_cast<unsigned long>(g_rt.failure_count), static_cast<unsigned long>(g_cfg.check_interval_s), g_cfg.url,
-           g_rt.last_error, static_cast<unsigned long long>(g_rt.last_check_s),
+           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, g_rt.last_error,
+           static_cast<unsigned long long>(g_rt.last_check_s),
            static_cast<unsigned long long>(g_rt.last_success_s));
 }
 

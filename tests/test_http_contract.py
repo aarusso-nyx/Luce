@@ -15,7 +15,9 @@ def _json_headers(token: str | None = None) -> dict[str, str]:
     return headers
 
 
-def _captive_base_url(luce_host: str) -> str:
+def _captive_base_url(luce_host: str, luce_captive_host: str = "") -> str:
+    if luce_captive_host:
+        return luce_captive_host.rstrip("/")
     parsed = urlsplit(luce_host)
     host = parsed.hostname or "127.0.0.1"
     return f"http://{host}:80"
@@ -62,12 +64,32 @@ def test_info_payload_contract(http_requester, luce_host, luce_http_token):
         "uptimeMs",
         "uptime_s",
         "wifi_ip",
+        "http_enabled",
+        "http_port",
+        "http_state",
+        "https_running",
+        "tls",
+        "tls_dev_mode",
+        "tls_mode",
+        "tls_status",
+        "tls_last_error",
+        "cert_present",
+        "key_present",
         "relays",
         "nightMask",
         "threshold",
         "network",
     }
     assert required_keys.issubset(set(payload.keys()))
+    assert payload["tls_mode"] in {"dev", "prod"}
+    assert isinstance(payload["http_enabled"], bool)
+    assert isinstance(payload["https_running"], bool)
+    assert isinstance(payload["tls_dev_mode"], bool)
+    assert isinstance(payload["cert_present"], bool)
+    assert isinstance(payload["key_present"], bool)
+    assert isinstance(payload["http_state"], str)
+    assert isinstance(payload["tls_status"], str)
+    assert isinstance(payload["tls_last_error"], str)
 
     network = payload["network"]
     assert {"ip", "wifiConnected", "mqttConnected", "ntpSynced"}.issubset(set(network.keys()))
@@ -290,8 +312,8 @@ def test_led_routes_and_validation(http_requester, luce_host, luce_http_token):
 
 @pytest.mark.contract
 @pytest.mark.net
-def test_captive_routes_and_spa_fallback(http_requester, luce_host):
-    captive = _captive_base_url(luce_host)
+def test_captive_routes_and_spa_fallback(http_requester, luce_host, luce_captive_host):
+    captive = _captive_base_url(luce_host, luce_captive_host)
 
     root = http_requester("GET", f"{captive}/", headers={"Accept": "text/html"})
     index = http_requester("GET", f"{captive}/index.html", headers={"Accept": "text/html"})

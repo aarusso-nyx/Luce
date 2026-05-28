@@ -15,7 +15,8 @@ MQTT client with inbound control subscriptions and outbound telemetry/compatibil
 - `mqtt/username` (string, optional)
 - `mqtt/password` (string, optional)
 - `mqtt/tls_enabled` (u8, default `0`)
-- `mqtt/ca_pem_source` (string: `embedded`, `nvs`, `partition`, `none`)
+- `mqtt/ca_pem_source` (string, default `nvs`; currently the only supported CA source)
+- `mqtt/ca_pem` (string, PEM CA material used for broker verification when source is `nvs`)
 - `mqtt/qos` (u32, 0..2)
 - `mqtt/keepalive_s` (u32)
 
@@ -100,9 +101,8 @@ Unsupported legacy control topics now produce deterministic compatibility respon
 
 - Passwords are masked in logs.
 - TLS mode is selected by URI + `mqtt/tls_enabled`.
-- CA loading path is logged from config source.
+- Set `mqtt/ca_pem_source=nvs` with `mqtt/ca_pem` to validate the broker against the configured CA. Empty or unsupported CA configuration prevents client startup.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
-- Evidence SHA: `2a3b9df`
+- Generate current local evidence under `docs/work/diag/` with `./scripts/luce.sh test --layers mqtt --env net1 --mqtt-host <broker-ip> --mqtt-topic luce/net1`.

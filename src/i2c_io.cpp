@@ -1235,7 +1235,6 @@ void run_i2c_diagnostics() {
   uint8_t debounced_buttons = 0x00;
   uint8_t last_reported_buttons = 0x00;
   uint8_t current_buttons = 0x00;
-  uint8_t relay_mask = g_relay_mask;
   bool have_button_snapshot = false;
   TickType_t last_button_tick = 0;
   TickType_t last_int_tick = 0;
@@ -1286,13 +1285,12 @@ void run_i2c_diagnostics() {
                   }
                   portEXIT_CRITICAL(&g_lcd_log_lock);
                 } else {
-                  const uint8_t next_relay_mask = relay_mask ^ bit_mask;
+                  const uint8_t next_relay_mask = g_relay_mask ^ bit_mask;
                   const bool relay_on = ((next_relay_mask & bit_mask) != 0u);
                   led_status_notify_user_input();
                   ESP_LOGI(kTag, "Toggling Relay %u %s", static_cast<unsigned>(bit), relay_on ? "ON" : "OFF");
                   if (set_relay_mask(mcp_state, next_relay_mask) == ESP_OK) {
-                    relay_mask = next_relay_mask;
-                    g_relay_mask = next_relay_mask;
+                    ESP_LOGI(kTag, "Button %u relay state applied mask=0x%02X", static_cast<unsigned>(bit), next_relay_mask);
                   } else {
                     led_status_notify_user_error();
                     ESP_LOGW(kTag, "Button %u relay write failed", static_cast<unsigned>(bit));

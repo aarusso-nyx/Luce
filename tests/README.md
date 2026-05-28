@@ -20,6 +20,16 @@ Run all tests through the layered entrypoint:
 python3 scripts/test_layers.py --layers all --env net1 --host https://<device-ip> --http-token <token> --tcp-token <cli-token>
 ```
 
+Run the local Wokwi simulator lane:
+
+```bash
+./scripts/luce.sh test --target wokwi --layers build,boot,http,tcp,ws,mqtt --env net1 --spawn-test-mqtt-broker
+```
+
+Wokwi mode requires `wokwi-cli`, `WOKWI_CLI_TOKEN`, and Private IoT Gateway
+incoming port forwarding. It covers boot, UART CLI smoke, HTTP, TCP, WS, and
+MQTT contracts only; hardware-in-loop remains the release gate.
+
 Layer model:
 
 - Runner-native layers: `build`, `boot`

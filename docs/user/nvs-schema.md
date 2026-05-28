@@ -53,6 +53,8 @@ LUCE uses namespace-scoped key-value configuration.
 - `ota`
   - `enabled` u8
   - `url` string
+  - `ca_pem_source` string (`nvs` default; currently the only supported CA source)
+  - `ca_pem` string (PEM CA bundle, secret-ish operational material; used only when source is `nvs`)
   - `check_interval_s` u32
   - `request_timeout_ms` u32
 - `relays`
@@ -68,7 +70,9 @@ LUCE uses namespace-scoped key-value configuration.
 ## Defaults
 
 - Missing keys are logged and defaulted to safe values.
-- Network service booleans default to disabled unless explicitly enabled, except current Wi-Fi firmware code still falls back to a compiled default profile when the `wifi` namespace is missing. That Wi-Fi default is a known implementation gap against the intended safe-default policy.
+- Network service booleans default to disabled unless explicitly enabled.
+- Wi-Fi has no compiled SSID or password fallback; `wifi/enabled=1` and `wifi/ssid` must be provisioned before station connection starts.
+- MQTT and OTA HTTPS verification require `*_ca_pem_source=nvs` with matching `*_ca_pem` material. Unsupported CA sources fail closed before connection/download.
 
 ## Verification
 
