@@ -1,0 +1,13 @@
+## IDF Component Manager manifest for the Luce main component.
+##
+## ESP-IDF v6.0.1 (framework-espidf 4.60001.0 in PlatformIO) moved
+## several previously-built-in components out of the inline components/
+## tree and republished them on the Component Registry. Declaring them
+## here lets the manager fetch them into managed_components/ on the
+## next build.
+##
+##   espressif/mqtt — pulls esp-mqtt back in for `REQUIRES mqtt`
+dependencies:
+  idf:
+    version: ">=5.0"
+  espressif/mqtt: "^1.0"

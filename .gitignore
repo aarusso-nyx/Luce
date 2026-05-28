@@ -15,6 +15,10 @@
 .pioenvs/
 .piolibdeps/
 
+# ESP-IDF Component Manager (fetched at build time; manifest is the source of truth)
+managed_components/
+dependencies.lock
+
 # ESP-IDF/CMake generated artifacts
 build/
 CMakeFiles/
