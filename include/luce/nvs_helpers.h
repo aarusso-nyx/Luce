@@ -4,8 +4,39 @@
 #include <cstdint>
 #include <cstdio>
 
+#if defined(ESP_PLATFORM)
 #include "esp_log.h"
 #include "nvs.h"
+#else
+using esp_err_t = int;
+using nvs_handle_t = std::uint32_t;
+enum nvs_open_mode_t : std::uint8_t {
+  NVS_READONLY = 1,
+  NVS_READWRITE = 2,
+};
+
+constexpr esp_err_t ESP_OK = 0;
+constexpr esp_err_t ESP_ERR_INVALID_STATE = 0x103;
+constexpr esp_err_t ESP_ERR_NVS_NOT_FOUND = 0x1102;
+
+esp_err_t nvs_open(const char* ns_name, nvs_open_mode_t open_mode, nvs_handle_t* out_handle);
+void nvs_close(nvs_handle_t handle);
+esp_err_t nvs_commit(nvs_handle_t handle);
+esp_err_t nvs_get_u8(nvs_handle_t handle, const char* key, std::uint8_t* out_value);
+esp_err_t nvs_get_u16(nvs_handle_t handle, const char* key, std::uint16_t* out_value);
+esp_err_t nvs_get_u32(nvs_handle_t handle, const char* key, std::uint32_t* out_value);
+esp_err_t nvs_get_str(nvs_handle_t handle, const char* key, char* out_value, std::size_t* length);
+esp_err_t nvs_set_u8(nvs_handle_t handle, const char* key, std::uint8_t value);
+esp_err_t nvs_set_u16(nvs_handle_t handle, const char* key, std::uint16_t value);
+esp_err_t nvs_set_u32(nvs_handle_t handle, const char* key, std::uint32_t value);
+esp_err_t nvs_set_str(nvs_handle_t handle, const char* key, const char* value);
+
+template <typename... Args>
+inline void esp_log_noop(const Args&...) {}
+
+#define ESP_LOGI(...) ::esp_log_noop(__VA_ARGS__)
+#define ESP_LOGW(...) ::esp_log_noop(__VA_ARGS__)
+#endif
 
 namespace luce {
 namespace nvs {
@@ -76,6 +107,26 @@ inline StringReadStatus read_string_status(nvs_handle_t handle, const char* key,
 
 inline bool read_string(nvs_handle_t handle, const char* key, char* out, std::size_t out_size, const char* fallback) {
   return read_string_status(handle, key, out, out_size, fallback) == StringReadStatus::kOk;
+}
+
+inline esp_err_t write_u8(nvs_handle_t handle, const char* key, std::uint8_t value) {
+  return nvs_set_u8(handle, key, value);
+}
+
+inline esp_err_t write_u16(nvs_handle_t handle, const char* key, std::uint16_t value) {
+  return nvs_set_u16(handle, key, value);
+}
+
+inline esp_err_t write_u32(nvs_handle_t handle, const char* key, std::uint32_t value) {
+  return nvs_set_u32(handle, key, value);
+}
+
+inline esp_err_t write_string(nvs_handle_t handle, const char* key, const char* value) {
+  return nvs_set_str(handle, key, value ? value : "");
+}
+
+inline esp_err_t commit(nvs_handle_t handle) {
+  return nvs_commit(handle);
 }
 
 inline void log_nvs_u8(const char* tag, const char* key, std::uint8_t value, bool found, std::uint8_t fallback) {
@@ -180,9 +231,23 @@ class Handle {
   bool read_u32(const char* key, std::uint32_t& out, std::uint32_t fallback) const {
     return luce::nvs::read_u32(handle_, key, out, fallback);
   }
-  bool read_string(const char* key, char* out, std::size_t out_size,
-                   const char* fallback) const {
+  bool read_string(const char* key, char* out, std::size_t out_size, const char* fallback) const {
     return luce::nvs::read_string(handle_, key, out, out_size, fallback);
+  }
+  esp_err_t write_u8(const char* key, std::uint8_t value) const {
+    return luce::nvs::write_u8(handle_, key, value);
+  }
+  esp_err_t write_u16(const char* key, std::uint16_t value) const {
+    return luce::nvs::write_u16(handle_, key, value);
+  }
+  esp_err_t write_u32(const char* key, std::uint32_t value) const {
+    return luce::nvs::write_u32(handle_, key, value);
+  }
+  esp_err_t write_string(const char* key, const char* value) const {
+    return luce::nvs::write_string(handle_, key, value);
+  }
+  esp_err_t commit() const {
+    return luce::nvs::commit(handle_);
   }
 
  private:

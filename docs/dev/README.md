@@ -4,5 +4,6 @@ Engineering-facing documentation.
 
 ## Canonical hardware mapping
 
-- `hardware-map.md` is maintained as a historical context copy.
-- Canonical hardware mapping is now at `docs/user/hardware-map.md`.
+- Canonical hardware mapping is maintained at `../user/hardware-map.md`.
+- `hardware-map.md` is only a pointer so engineering docs do not drift from
+  the product contract.
