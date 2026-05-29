@@ -31,8 +31,7 @@ esp_err_t nvs_set_u16(nvs_handle_t handle, const char* key, std::uint16_t value)
 esp_err_t nvs_set_u32(nvs_handle_t handle, const char* key, std::uint32_t value);
 esp_err_t nvs_set_str(nvs_handle_t handle, const char* key, const char* value);
 
-template <typename... Args>
-inline void esp_log_noop(const Args&...) {}
+template <typename... Args> inline void esp_log_noop(const Args&...) {}
 
 #define ESP_LOGI(...) ::esp_log_noop(__VA_ARGS__)
 #define ESP_LOGW(...) ::esp_log_noop(__VA_ARGS__)
@@ -48,7 +47,8 @@ enum class StringReadStatus : std::uint8_t {
   kReadError,
 };
 
-inline bool read_u8(nvs_handle_t handle, const char* key, std::uint8_t& out, std::uint8_t fallback) {
+inline bool read_u8(nvs_handle_t handle, const char* key, std::uint8_t& out,
+                    std::uint8_t fallback) {
   std::uint8_t value = fallback;
   if (nvs_get_u8(handle, key, &value) == ESP_OK) {
     out = value;
@@ -58,7 +58,8 @@ inline bool read_u8(nvs_handle_t handle, const char* key, std::uint8_t& out, std
   return false;
 }
 
-inline bool read_u16(nvs_handle_t handle, const char* key, std::uint16_t& out, std::uint16_t fallback) {
+inline bool read_u16(nvs_handle_t handle, const char* key, std::uint16_t& out,
+                     std::uint16_t fallback) {
   std::uint16_t value = fallback;
   if (nvs_get_u16(handle, key, &value) == ESP_OK) {
     out = value;
@@ -68,7 +69,8 @@ inline bool read_u16(nvs_handle_t handle, const char* key, std::uint16_t& out, s
   return false;
 }
 
-inline bool read_u32(nvs_handle_t handle, const char* key, std::uint32_t& out, std::uint32_t fallback) {
+inline bool read_u32(nvs_handle_t handle, const char* key, std::uint32_t& out,
+                     std::uint32_t fallback) {
   std::uint32_t value = fallback;
   if (nvs_get_u32(handle, key, &value) == ESP_OK) {
     out = value;
@@ -78,8 +80,8 @@ inline bool read_u32(nvs_handle_t handle, const char* key, std::uint32_t& out, s
   return false;
 }
 
-inline StringReadStatus read_string_status(nvs_handle_t handle, const char* key, char* out, std::size_t out_size,
-                                           const char* fallback) {
+inline StringReadStatus read_string_status(nvs_handle_t handle, const char* key, char* out,
+                                           std::size_t out_size, const char* fallback) {
   if (!out || out_size == 0) {
     return StringReadStatus::kReadError;
   }
@@ -105,7 +107,8 @@ inline StringReadStatus read_string_status(nvs_handle_t handle, const char* key,
   return StringReadStatus::kReadError;
 }
 
-inline bool read_string(nvs_handle_t handle, const char* key, char* out, std::size_t out_size, const char* fallback) {
+inline bool read_string(nvs_handle_t handle, const char* key, char* out, std::size_t out_size,
+                        const char* fallback) {
   return read_string_status(handle, key, out, out_size, fallback) == StringReadStatus::kOk;
 }
 
@@ -125,11 +128,10 @@ inline esp_err_t write_string(nvs_handle_t handle, const char* key, const char* 
   return nvs_set_str(handle, key, value ? value : "");
 }
 
-inline esp_err_t commit(nvs_handle_t handle) {
-  return nvs_commit(handle);
-}
+inline esp_err_t commit(nvs_handle_t handle) { return nvs_commit(handle); }
 
-inline void log_nvs_u8(const char* tag, const char* key, std::uint8_t value, bool found, std::uint8_t fallback) {
+inline void log_nvs_u8(const char* tag, const char* key, std::uint8_t value, bool found,
+                       std::uint8_t fallback) {
   if (found) {
     ESP_LOGI(tag, "key=%s value=%u", key, static_cast<unsigned>(value));
   } else {
@@ -137,7 +139,8 @@ inline void log_nvs_u8(const char* tag, const char* key, std::uint8_t value, boo
   }
 }
 
-inline void log_nvs_u32(const char* tag, const char* key, std::uint32_t value, bool found, std::uint32_t fallback) {
+inline void log_nvs_u32(const char* tag, const char* key, std::uint32_t value, bool found,
+                        std::uint32_t fallback) {
   if (found) {
     ESP_LOGI(tag, "key=%s value=%lu", key, static_cast<unsigned long>(value));
   } else {
@@ -145,8 +148,8 @@ inline void log_nvs_u32(const char* tag, const char* key, std::uint32_t value, b
   }
 }
 
-inline void log_nvs_string(const char* tag, const char* key, const char* value, bool found, const char* fallback,
-                           bool quote_value, bool mask_value = false) {
+inline void log_nvs_string(const char* tag, const char* key, const char* value, bool found,
+                           const char* fallback, bool quote_value, bool mask_value = false) {
   const char* const shown = (mask_value ? "********" : (value != nullptr ? value : ""));
   const char* const default_value = mask_value ? "********" : (fallback != nullptr ? fallback : "");
   if (found) {
@@ -174,7 +177,7 @@ inline void log_nvs_string(const char* tag, const char* key, const char* value, 
 //
 // Move-only. Cannot be copied (would double-close).
 class Handle {
- public:
+public:
   static Handle Open(const char* ns, nvs_open_mode_t mode) {
     Handle h;
     h.err_ = nvs_open(ns, mode, &h.handle_);
@@ -193,8 +196,7 @@ class Handle {
   Handle(const Handle&) = delete;
   Handle& operator=(const Handle&) = delete;
 
-  Handle(Handle&& other) noexcept
-      : handle_(other.handle_), err_(other.err_), open_(other.open_) {
+  Handle(Handle&& other) noexcept : handle_(other.handle_), err_(other.err_), open_(other.open_) {
     other.handle_ = 0;
     other.open_ = false;
     other.err_ = ESP_ERR_INVALID_STATE;
@@ -246,15 +248,13 @@ class Handle {
   esp_err_t write_string(const char* key, const char* value) const {
     return luce::nvs::write_string(handle_, key, value);
   }
-  esp_err_t commit() const {
-    return luce::nvs::commit(handle_);
-  }
+  esp_err_t commit() const { return luce::nvs::commit(handle_); }
 
- private:
+private:
   nvs_handle_t handle_ = 0;
   esp_err_t err_ = ESP_ERR_INVALID_STATE;
   bool open_ = false;
 };
 
-}  // namespace nvs
-}  // namespace luce
+} // namespace nvs
+} // namespace luce

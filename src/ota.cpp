@@ -72,11 +72,11 @@ struct OtaRuntime {
   std::uint64_t last_success_s = 0;
   bool check_requested = false;
   bool has_request_url = false;
-  std::array<char, kUrlBufferSize> request_url {};
+  std::array<char, kUrlBufferSize> request_url{};
 };
 
-OtaConfig g_cfg {};
-OtaRuntime g_rt {};
+OtaConfig g_cfg{};
+OtaRuntime g_rt{};
 OtaState g_state = OtaState::kDisabled;
 TaskHandle_t g_task = nullptr;
 TickType_t g_next_periodic_check_tick = 0;
@@ -90,28 +90,26 @@ const char* const kPeriodicRequest = "periodic_request";
 
 const char* state_name(OtaState state) {
   switch (state) {
-    case OtaState::kDisabled:
-      return "DISABLED";
-    case OtaState::kIdle:
-      return "IDLE";
-    case OtaState::kChecking:
-      return "CHECKING";
-    case OtaState::kSuccess:
-      return "SUCCESS";
-    case OtaState::kFailed:
-      return "FAILED";
-    case OtaState::kNoPartition:
-      return "NO_PARTITION";
-    case OtaState::kInvalidConfig:
-      return "INVALID_CONFIG";
-    default:
-      return "UNKNOWN";
+  case OtaState::kDisabled:
+    return "DISABLED";
+  case OtaState::kIdle:
+    return "IDLE";
+  case OtaState::kChecking:
+    return "CHECKING";
+  case OtaState::kSuccess:
+    return "SUCCESS";
+  case OtaState::kFailed:
+    return "FAILED";
+  case OtaState::kNoPartition:
+    return "NO_PARTITION";
+  case OtaState::kInvalidConfig:
+    return "INVALID_CONFIG";
+  default:
+    return "UNKNOWN";
   }
 }
 
-const char* state_name_impl() {
-  return state_name(g_state);
-}
+const char* state_name_impl() { return state_name(g_state); }
 
 void set_state(OtaState next, const char* reason = nullptr) {
   luce::runtime::set_state(g_state, next, state_name, "[OTA][LIFECYCLE]", reason);
@@ -135,7 +133,8 @@ bool configure_ota_tls(esp_http_client_config_t& http_cfg, const char* url) {
     const esp_err_t ca_err = luce::tls::load_ca_pem_from_nvs(kOtaNs, "ca_pem", g_cfg.ca_pem_source,
                                                              g_cfg.ca_pem, sizeof(g_cfg.ca_pem));
     if (ca_err != ESP_OK) {
-      ESP_LOGE(kTag, "[OTA][TLS] failed to load ota/ca_pem from NVS rc=0x%x", static_cast<unsigned>(ca_err));
+      ESP_LOGE(kTag, "[OTA][TLS] failed to load ota/ca_pem from NVS rc=0x%x",
+               static_cast<unsigned>(ca_err));
       return false;
     }
     http_cfg.cert_pem = g_cfg.ca_pem;
@@ -190,24 +189,30 @@ void load_ota_config() {
   found_url = luce::nvs::read_string(handle, "url", g_cfg.url, sizeof(g_cfg.url), "");
   luce::nvs::log_nvs_string(kTag, "url", g_cfg.url, found_url, "", true);
 
-  found_ca_source = luce::nvs::read_string(handle, "ca_pem_source", g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "nvs");
-  luce::nvs::log_nvs_string(kTag, "ca_pem_source", g_cfg.ca_pem_source, found_ca_source, "nvs", true);
+  found_ca_source = luce::nvs::read_string(handle, "ca_pem_source", g_cfg.ca_pem_source,
+                                           sizeof(g_cfg.ca_pem_source), "nvs");
+  luce::nvs::log_nvs_string(kTag, "ca_pem_source", g_cfg.ca_pem_source, found_ca_source, "nvs",
+                            true);
 
-  found_interval = luce::nvs::read_u32(handle, "check_interval_s", check_interval, kDefaultCheckIntervalS);
+  found_interval =
+      luce::nvs::read_u32(handle, "check_interval_s", check_interval, kDefaultCheckIntervalS);
   if (found_interval) {
     g_cfg.check_interval_s = luce::runtime::clamp_u32(check_interval, 0u, kMaxCheckIntervalS);
   } else {
     g_cfg.check_interval_s = kDefaultCheckIntervalS;
   }
-  luce::nvs::log_nvs_u32(kTag, "check_interval_s", g_cfg.check_interval_s, found_interval, g_cfg.check_interval_s);
+  luce::nvs::log_nvs_u32(kTag, "check_interval_s", g_cfg.check_interval_s, found_interval,
+                         g_cfg.check_interval_s);
 
-  found_timeout = luce::nvs::read_u32(handle, "request_timeout_ms", timeout_ms, kDefaultRequestTimeoutMs);
+  found_timeout =
+      luce::nvs::read_u32(handle, "request_timeout_ms", timeout_ms, kDefaultRequestTimeoutMs);
   if (found_timeout) {
     g_cfg.request_timeout_ms = luce::runtime::clamp_u32(timeout_ms, 1000u, 60000u);
   } else {
     g_cfg.request_timeout_ms = kDefaultRequestTimeoutMs;
   }
-  luce::nvs::log_nvs_u32(kTag, "request_timeout_ms", g_cfg.request_timeout_ms, found_timeout, g_cfg.request_timeout_ms);
+  luce::nvs::log_nvs_u32(kTag, "request_timeout_ms", g_cfg.request_timeout_ms, found_timeout,
+                         g_cfg.request_timeout_ms);
   nvs_close(handle);
 
   if (g_cfg.enabled) {
@@ -253,7 +258,7 @@ bool perform_ota(const char* url) {
   g_rt.last_check_error = ESP_OK;
   set_last_error("starting");
 
-  esp_http_client_config_t http_cfg {};
+  esp_http_client_config_t http_cfg{};
   http_cfg.url = url;
   http_cfg.timeout_ms = g_cfg.request_timeout_ms;
   http_cfg.keep_alive_enable = true;
@@ -265,7 +270,7 @@ bool perform_ota(const char* url) {
     return false;
   }
 
-  esp_https_ota_config_t ota_cfg {};
+  esp_https_ota_config_t ota_cfg{};
   ota_cfg.http_config = &http_cfg;
 
   const esp_err_t rc = esp_https_ota(&ota_cfg);
@@ -289,12 +294,15 @@ bool perform_ota(const char* url) {
   return false;
 }
 
-void apply_update_request(const std::array<char, kUrlBufferSize>& request_url, bool has_request_url) {
-  const char* const source = (has_request_url && request_url[0] != '\0') ? request_url.data() : g_cfg.url;
+void apply_update_request(const std::array<char, kUrlBufferSize>& request_url,
+                          bool has_request_url) {
+  const char* const source =
+      (has_request_url && request_url[0] != '\0') ? request_url.data() : g_cfg.url;
   (void)perform_ota(source);
 }
 
-void consume_check_request(bool* had_request, std::array<char, kUrlBufferSize>& request_url, bool* has_request_url) {
+void consume_check_request(bool* had_request, std::array<char, kUrlBufferSize>& request_url,
+                           bool* has_request_url) {
   request_url.fill('\0');
   *had_request = false;
   *has_request_url = false;
@@ -319,7 +327,8 @@ void consume_check_request(bool* had_request, std::array<char, kUrlBufferSize>& 
 }
 
 bool periodic_due(TickType_t now) {
-  return g_cfg.check_interval_s > 0 && g_next_periodic_check_tick != 0 && now >= g_next_periodic_check_tick;
+  return g_cfg.check_interval_s > 0 && g_next_periodic_check_tick != 0 &&
+         now >= g_next_periodic_check_tick;
 }
 
 void schedule_periodic(bool include_padding) {
@@ -344,7 +353,7 @@ void ota_loop(void*) {
 
   for (;;) {
     const TickType_t now = xTaskGetTickCount();
-    std::array<char, kUrlBufferSize> request_url {};
+    std::array<char, kUrlBufferSize> request_url{};
     bool has_request = false;
     bool has_request_url = false;
 
@@ -394,7 +403,7 @@ void ota_loop(void*) {
   }
 }
 
-}  // namespace
+} // namespace
 
 void ota_startup() {
   if (g_task == nullptr) {
@@ -404,30 +413,26 @@ void ota_startup() {
 
 void ota_status_for_cli() {
   const luce::pki::Status identity = luce::pki::get_status(luce::pki::Role::kOtaClient);
-  ESP_LOGI(kTag,
-           "ota.status state=%s enabled=%d running=%d checks=%lu success=%lu fail=%lu interval_s=%lu "
-           "url='%s' ca_source=%s ca_present=%d client_identity=%s client_cert_present=%d "
-           "last_error='%s' last_check_s=%llu last_success_s=%llu",
-           state_name(g_state), g_cfg.enabled ? 1 : 0, (g_state == OtaState::kChecking) ? 1 : 0,
-           static_cast<unsigned long>(g_rt.total_checks), static_cast<unsigned long>(g_rt.success_count),
-           static_cast<unsigned long>(g_rt.failure_count), static_cast<unsigned long>(g_cfg.check_interval_s), g_cfg.url,
-           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, luce::pki::state_name(identity.state),
-           identity.cert_present ? 1 : 0, g_rt.last_error,
-           static_cast<unsigned long long>(g_rt.last_check_s),
-           static_cast<unsigned long long>(g_rt.last_success_s));
+  ESP_LOGI(
+      kTag,
+      "ota.status state=%s enabled=%d running=%d checks=%lu success=%lu fail=%lu interval_s=%lu "
+      "url='%s' ca_source=%s ca_present=%d client_identity=%s client_cert_present=%d "
+      "last_error='%s' last_check_s=%llu last_success_s=%llu",
+      state_name(g_state), g_cfg.enabled ? 1 : 0, (g_state == OtaState::kChecking) ? 1 : 0,
+      static_cast<unsigned long>(g_rt.total_checks), static_cast<unsigned long>(g_rt.success_count),
+      static_cast<unsigned long>(g_rt.failure_count),
+      static_cast<unsigned long>(g_cfg.check_interval_s), g_cfg.url, g_cfg.ca_pem_source,
+      g_cfg.ca_pem[0] != '\0' ? 1 : 0, luce::pki::state_name(identity.state),
+      identity.cert_present ? 1 : 0, g_rt.last_error,
+      static_cast<unsigned long long>(g_rt.last_check_s),
+      static_cast<unsigned long long>(g_rt.last_success_s));
 }
 
-bool ota_is_enabled() {
-  return g_cfg.enabled;
-}
+bool ota_is_enabled() { return g_cfg.enabled; }
 
-bool ota_is_running() {
-  return g_state == OtaState::kChecking;
-}
+bool ota_is_running() { return g_state == OtaState::kChecking; }
 
-const char* ota_state_name() {
-  return state_name_impl();
-}
+const char* ota_state_name() { return state_name_impl(); }
 
 void ota_request_check() {
   if (!g_cfg.enabled) {
@@ -482,15 +487,9 @@ void ota_build_status_payload(char* out, std::size_t out_size) {
 
 void ota_startup() {}
 void ota_status_for_cli() {}
-bool ota_is_enabled() {
-  return false;
-}
-bool ota_is_running() {
-  return false;
-}
-const char* ota_state_name() {
-  return "DISABLED";
-}
+bool ota_is_enabled() { return false; }
+bool ota_is_running() { return false; }
+const char* ota_state_name() { return "DISABLED"; }
 void ota_request_check() {}
 void ota_request_check_with_url(const char*) {}
 void ota_build_status_payload(char* out, std::size_t out_size) {

@@ -27,5 +27,6 @@
 
 - OTA cadence assertions are configuration-sensitive and may skip when `ota.interval_s=0` or large.
 - MQTT reconnect/backoff test requires managed broker mode (`--spawn-test-mqtt-broker`) to exercise outage/recovery deterministically.
-- Hardware-free CI can run host tests and docs alignment directly; HIL remains
-  local evidence consumed through the evidence manifest.
+- Hardware-free CI can run host tests, docs alignment, and whole-tree
+  `clang-format` directly; HIL remains local evidence consumed through the
+  evidence manifest and is required for release contexts.

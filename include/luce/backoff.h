@@ -16,8 +16,8 @@ inline std::uint32_t bounded_jitter(std::uint32_t span, std::uint32_t seed) {
   return value % (span + 1u);
 }
 
-inline std::uint32_t next_backoff_ms(std::uint32_t attempt, std::uint32_t min_ms, std::uint32_t max_ms,
-                                     std::uint32_t jitter_seed) {
+inline std::uint32_t next_backoff_ms(std::uint32_t attempt, std::uint32_t min_ms,
+                                     std::uint32_t max_ms, std::uint32_t jitter_seed) {
   if (max_ms == 0 || min_ms == 0) {
     return 0;
   }
@@ -42,5 +42,5 @@ inline std::uint32_t next_backoff_ms(std::uint32_t attempt, std::uint32_t min_ms
   return base + jitter;
 }
 
-}  // namespace backoff
-}  // namespace luce
+} // namespace backoff
+} // namespace luce

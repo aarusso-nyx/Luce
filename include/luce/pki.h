@@ -44,5 +44,5 @@ State state(Role role);
 const char* private_key_pem_for_tls(Role role);
 const char* cert_pem_for_tls(Role role);
 
-}  // namespace pki
-}  // namespace luce
+} // namespace pki
+} // namespace luce

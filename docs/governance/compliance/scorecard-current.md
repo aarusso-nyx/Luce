@@ -16,7 +16,8 @@ snapshots:
 - Firmware builds are verified locally for `default`, `net0`, and `net1`.
 - Hardware-backed HIL evidence remains the release gate for device behavior.
 - Host unit tests cover pure C++ helpers without a connected ESP32.
-- CI runs hardware-free checks directly and verifies committed local evidence;
+- CI runs hardware-free checks directly, verifies committed local evidence, and
+  refuses release contexts unless `hardware-hil` is required and passing.
   CI is not the producer of hardware evidence.
 
 ```yaml
@@ -28,7 +29,7 @@ verification_model:
     - net1
   release_gate: hardware-backed HIL contract evidence
   host_unit_tests: populated in Wave E
-  ci_gate: Wave E, checks committed evidence and host tests
+  ci_gate: Wave F, checks committed evidence, host tests, format, and release HIL enforcement
   archived_scorecards_are_current_claims: false
   nci_status: requires fresh local evidence before reassertion
   program:
@@ -37,6 +38,12 @@ verification_model:
     C: cross-cutting adoption sweep and duplication reduction
     D: shared certificate and PKI infrastructure
     E: unit tests, CI gating, modern-C++ polish, docs reconciliation
+    F: residual lock hardening, release evidence enforcement, repo-wide format gate
+  residuals:
+    ci_hardware_enforcement: closed for release contexts
+    format_gate_scope: closed across tracked src and include/luce C/C++ files
+    i2c_and_mqtt_races: closed by guarded RMW and locked MQTT snapshots
+    pki_dead_code_and_staging_cost: closed by key_present state and bounded RAM staging
 ```
 
 ## Evidence Regeneration

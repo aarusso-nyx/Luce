@@ -123,42 +123,42 @@ bool run_manual_mode_for_index(std::uint8_t idx, TickType_t now, LedManualMode m
     return false;
   }
   switch (mode) {
-    case LedManualMode::kAuto:
-      return false;
-    case LedManualMode::kOff:
-      return false;
-    case LedManualMode::kOn:
-      return true;
-    case LedManualMode::kBlinkNormal:
-    case LedManualMode::kBlinkFast:
-    case LedManualMode::kBlinkSlow:
-    case LedManualMode::kFlash: {
-      TickType_t on_ticks = kNormalBlinkOnTicks;
-      TickType_t off_ticks = kNormalBlinkOffTicks;
-      if (mode == LedManualMode::kBlinkFast) {
-        on_ticks = kFastBlinkOnTicks;
-        off_ticks = kFastBlinkOffTicks;
-      } else if (mode == LedManualMode::kBlinkSlow) {
-        on_ticks = kSlowBlinkOnTicks;
-        off_ticks = kSlowBlinkOffTicks;
-      } else if (mode == LedManualMode::kFlash) {
-        on_ticks = kConnectOnTicks;
-        off_ticks = kConnectOffTicks;
-      }
-
-      if (g_manual_deadline[idx] == 0) {
-        g_manual_phase_on[idx] = true;
-        g_manual_deadline[idx] = now + on_ticks;
-        return true;
-      }
-      if (now >= g_manual_deadline[idx]) {
-        g_manual_phase_on[idx] = !g_manual_phase_on[idx];
-        g_manual_deadline[idx] = now + (g_manual_phase_on[idx] ? on_ticks : off_ticks);
-      }
-      return g_manual_phase_on[idx];
+  case LedManualMode::kAuto:
+    return false;
+  case LedManualMode::kOff:
+    return false;
+  case LedManualMode::kOn:
+    return true;
+  case LedManualMode::kBlinkNormal:
+  case LedManualMode::kBlinkFast:
+  case LedManualMode::kBlinkSlow:
+  case LedManualMode::kFlash: {
+    TickType_t on_ticks = kNormalBlinkOnTicks;
+    TickType_t off_ticks = kNormalBlinkOffTicks;
+    if (mode == LedManualMode::kBlinkFast) {
+      on_ticks = kFastBlinkOnTicks;
+      off_ticks = kFastBlinkOffTicks;
+    } else if (mode == LedManualMode::kBlinkSlow) {
+      on_ticks = kSlowBlinkOnTicks;
+      off_ticks = kSlowBlinkOffTicks;
+    } else if (mode == LedManualMode::kFlash) {
+      on_ticks = kConnectOnTicks;
+      off_ticks = kConnectOffTicks;
     }
-    default:
-      return false;
+
+    if (g_manual_deadline[idx] == 0) {
+      g_manual_phase_on[idx] = true;
+      g_manual_deadline[idx] = now + on_ticks;
+      return true;
+    }
+    if (now >= g_manual_deadline[idx]) {
+      g_manual_phase_on[idx] = !g_manual_phase_on[idx];
+      g_manual_deadline[idx] = now + (g_manual_phase_on[idx] ? on_ticks : off_ticks);
+    }
+    return g_manual_phase_on[idx];
+  }
+  default:
+    return false;
   }
 }
 
@@ -221,7 +221,8 @@ bool run_blink_state(BlinkState& state, TickType_t now) {
   return state.on;
 }
 
-void start_infinite_blink(BlinkState& state, bool initial_on, TickType_t now, TickType_t on_ticks, TickType_t off_ticks) {
+void start_infinite_blink(BlinkState& state, bool initial_on, TickType_t now, TickType_t on_ticks,
+                          TickType_t off_ticks) {
   state.active = true;
   state.phase_on = true;
   state.on = initial_on;
@@ -232,7 +233,7 @@ void start_infinite_blink(BlinkState& state, bool initial_on, TickType_t now, Ti
 }
 
 void start_pulse_blink(BlinkState& state, std::uint8_t blinks, TickType_t now, TickType_t on_ticks,
-                      TickType_t off_ticks) {
+                       TickType_t off_ticks) {
   if (blinks == 0) {
     return;
   }
@@ -262,10 +263,12 @@ void start_pulse_blink(BlinkState& state, std::uint8_t blinks, TickType_t now, T
 void request_user_feedback(std::uint8_t input_events, std::uint8_t error_events) {
   const TickType_t now = xTaskGetTickCount();
   if (error_events > 0) {
-    start_pulse_blink(g_operation_blink, kUserErrorPulseCount * ((error_events > 3) ? 3 : error_events),
-                      now, kUserPulseOnTicks, kUserPulseOffTicks);
+    start_pulse_blink(g_operation_blink,
+                      kUserErrorPulseCount * ((error_events > 3) ? 3 : error_events), now,
+                      kUserPulseOnTicks, kUserPulseOffTicks);
   } else if (input_events > 0 && !g_operation_blink.active) {
-    start_pulse_blink(g_operation_blink, kUserInputPulseCount, now, kUserPulseOnTicks, kUserPulseOffTicks);
+    start_pulse_blink(g_operation_blink, kUserInputPulseCount, now, kUserPulseOnTicks,
+                      kUserPulseOffTicks);
   } else if (input_events > 0) {
     const std::uint16_t sum = static_cast<std::uint16_t>(g_operation_blink.blinks_left) +
                               static_cast<std::uint16_t>(input_events * kUserInputPulseCount);
@@ -321,7 +324,8 @@ void collect_network_failures(std::array<uint8_t, 5>& codes, std::size_t& count)
   }
 }
 
-bool same_failures(const NetworkFailureState& previous, const std::array<uint8_t, 5>& next, std::size_t next_count) {
+bool same_failures(const NetworkFailureState& previous, const std::array<uint8_t, 5>& next,
+                   std::size_t next_count) {
   if (previous.service_count != next_count) {
     return false;
   }
@@ -333,7 +337,8 @@ bool same_failures(const NetworkFailureState& previous, const std::array<uint8_t
   return true;
 }
 
-void ensure_net_sequence(const std::array<uint8_t, 5>& failures, std::size_t count, TickType_t now) {
+void ensure_net_sequence(const std::array<uint8_t, 5>& failures, std::size_t count,
+                         TickType_t now) {
   if (count == 0) {
     g_net_fail_state.active = false;
     return;
@@ -391,7 +396,8 @@ void run_network_pattern(TickType_t now, bool& led) {
   if (now >= g_net_fail_state.phase_deadline) {
     if (g_net_fail_state.gap_phase) {
       g_net_fail_state.gap_phase = false;
-      g_net_fail_state.service_index = (g_net_fail_state.service_index + 1) % g_net_fail_state.service_count;
+      g_net_fail_state.service_index =
+          (g_net_fail_state.service_index + 1) % g_net_fail_state.service_count;
       g_net_fail_state.blinks_left = g_net_fail_state.service_codes[g_net_fail_state.service_index];
       g_net_fail_state.on_phase = true;
       g_net_fail_state.phase_deadline = now + kFastBlinkOnTicks;
@@ -431,7 +437,7 @@ void led_status_task(void*) {
 
   while (true) {
     const TickType_t loop_now = xTaskGetTickCount();
-    LedStatusSnapshot snap {};
+    LedStatusSnapshot snap{};
     snapshot_state(snap);
     request_user_feedback(snap.user_input_events, snap.user_error_events);
 
@@ -452,8 +458,8 @@ void led_status_task(void*) {
 
     apply_manual_overrides(loop_now, led0, led1, led2);
 
-    const std::uint8_t next_mask = static_cast<std::uint8_t>((led0 ? 0x01u : 0x00u) | (led1 ? 0x02u : 0x00u) |
-                                                            (led2 ? 0x04u : 0x00u));
+    const std::uint8_t next_mask = static_cast<std::uint8_t>(
+        (led0 ? 0x01u : 0x00u) | (led1 ? 0x02u : 0x00u) | (led2 ? 0x04u : 0x00u));
     portENTER_CRITICAL(&g_state_lock);
     g_status_mask = next_mask;
     portEXIT_CRITICAL(&g_state_lock);
@@ -465,7 +471,7 @@ void led_status_task(void*) {
   }
 }
 
-}  // namespace
+} // namespace
 
 void led_status_startup() {
   const TickType_t now = xTaskGetTickCount();
@@ -501,14 +507,16 @@ void led_status_set_alert(bool active) {
 void led_status_notify_user_input() {
   portENTER_CRITICAL(&g_state_lock);
   const std::uint16_t queued = g_user_input_events + 1;
-  g_user_input_events = static_cast<std::uint8_t>((queued > kMaxQueuedUserPulses) ? kMaxQueuedUserPulses : queued);
+  g_user_input_events =
+      static_cast<std::uint8_t>((queued > kMaxQueuedUserPulses) ? kMaxQueuedUserPulses : queued);
   portEXIT_CRITICAL(&g_state_lock);
 }
 
 void led_status_notify_user_error() {
   portENTER_CRITICAL(&g_state_lock);
   const std::uint16_t queued = g_user_error_events + 1;
-  g_user_error_events = static_cast<std::uint8_t>((queued > kMaxQueuedUserPulses) ? kMaxQueuedUserPulses : queued);
+  g_user_error_events =
+      static_cast<std::uint8_t>((queued > kMaxQueuedUserPulses) ? kMaxQueuedUserPulses : queued);
   portEXIT_CRITICAL(&g_state_lock);
 }
 

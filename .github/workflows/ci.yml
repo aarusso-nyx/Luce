@@ -28,10 +28,8 @@ jobs:
         run: python -m pytest tests/test_docs_alignment.py
       - name: clang-format dry run
         run: |
-          clang-format --dry-run --Werror \
-            include/luce/http_route_logic.h \
-            include/luce/led_manual_mode.h \
-            include/luce/pki_helpers.h
+          git ls-files 'src/*.cpp' 'src/*.h' 'include/luce/*.h' 'include/luce/*.hpp' \
+            | xargs clang-format --dry-run --Werror
 
   verify-evidence:
     runs-on: ubuntu-latest

@@ -9,7 +9,7 @@ namespace luce {
 namespace json {
 
 class Writer {
- public:
+public:
   Writer(char* buffer, std::size_t size) : buffer_(buffer), size_(size) {
     if (buffer_ != nullptr && size_ > 0) {
       buffer_[0] = '\0';
@@ -86,7 +86,7 @@ class Writer {
   const char* c_str() const { return buffer_ != nullptr ? buffer_ : ""; }
   std::size_t size() const { return used_; }
 
- private:
+private:
   static constexpr std::size_t kMaxDepth = 8;
 
   bool append_value_prefix() {
@@ -147,59 +147,62 @@ class Writer {
 
   bool append_hex_escape(unsigned char ch) {
     constexpr char kHex[] = "0123456789ABCDEF";
-    return append_raw("\\u00") && append_char(kHex[(ch >> 4) & 0x0Fu]) && append_char(kHex[ch & 0x0Fu]);
+    return append_raw("\\u00") && append_char(kHex[(ch >> 4) & 0x0Fu]) &&
+           append_char(kHex[ch & 0x0Fu]);
   }
 
   bool append_quoted(const char* text) {
     if (!append_char('"')) {
       return false;
     }
-    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text != nullptr ? text : ""); *p != '\0'; ++p) {
+    for (const unsigned char* p =
+             reinterpret_cast<const unsigned char*>(text != nullptr ? text : "");
+         *p != '\0'; ++p) {
       switch (*p) {
-        case '"':
-          if (!append_raw("\\\"")) {
+      case '"':
+        if (!append_raw("\\\"")) {
+          return false;
+        }
+        break;
+      case '\\':
+        if (!append_raw("\\\\")) {
+          return false;
+        }
+        break;
+      case '\b':
+        if (!append_raw("\\b")) {
+          return false;
+        }
+        break;
+      case '\f':
+        if (!append_raw("\\f")) {
+          return false;
+        }
+        break;
+      case '\n':
+        if (!append_raw("\\n")) {
+          return false;
+        }
+        break;
+      case '\r':
+        if (!append_raw("\\r")) {
+          return false;
+        }
+        break;
+      case '\t':
+        if (!append_raw("\\t")) {
+          return false;
+        }
+        break;
+      default:
+        if (*p < 0x20u) {
+          if (!append_hex_escape(*p)) {
             return false;
           }
-          break;
-        case '\\':
-          if (!append_raw("\\\\")) {
-            return false;
-          }
-          break;
-        case '\b':
-          if (!append_raw("\\b")) {
-            return false;
-          }
-          break;
-        case '\f':
-          if (!append_raw("\\f")) {
-            return false;
-          }
-          break;
-        case '\n':
-          if (!append_raw("\\n")) {
-            return false;
-          }
-          break;
-        case '\r':
-          if (!append_raw("\\r")) {
-            return false;
-          }
-          break;
-        case '\t':
-          if (!append_raw("\\t")) {
-            return false;
-          }
-          break;
-        default:
-          if (*p < 0x20u) {
-            if (!append_hex_escape(*p)) {
-              return false;
-            }
-          } else if (!append_char(static_cast<char>(*p))) {
-            return false;
-          }
-          break;
+        } else if (!append_char(static_cast<char>(*p))) {
+          return false;
+        }
+        break;
       }
     }
     return append_char('"');
@@ -213,5 +216,5 @@ class Writer {
   std::size_t depth_ = 0;
 };
 
-}  // namespace json
-}  // namespace luce
+} // namespace json
+} // namespace luce

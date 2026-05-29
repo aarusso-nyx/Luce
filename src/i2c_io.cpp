@@ -1,5 +1,6 @@
 #include "luce/i2c_io.h"
 
+#include <atomic>
 #include <cstdarg>
 #include <cinttypes>
 #include <cstdio>
@@ -95,7 +96,7 @@ int g_last_voltage_raw = 0;
 bool g_last_dht_read_ok = false;
 bool g_lcd_present = false;
 TaskHandle_t g_i2c_task = nullptr;
-std::uint16_t g_light_threshold = kLightThresholdFallback;
+std::atomic<std::uint16_t> g_light_threshold{kLightThresholdFallback};
 bool g_is_day = true;
 uint8_t g_relay_output_mask = kRelayOffValue;
 bool g_hardware_degraded = false;
@@ -109,6 +110,10 @@ std::size_t g_lcd_log_head = 0;
 std::size_t g_lcd_log_view_offset = 0;
 vprintf_like_t g_lcd_prev_vprintf = nullptr;
 bool g_lcd_log_hook_ready = false;
+
+// Relay-mask RMW invariant: every path that reads a relay mask, applies night
+// policy, and writes MCP GPIOA is serialized by RelayOpGuard. g_io_mask_lock is
+// the leaf lock for publishing mask fields after the hardware write.
 
 std::size_t lcd_log_max_view_offset(std::size_t stored_count) {
   return (stored_count > kLcdLogDisplayRows) ? (stored_count - kLcdLogDisplayRows) : 0u;
@@ -133,7 +138,8 @@ void lcd_log_adjust_view_offset(int step) {
     g_lcd_log_view_offset += (positive < remaining) ? positive : remaining;
   } else if (step < 0) {
     const std::size_t negative = static_cast<std::size_t>(-step);
-    g_lcd_log_view_offset = (negative < g_lcd_log_view_offset) ? (g_lcd_log_view_offset - negative) : 0u;
+    g_lcd_log_view_offset =
+        (negative < g_lcd_log_view_offset) ? (g_lcd_log_view_offset - negative) : 0u;
   }
 }
 
@@ -172,7 +178,8 @@ void lcd_log_append(const char* text) {
   }
 
   portENTER_CRITICAL(&g_lcd_log_lock);
-  std::strncpy(g_lcd_log_lines[g_lcd_log_head], cleaned, sizeof(g_lcd_log_lines[g_lcd_log_head]) - 1);
+  std::strncpy(g_lcd_log_lines[g_lcd_log_head], cleaned,
+               sizeof(g_lcd_log_lines[g_lcd_log_head]) - 1);
   g_lcd_log_lines[g_lcd_log_head][sizeof(g_lcd_log_lines[g_lcd_log_head]) - 1] = '\0';
 
   g_lcd_log_head = (g_lcd_log_head + 1) % kLcdLogBufferDepth;
@@ -271,7 +278,7 @@ SemaphoreHandle_t relay_op_lock() {
 }
 
 class RelayOpGuard {
- public:
+public:
   RelayOpGuard() : lock_(relay_op_lock()) {
     if (lock_ != nullptr) {
       taken_ = xSemaphoreTakeRecursive(lock_, portMAX_DELAY) == pdTRUE;
@@ -284,20 +291,22 @@ class RelayOpGuard {
   }
   bool ok() const { return taken_; }
 
- private:
+private:
   SemaphoreHandle_t lock_ = nullptr;
   bool taken_ = false;
 };
 
+std::uint16_t light_threshold_value() { return g_light_threshold.load(std::memory_order_relaxed); }
+
 const char* init_status_name(InitPathStatus status) {
   switch (status) {
-    case InitPathStatus::kSuccess:
-      return "success";
-    case InitPathStatus::kFailure:
-      return "failure";
-    case InitPathStatus::kUnknown:
-    default:
-      return "unknown";
+  case InitPathStatus::kSuccess:
+    return "success";
+  case InitPathStatus::kFailure:
+    return "failure";
+  case InitPathStatus::kUnknown:
+  default:
+    return "unknown";
   }
 }
 
@@ -325,8 +334,10 @@ void init_light_sensor() {
   adc_oneshot_chan_cfg_t chan_cfg = {};
   chan_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
   chan_cfg.atten = ADC_ATTEN_DB_12;
-  const bool light_ok = adc_oneshot_config_channel(g_light_sensor_handle, kLightSensorChannel, &chan_cfg) == ESP_OK;
-  const bool voltage_ok = adc_oneshot_config_channel(g_light_sensor_handle, kVoltageSensorChannel, &chan_cfg) == ESP_OK;
+  const bool light_ok =
+      adc_oneshot_config_channel(g_light_sensor_handle, kLightSensorChannel, &chan_cfg) == ESP_OK;
+  const bool voltage_ok =
+      adc_oneshot_config_channel(g_light_sensor_handle, kVoltageSensorChannel, &chan_cfg) == ESP_OK;
   if (!light_ok) {
     ESP_LOGW(kTag, "Light sensor ADC channel config failed");
   }
@@ -347,7 +358,8 @@ void log_sensor_readings() {
   int voltage_raw = 0;
   if (g_light_sensor_ready) {
     int converted = 0;
-    const esp_err_t raw_rc = adc_oneshot_read(g_light_sensor_handle, kLightSensorChannel, &converted);
+    const esp_err_t raw_rc =
+        adc_oneshot_read(g_light_sensor_handle, kLightSensorChannel, &converted);
     if (raw_rc == ESP_OK) {
       light_raw = converted;
     }
@@ -425,7 +437,7 @@ enum class LcdPage : std::uint8_t {
 constexpr std::uint8_t kLcdPageCount = 7;
 
 class Pcf8574Hd44780 {
- public:
+public:
   Pcf8574Hd44780(i2c_port_t port, uint8_t address) : port_(port), address_(address) {}
 
   bool begin() {
@@ -435,8 +447,8 @@ class Pcf8574Hd44780 {
         !write_nibble(0x02, false)) {
       return false;
     }
-    if (!send_command(0x28) || !send_command(0x08) || !send_command(0x0C) ||
-        !send_command(0x06) || !send_command(0x01)) {
+    if (!send_command(0x28) || !send_command(0x08) || !send_command(0x0C) || !send_command(0x06) ||
+        !send_command(0x01)) {
       return false;
     }
     vTaskDelay(pdMS_TO_TICKS(3));
@@ -478,7 +490,7 @@ class Pcf8574Hd44780 {
 
   bool write_text(uint8_t row, const char* text) { return write_text_line(row, text); }
 
- private:
+private:
   bool send_command(uint8_t cmd) { return send_byte(cmd, false); }
 
   bool send_byte(uint8_t value, bool is_data) {
@@ -594,14 +606,16 @@ void render_lcd_summary_page() {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
 
-	  std::snprintf(line0, sizeof(line0), "LUCE %-11s", LUCE_STRATEGY_NAME);
-	  const char* net_state = wifi_is_enabled() ? (wifi_is_ip_ready() ? "OK" : "CN") : "OFF";
-	  const IoMaskSnapshot masks = io_mask_snapshot();
-	  std::snprintf(line1, sizeof(line1), "W:%-3s I:%-11.11s", net_state, ip);
-	  std::snprintf(line2, sizeof(line2), "R:0x%02X N:0x%02X", masks.relay_mask, masks.relay_night_mask);
-	  if (g_last_dht_read_ok) {
+  std::snprintf(line0, sizeof(line0), "LUCE %-11s", LUCE_STRATEGY_NAME);
+  const char* net_state = wifi_is_enabled() ? (wifi_is_ip_ready() ? "OK" : "CN") : "OFF";
+  const IoMaskSnapshot masks = io_mask_snapshot();
+  std::snprintf(line1, sizeof(line1), "W:%-3s I:%-11.11s", net_state, ip);
+  std::snprintf(line2, sizeof(line2), "R:0x%02X N:0x%02X", masks.relay_mask,
+                masks.relay_night_mask);
+  if (g_last_dht_read_ok) {
     const uint8_t light_state = g_last_light_raw >= static_cast<int>(kLightBitThreshold) ? 1u : 0u;
-    std::snprintf(line3, sizeof(line3), "T %.1f H%.1f L:%u", g_last_temperature_c, g_last_humidity_percent, light_state);
+    std::snprintf(line3, sizeof(line3), "T %.1f H%.1f L:%u", g_last_temperature_c,
+                  g_last_humidity_percent, light_state);
   } else {
     const uint8_t light_state = g_last_light_raw >= static_cast<int>(kLightBitThreshold) ? 1u : 0u;
     std::snprintf(line3, sizeof(line3), "DHT --.- --.- L:%u", light_state);
@@ -619,15 +633,17 @@ void render_lcd_sensors_page() {
 
   char line0[21] = {0};
   char line1[21] = {0};
-	  char line2[21] = {0};
-	  char line3[21] = {0};
-	  const char* day_state = (g_last_light_raw > static_cast<int>(g_light_threshold)) ? "DAY" : "NITE";
-	  const IoMaskSnapshot masks = io_mask_snapshot();
+  char line2[21] = {0};
+  char line3[21] = {0};
+  const std::uint16_t threshold = light_threshold_value();
+  const char* day_state = (g_last_light_raw > static_cast<int>(threshold)) ? "DAY" : "NITE";
+  const IoMaskSnapshot masks = io_mask_snapshot();
 
   std::snprintf(line0, sizeof(line0), "L:%4d V:%4d", g_last_light_raw, g_last_voltage_raw);
-  std::snprintf(line1, sizeof(line1), "Thr:%4u %s", static_cast<unsigned>(g_light_threshold), day_state);
-  std::snprintf(line2, sizeof(line2), "T:%.1fC H:%.1f%%", g_last_temperature_c, g_last_humidity_percent);
-	  std::snprintf(line3, sizeof(line3), "LED raw:0x%02X", masks.relay_output_mask);
+  std::snprintf(line1, sizeof(line1), "Thr:%4u %s", static_cast<unsigned>(threshold), day_state);
+  std::snprintf(line2, sizeof(line2), "T:%.1fC H:%.1f%%", g_last_temperature_c,
+                g_last_humidity_percent);
+  std::snprintf(line3, sizeof(line3), "LED raw:0x%02X", masks.relay_output_mask);
   write_lcd_line(0, line0);
   write_lcd_line(1, line1);
   write_lcd_line(2, line2);
@@ -669,23 +685,24 @@ void render_lcd_relays_page() {
 
   char line0[21] = {0};
   char line1[21] = {0};
-	  char line2[21] = {0};
-	  char line3[21] = {0};
-	  const IoMaskSnapshot masks = io_mask_snapshot();
-	  std::uint8_t on_count = 0;
-	  for (std::size_t idx = 0; idx < 8; ++idx) {
-	    if ((masks.relay_mask & (1u << idx)) != 0u) {
-	      ++on_count;
-	    }
-	  }
-	  const char* day_state = masks.is_day ? "DAY" : "NITE";
-	  std::snprintf(line0, sizeof(line0), "State:0x%02X (on:%u)", masks.relay_mask, static_cast<unsigned>(on_count));
-	  std::snprintf(line1, sizeof(line1), "Night:0x%02X", masks.relay_night_mask);
-	  std::snprintf(line2, sizeof(line2), "Bits %c%c%c%c%c%c%c%c", (masks.relay_mask & 0x80u) ? '1' : '0',
-	                (masks.relay_mask & 0x40u) ? '1' : '0', (masks.relay_mask & 0x20u) ? '1' : '0',
-	                (masks.relay_mask & 0x10u) ? '1' : '0', (masks.relay_mask & 0x08u) ? '1' : '0',
-	                (masks.relay_mask & 0x04u) ? '1' : '0', (masks.relay_mask & 0x02u) ? '1' : '0',
-	                (masks.relay_mask & 0x01u) ? '1' : '0');
+  char line2[21] = {0};
+  char line3[21] = {0};
+  const IoMaskSnapshot masks = io_mask_snapshot();
+  std::uint8_t on_count = 0;
+  for (std::size_t idx = 0; idx < 8; ++idx) {
+    if ((masks.relay_mask & (1u << idx)) != 0u) {
+      ++on_count;
+    }
+  }
+  const char* day_state = masks.is_day ? "DAY" : "NITE";
+  std::snprintf(line0, sizeof(line0), "State:0x%02X (on:%u)", masks.relay_mask,
+                static_cast<unsigned>(on_count));
+  std::snprintf(line1, sizeof(line1), "Night:0x%02X", masks.relay_night_mask);
+  std::snprintf(line2, sizeof(line2), "Bits %c%c%c%c%c%c%c%c",
+                (masks.relay_mask & 0x80u) ? '1' : '0', (masks.relay_mask & 0x40u) ? '1' : '0',
+                (masks.relay_mask & 0x20u) ? '1' : '0', (masks.relay_mask & 0x10u) ? '1' : '0',
+                (masks.relay_mask & 0x08u) ? '1' : '0', (masks.relay_mask & 0x04u) ? '1' : '0',
+                (masks.relay_mask & 0x02u) ? '1' : '0', (masks.relay_mask & 0x01u) ? '1' : '0');
   std::snprintf(line3, sizeof(line3), "Policy:%s", day_state);
   write_lcd_line(0, line0);
   write_lcd_line(1, line1);
@@ -756,12 +773,13 @@ void render_lcd_logs_page() {
 
   portENTER_CRITICAL(&g_lcd_log_lock);
   const std::size_t stored_count = g_lcd_log_count;
-  const std::size_t oldest_index = (g_lcd_log_head + kLcdLogBufferDepth - stored_count) % kLcdLogBufferDepth;
+  const std::size_t oldest_index =
+      (g_lcd_log_head + kLcdLogBufferDepth - stored_count) % kLcdLogBufferDepth;
   clamp_lcd_log_view_offset(stored_count);
   const std::size_t max_offset = lcd_log_max_view_offset(stored_count);
   const std::size_t start = (stored_count <= kLcdLogDisplayRows)
-                               ? 0u
-                               : (stored_count - kLcdLogDisplayRows - g_lcd_log_view_offset);
+                                ? 0u
+                                : (stored_count - kLcdLogDisplayRows - g_lcd_log_view_offset);
   char header[21] = {0};
   if (max_offset == 0u) {
     std::snprintf(header, sizeof(header), "LOGS");
@@ -790,31 +808,31 @@ void update_lcd_status() {
   }
 
   switch (g_lcd_page) {
-    case LcdPage::kSummary:
-      render_lcd_summary_page();
-      break;
-    case LcdPage::kSensors:
-      render_lcd_sensors_page();
-      break;
-    case LcdPage::kNetwork:
-      render_lcd_network_page();
-      break;
-    case LcdPage::kRelays:
-      render_lcd_relays_page();
-      break;
-    case LcdPage::kSystem:
-      render_lcd_system_page();
-      break;
-    case LcdPage::kSystem2:
-      render_lcd_system2_page();
-      break;
-    case LcdPage::kLogs:
-      render_lcd_logs_page();
-      break;
-    default:
-      g_lcd_page = LcdPage::kSummary;
-      render_lcd_summary_page();
-      break;
+  case LcdPage::kSummary:
+    render_lcd_summary_page();
+    break;
+  case LcdPage::kSensors:
+    render_lcd_sensors_page();
+    break;
+  case LcdPage::kNetwork:
+    render_lcd_network_page();
+    break;
+  case LcdPage::kRelays:
+    render_lcd_relays_page();
+    break;
+  case LcdPage::kSystem:
+    render_lcd_system_page();
+    break;
+  case LcdPage::kSystem2:
+    render_lcd_system2_page();
+    break;
+  case LcdPage::kLogs:
+    render_lcd_logs_page();
+    break;
+  default:
+    g_lcd_page = LcdPage::kSummary;
+    render_lcd_summary_page();
+    break;
   }
 }
 
@@ -995,7 +1013,8 @@ I2cScanResult scan_i2c_bus() {
         std::snprintf(token, sizeof(token), "0x%02X", addr);
         const std::size_t token_len = std::strlen(token);
         const std::size_t space_left = sizeof(list_buf) - next_addr_offset - 1;
-        const std::size_t copy_len = (token_len < space_left) ? token_len : (space_left > 0 ? space_left : 0);
+        const std::size_t copy_len =
+            (token_len < space_left) ? token_len : (space_left > 0 ? space_left : 0);
         if (copy_len > 0) {
           std::memcpy(&list_buf[next_addr_offset], token, copy_len);
           next_addr_offset += copy_len;
@@ -1035,7 +1054,8 @@ I2cScanResult scan_i2c_bus() {
 
 esp_err_t mcp_write_reg(uint8_t reg, uint8_t value) {
   uint8_t payload[2] = {reg, value};
-  return i2c_master_write_to_device(kI2CPort, kMcpAddress, payload, sizeof(payload), pdMS_TO_TICKS(100));
+  return i2c_master_write_to_device(kI2CPort, kMcpAddress, payload, sizeof(payload),
+                                    pdMS_TO_TICKS(100));
 }
 
 esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value) {
@@ -1046,7 +1066,7 @@ esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value) {
     return ESP_ERR_INVALID_STATE;
   }
   return i2c_master_write_read_device(kI2CPort, kMcpAddress, &reg, sizeof(reg), value,
-                                     sizeof(*value), pdMS_TO_TICKS(100));
+                                      sizeof(*value), pdMS_TO_TICKS(100));
 }
 
 bool init_mcp23017(Mcp23017State& state) {
@@ -1059,12 +1079,9 @@ bool init_mcp23017(Mcp23017State& state) {
 
   constexpr uint8_t kIoconValue = 0x00;
   const esp_err_t errors[] = {
-      mcp_write_reg(kIocon, kIoconValue),
-      mcp_write_reg(kIodira, 0x00),
-      mcp_write_reg(kIodirb, 0xFF),
-      mcp_write_reg(kGppub, 0xFF),
-      mcp_write_reg(kGpioa, kRelayOffValue),
-      mcp_write_reg(kGppua, 0x00),
+      mcp_write_reg(kIocon, kIoconValue),    mcp_write_reg(kIodira, 0x00),
+      mcp_write_reg(kIodirb, 0xFF),          mcp_write_reg(kGppub, 0xFF),
+      mcp_write_reg(kGpioa, kRelayOffValue), mcp_write_reg(kGppua, 0x00),
       mcp_write_reg(kGpiob, 0x00),
   };
 
@@ -1076,11 +1093,10 @@ bool init_mcp23017(Mcp23017State& state) {
     }
   }
 
-	  state.connected = true;
-	  state.relay_mask = kRelayOffValue;
-	  set_io_masks(0x00, kRelayOffValue, 0x00, true, false);
-  ESP_LOGI(kTag,
-           "MCP23017 configured: relays OFF, buttons pullups enabled, IOCON=0x%02X",
+  state.connected = true;
+  state.relay_mask = kRelayOffValue;
+  set_io_masks(0x00, kRelayOffValue, 0x00, true, false);
+  ESP_LOGI(kTag, "MCP23017 configured: relays OFF, buttons pullups enabled, IOCON=0x%02X",
            kIoconValue);
   return true;
 }
@@ -1093,25 +1109,28 @@ esp_err_t set_relay_mask_internal(Mcp23017State& state, uint8_t state_mask, bool
   if (!state.connected || !g_mcp_available) {
     return ESP_ERR_INVALID_STATE;
   }
-	  const std::uint8_t requested_mask = static_cast<std::uint8_t>(state_mask & kRelayAllMask);
+  const std::uint8_t requested_mask = static_cast<std::uint8_t>(state_mask & kRelayAllMask);
   const IoMaskSnapshot masks = io_mask_snapshot();
-	  const std::uint8_t filtered_mask = luce::relay::apply_night_policy(requested_mask, masks.relay_night_mask, masks.is_day);
-	  const std::uint8_t output_mask = luce::relay::state_to_output_mask(filtered_mask, kRelayActiveHigh);
-	  const esp_err_t err = mcp_write_reg(kGpioa, output_mask);
-	  if (err == ESP_OK) {
-	    state.relay_mask = output_mask;
+  const std::uint8_t filtered_mask =
+      luce::relay::apply_night_policy(requested_mask, masks.relay_night_mask, masks.is_day);
+  const std::uint8_t output_mask =
+      luce::relay::state_to_output_mask(filtered_mask, kRelayActiveHigh);
+  const esp_err_t err = mcp_write_reg(kGpioa, output_mask);
+  if (err == ESP_OK) {
+    state.relay_mask = output_mask;
     portENTER_CRITICAL(&g_io_mask_lock);
-	    g_relay_mask = requested_mask;
-	    g_relay_output_mask = output_mask;
+    g_relay_mask = requested_mask;
+    g_relay_output_mask = output_mask;
     g_hardware_degraded = false;
     g_mcp_available = true;
     portEXIT_CRITICAL(&g_io_mask_lock);
     if (persist_state) {
-      nvs_handle_t handle {};
+      nvs_handle_t handle{};
       if (nvs_open(kRelaysNs, NVS_READWRITE, &handle) == ESP_OK) {
         const bool state_saved =
             nvs_set_u8(handle, kRelaysStateFormatKey, kRelaysStateFormatV1) == ESP_OK &&
-            nvs_set_u32(handle, kRelaysStateKey, static_cast<std::uint32_t>(requested_mask)) == ESP_OK;
+            nvs_set_u32(handle, kRelaysStateKey, static_cast<std::uint32_t>(requested_mask)) ==
+                ESP_OK;
         if (state_saved) {
           (void)nvs_commit(handle);
         } else {
@@ -1133,15 +1152,15 @@ esp_err_t set_relay_mask(Mcp23017State& state, uint8_t mask) {
 }
 
 esp_err_t set_relay_mask_safe(uint8_t mask) {
-	  if (!g_i2c_initialized || !g_mcp_available || g_hardware_degraded) {
-	    return ESP_ERR_INVALID_STATE;
-	  }
-	  Mcp23017State state;
+  if (!g_i2c_initialized || !g_mcp_available || g_hardware_degraded) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  Mcp23017State state;
   const IoMaskSnapshot masks = io_mask_snapshot();
-	  state.connected = masks.mcp_available;
-	  state.relay_mask = masks.relay_output_mask;
-	  return set_relay_mask(state, mask);
-	}
+  state.connected = masks.mcp_available;
+  state.relay_mask = masks.relay_output_mask;
+  return set_relay_mask(state, mask);
+}
 
 esp_err_t set_relay_channel_safe(int channel, bool on) {
   if (channel < 0 || channel >= 8) {
@@ -1161,12 +1180,10 @@ uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask)
   return on ? static_cast<uint8_t>(current_mask | bit) : static_cast<uint8_t>(current_mask & ~bit);
 }
 
-bool read_button_inputs(uint8_t* value) {
-  return mcp_read_reg(kGpiob, value) == ESP_OK;
-}
+bool read_button_inputs(uint8_t* value) { return mcp_read_reg(kGpiob, value) == ESP_OK; }
 
 std::uint8_t load_relay_state_from_nvs(std::uint8_t fallback) {
-  nvs_handle_t handle {};
+  nvs_handle_t handle{};
   if (nvs_open(kRelaysNs, NVS_READONLY, &handle) != ESP_OK) {
     return fallback;
   }
@@ -1181,11 +1198,12 @@ std::uint8_t load_relay_state_from_nvs(std::uint8_t fallback) {
                                (format == kRelaysStateFormatV1);
   nvs_close(handle);
   const std::uint8_t stored_mask = static_cast<std::uint8_t>(state_u32 & 0xFFu);
-	  return is_state_format ? stored_mask : luce::relay::output_to_state_mask(stored_mask, kRelayActiveHigh);
-	}
+  return is_state_format ? stored_mask
+                         : luce::relay::output_to_state_mask(stored_mask, kRelayActiveHigh);
+}
 
 std::uint8_t load_relay_night_mask_from_nvs() {
-  nvs_handle_t handle {};
+  nvs_handle_t handle{};
   if (nvs_open(kRelaysNs, NVS_READONLY, &handle) != ESP_OK) {
     return 0x00;
   }
@@ -1196,22 +1214,30 @@ std::uint8_t load_relay_night_mask_from_nvs() {
 }
 
 void load_light_threshold_from_nvs() {
-  nvs_handle_t handle {};
+  nvs_handle_t handle{};
   if (nvs_open(kSensorNs, NVS_READONLY, &handle) != ESP_OK) {
-    g_light_threshold = kLightThresholdFallback;
+    g_light_threshold.store(kLightThresholdFallback, std::memory_order_relaxed);
     return;
   }
   std::uint16_t threshold = kLightThresholdFallback;
   (void)nvs_get_u16(handle, kSensorThresholdKey, &threshold);
   nvs_close(handle);
-  g_light_threshold = threshold;
+  g_light_threshold.store(threshold, std::memory_order_relaxed);
 }
 
 void io_set_relay_night_mask(std::uint8_t night_mask) {
-  portENTER_CRITICAL(&g_io_mask_lock);
-  g_relay_night_mask = night_mask;
-  portEXIT_CRITICAL(&g_io_mask_lock);
-  nvs_handle_t handle {};
+  {
+    RelayOpGuard guard;
+    if (!guard.ok()) {
+      ESP_LOGW(kTag, "Relay namespace update skipped; relay op lock unavailable");
+      return;
+    }
+    portENTER_CRITICAL(&g_io_mask_lock);
+    g_relay_night_mask = night_mask;
+    portEXIT_CRITICAL(&g_io_mask_lock);
+    io_apply_relay_policy();
+  }
+  nvs_handle_t handle{};
   if (nvs_open(kRelaysNs, NVS_READWRITE, &handle) == ESP_OK) {
     if (nvs_set_u8(handle, kRelaysNightKey, night_mask) == ESP_OK) {
       (void)nvs_commit(handle);
@@ -1222,12 +1248,11 @@ void io_set_relay_night_mask(std::uint8_t night_mask) {
   } else {
     ESP_LOGW(kTag, "Relay namespace open failed; relays/night not persisted");
   }
-  io_apply_relay_policy();
 }
 
 void io_set_light_threshold(std::uint16_t threshold) {
-  g_light_threshold = threshold;
-  nvs_handle_t handle {};
+  g_light_threshold.store(threshold, std::memory_order_relaxed);
+  nvs_handle_t handle{};
   if (nvs_open(kSensorNs, NVS_READWRITE, &handle) == ESP_OK) {
     if (nvs_set_u16(handle, kSensorThresholdKey, threshold) == ESP_OK) {
       (void)nvs_commit(handle);
@@ -1245,7 +1270,11 @@ void io_apply_relay_policy() {
   if (!g_i2c_initialized || !g_mcp_available || g_hardware_degraded) {
     return;
   }
-  const bool is_day = (g_last_light_raw > static_cast<int>(g_light_threshold));
+  RelayOpGuard guard;
+  if (!guard.ok()) {
+    return;
+  }
+  const bool is_day = (g_last_light_raw > static_cast<int>(light_threshold_value()));
   portENTER_CRITICAL(&g_io_mask_lock);
   g_is_day = is_day;
   const std::uint8_t relay_mask = g_relay_mask;
@@ -1258,32 +1287,20 @@ void io_apply_relay_policy() {
   (void)set_relay_mask_internal(state, relay_mask, false);
 }
 
-std::uint8_t io_relay_mask() {
-  return io_mask_snapshot().relay_mask;
-}
+std::uint8_t io_relay_mask() { return io_mask_snapshot().relay_mask; }
 
-std::uint8_t io_relay_output_mask() {
-  return io_mask_snapshot().relay_output_mask;
-}
+std::uint8_t io_relay_output_mask() { return io_mask_snapshot().relay_output_mask; }
 
-std::uint8_t io_button_mask() {
-  return io_mask_snapshot().button_mask;
-}
+std::uint8_t io_button_mask() { return io_mask_snapshot().button_mask; }
 
-std::uint8_t io_relay_night_mask() {
-  return io_mask_snapshot().relay_night_mask;
-}
+std::uint8_t io_relay_night_mask() { return io_mask_snapshot().relay_night_mask; }
 
-bool io_hardware_degraded() {
-  return io_mask_snapshot().hardware_degraded;
-}
+bool io_hardware_degraded() { return io_mask_snapshot().hardware_degraded; }
 
-std::uint16_t io_light_threshold() {
-  return g_light_threshold;
-}
+std::uint16_t io_light_threshold() { return light_threshold_value(); }
 
 void configure_int_pin() {
-  gpio_config_t conf {};
+  gpio_config_t conf{};
   std::memset(&conf, 0, sizeof(conf));
   conf.pin_bit_mask = (1ULL << kMcpIntPin);
   conf.mode = GPIO_MODE_INPUT;
@@ -1300,7 +1317,7 @@ void configure_int_pin() {
 }
 
 struct I2cRuntimeContext {
-  Mcp23017State mcp_state {};
+  Mcp23017State mcp_state{};
   uint8_t debounce_counts[8] = {0};
   uint8_t debounced_buttons = 0x00;
   uint8_t last_reported_buttons = 0x00;
@@ -1329,7 +1346,8 @@ bool configure_mcp_runtime(I2cRuntimeContext& ctx, const I2cScanResult& scan) {
   }
 
   configure_int_pin();
-  const std::uint8_t state_mask = luce::relay::output_to_state_mask(ctx.mcp_state.relay_mask, kRelayActiveHigh);
+  const std::uint8_t state_mask =
+      luce::relay::output_to_state_mask(ctx.mcp_state.relay_mask, kRelayActiveHigh);
   set_io_masks(state_mask, ctx.mcp_state.relay_mask, 0x00, ctx.mcp_state.connected, false);
   const std::uint8_t night_mask = load_relay_night_mask_from_nvs();
   portENTER_CRITICAL(&g_io_mask_lock);
@@ -1338,7 +1356,7 @@ bool configure_mcp_runtime(I2cRuntimeContext& ctx, const I2cScanResult& scan) {
   load_light_threshold_from_nvs();
   log_sensor_readings();
   portENTER_CRITICAL(&g_io_mask_lock);
-  g_is_day = g_last_light_raw > static_cast<int>(g_light_threshold);
+  g_is_day = g_last_light_raw > static_cast<int>(light_threshold_value());
   portEXIT_CRITICAL(&g_io_mask_lock);
 
   const std::uint8_t startup_mask = load_relay_state_from_nvs(0x00);
@@ -1382,8 +1400,8 @@ void sample_buttons(I2cRuntimeContext& ctx) {
       ctx.debounced_buttons ^= bit_mask;
       ctx.debounce_counts[bit] = 0;
       changed = true;
-      const bool next_pressed =
-          kButtonActiveLow ? ((ctx.debounced_buttons & bit_mask) == 0) : ((ctx.debounced_buttons & bit_mask) != 0);
+      const bool next_pressed = kButtonActiveLow ? ((ctx.debounced_buttons & bit_mask) == 0)
+                                                 : ((ctx.debounced_buttons & bit_mask) != 0);
       if (!next_pressed) {
         continue;
       }
@@ -1401,12 +1419,20 @@ void sample_buttons(I2cRuntimeContext& ctx) {
         continue;
       }
 
+      RelayOpGuard relay_guard;
+      if (!relay_guard.ok()) {
+        led_status_notify_user_error();
+        ESP_LOGW(kTag, "Button %u relay write skipped; relay op lock unavailable",
+                 static_cast<unsigned>(bit));
+        continue;
+      }
       const uint8_t next_relay_mask = static_cast<std::uint8_t>(io_relay_mask() ^ bit_mask);
       const bool relay_on = ((next_relay_mask & bit_mask) != 0u);
       led_status_notify_user_input();
       ESP_LOGI(kTag, "Toggling Relay %u %s", static_cast<unsigned>(bit), relay_on ? "ON" : "OFF");
       if (set_relay_mask(ctx.mcp_state, next_relay_mask) == ESP_OK) {
-        ESP_LOGI(kTag, "Button %u relay state applied mask=0x%02X", static_cast<unsigned>(bit), next_relay_mask);
+        ESP_LOGI(kTag, "Button %u relay state applied mask=0x%02X", static_cast<unsigned>(bit),
+                 next_relay_mask);
       } else {
         led_status_notify_user_error();
         ESP_LOGW(kTag, "Button %u relay write failed", static_cast<unsigned>(bit));
@@ -1433,13 +1459,9 @@ void sample_mcp_interrupt(I2cRuntimeContext& ctx) {
   }
 }
 
-void sample_sensors() {
-  log_sensor_readings();
-}
+void sample_sensors() { log_sensor_readings(); }
 
-void apply_night_policy_step() {
-  io_apply_relay_policy();
-}
+void apply_night_policy_step() { io_apply_relay_policy(); }
 
 void update_lcd_step(I2cRuntimeContext& ctx, TickType_t now) {
   ctx.last_lcd_tick = now;
@@ -1518,9 +1540,7 @@ void run_i2c_diagnostics() {
   }
 }
 
-void io_task(void*) {
-  run_i2c_diagnostics();
-}
+void io_task(void*) { run_i2c_diagnostics(); }
 
 void io_startup() {
   if (g_i2c_task != nullptr) {

@@ -8,11 +8,8 @@
 namespace luce {
 namespace tls {
 
-inline esp_err_t load_ca_pem_from_nvs(const char* ns,
-                                      const char* key,
-                                      const char* source,
-                                      char* out,
-                                      std::size_t out_size) {
+inline esp_err_t load_ca_pem_from_nvs(const char* ns, const char* key, const char* source,
+                                      char* out, std::size_t out_size) {
   if (out == nullptr || out_size == 0 || ns == nullptr || key == nullptr || source == nullptr) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -38,5 +35,5 @@ inline esp_err_t load_ca_pem_from_nvs(const char* ns,
   return ESP_ERR_INVALID_STATE;
 }
 
-}  // namespace tls
-}  // namespace luce
+} // namespace tls
+} // namespace luce

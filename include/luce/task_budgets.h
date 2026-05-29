@@ -18,6 +18,6 @@ inline constexpr TaskBudget kTaskHttp{"http_server", 4096, 2, tskNO_AFFINITY};
 inline constexpr TaskBudget kTaskOta{"ota", 6144, 2, tskNO_AFFINITY};
 inline constexpr TaskBudget kTaskCli{"cli", 6144, 2, tskNO_AFFINITY};
 
-}  // namespace task_budget
+} // namespace task_budget
 
-}  // namespace luce
+} // namespace luce

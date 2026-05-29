@@ -86,7 +86,7 @@ bool read_once(gpio_num_t data_pin, float& temperature_c, float& humidity_percen
   return true;
 }
 
-}  // namespace
+} // namespace
 
 bool dht21_22_read_with_retries(gpio_num_t data_pin, float& temperature_c, float& humidity_percent,
                                 int attempts) {

@@ -28,7 +28,7 @@
 namespace {
 
 constexpr const char* kTag = "[BOOT]";
-}  // namespace
+} // namespace
 
 extern "C" void app_main(void) {
   luce_log_startup_banner();

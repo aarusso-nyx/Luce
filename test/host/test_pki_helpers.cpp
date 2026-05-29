@@ -17,6 +17,7 @@ void test_pki_helpers() {
   MINITEST_EXPECT_FALSE(ok);
 
   MINITEST_EXPECT_STREQ(luce::pki::role_name(luce::pki::Role::kHttpsServer), "https_server");
+  MINITEST_EXPECT_STREQ(luce::pki::state_name(luce::pki::State::kKeyReady), "key_present");
   MINITEST_EXPECT_STREQ(luce::pki::state_name(luce::pki::State::kActive), "cert_committed");
 
   const std::uint8_t mac[6] = {0xAA, 0xBB, 0x00, 0x11, 0x22, 0x33};
@@ -34,8 +35,10 @@ void test_pki_helpers() {
   MINITEST_EXPECT_STREQ(fp, "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:"
                             "10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F");
 
-  MINITEST_EXPECT_TRUE(luce::pki::is_valid_transition(luce::pki::State::kEmpty, luce::pki::State::kCsrReady));
+  MINITEST_EXPECT_TRUE(luce::pki::is_valid_transition(luce::pki::State::kEmpty, luce::pki::State::kKeyReady));
+  MINITEST_EXPECT_TRUE(luce::pki::is_valid_transition(luce::pki::State::kKeyReady, luce::pki::State::kCsrReady));
   MINITEST_EXPECT_TRUE(luce::pki::is_valid_transition(luce::pki::State::kCsrReady, luce::pki::State::kCertStaged));
   MINITEST_EXPECT_TRUE(luce::pki::is_valid_transition(luce::pki::State::kCertStaged, luce::pki::State::kActive));
+  MINITEST_EXPECT_FALSE(luce::pki::is_valid_transition(luce::pki::State::kEmpty, luce::pki::State::kCsrReady));
   MINITEST_EXPECT_FALSE(luce::pki::is_valid_transition(luce::pki::State::kEmpty, luce::pki::State::kActive));
 }

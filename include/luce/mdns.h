@@ -11,4 +11,4 @@ bool mdns_is_running();
 const char* mdns_state_name();
 #else
 inline const char* mdns_state_name() { return "DISABLED"; }
-#endif  // LUCE_HAS_MDNS
+#endif // LUCE_HAS_MDNS

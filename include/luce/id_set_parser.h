@@ -59,12 +59,8 @@ inline bool parse_decimal_uint32(const char* text, std::size_t len, std::uint32_
 // *applied_count. On failure, fills *issue with the offending token text
 // (best-effort, truncated to 31 chars) so callers can log it.
 template <typename Visitor>
-IdSetError parse_id_set(const char* expr,
-                        std::uint32_t min_id,
-                        std::uint32_t max_id,
-                        bool allow_all,
-                        std::uint16_t* applied_count,
-                        Visitor visitor,
+IdSetError parse_id_set(const char* expr, std::uint32_t min_id, std::uint32_t max_id,
+                        bool allow_all, std::uint16_t* applied_count, Visitor visitor,
                         IdSetIssue* issue = nullptr) {
   if (applied_count) {
     *applied_count = 0;
@@ -165,5 +161,5 @@ IdSetError parse_id_set(const char* expr,
   return IdSetError::kOk;
 }
 
-}  // namespace parse
-}  // namespace luce
+} // namespace parse
+} // namespace luce

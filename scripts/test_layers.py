@@ -924,7 +924,6 @@ def layer_preflight(args: argparse.Namespace, layer: str, out_dir: Path) -> Laye
 def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> None:
     pass_count = sum(1 for r in results if r.status == "PASS")
     fail_count = sum(1 for r in results if r.status == "FAIL")
-    skip_count = sum(1 for r in results if r.status == "SKIP")
     deselected_count = sum(1 for r in results if r.status == "DESELECTED")
     ran_count = sum(1 for r in results if r.status in {"PASS", "FAIL"})
 
@@ -938,7 +937,6 @@ def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> N
         f"- out_dir: {out_dir}",
         f"- pass: {pass_count}",
         f"- fail: {fail_count}",
-        f"- skip: {skip_count}",
         f"- deselected: {deselected_count}",
         f"- ran: {ran_count}",
         "",
@@ -954,7 +952,6 @@ def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> N
         "out_dir": str(out_dir),
         "pass": pass_count,
         "fail": fail_count,
-        "skip": skip_count,
         "deselected": deselected_count,
         "ran": ran_count,
         "results": [r.__dict__ for r in results],
@@ -962,7 +959,15 @@ def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> N
     js.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def write_evidence_manifest(repo_root: Path, out_dir: Path, run_id: str, results: list[LayerResult], manifest_path: Path) -> None:
+def write_evidence_manifest(
+    repo_root: Path,
+    out_dir: Path,
+    run_id: str,
+    results: list[LayerResult],
+    manifest_path: Path,
+    release: bool,
+    target: str,
+) -> None:
     summary_json = out_dir / "summary.json"
     local_artifacts = []
     for path in [summary_json, out_dir / "summary.md"]:
@@ -978,12 +983,23 @@ def write_evidence_manifest(repo_root: Path, out_dir: Path, run_id: str, results
         }
         for r in results
     ]
-    source = {"git_sha": git_sha(repo_root), "target": "test_layers"}
+    source = {"git_sha": git_sha(repo_root), "target": ("release-" if release else "") + target}
+    hil_pass = target == "hardware" and results and all(r.status == "PASS" for r in results)
+    checks.append(
+        {
+            "name": "hardware-hil",
+            "status": "PASS" if hil_pass else "PREREQ_MISSING",
+            "required": release,
+            "log": str(out_dir / "summary.md"),
+            "details": "release hardware evidence" if release else "advisory hardware evidence",
+        }
+    )
     evidence_path = manifest_path.with_name("evidence-latest.json")
     evidence = {
         "schema": 1,
         "run_id": run_id,
         "source": source,
+        "release": release,
         "checks": checks,
         "local_artifacts": local_artifacts,
     }
@@ -993,6 +1009,7 @@ def write_evidence_manifest(repo_root: Path, out_dir: Path, run_id: str, results
         "schema": 1,
         "run_id": run_id,
         "source": source,
+        "release": release,
         "checks": checks,
         "artifacts": [
             {
@@ -1114,6 +1131,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--write-evidence-manifest",
         action="store_true",
         help="Refresh docs/governance/health/evidence-manifest.json from this local run.",
+    )
+    parser.add_argument(
+        "--release-evidence",
+        action="store_true",
+        help="Mark the emitted evidence manifest as release-gated; hardware-hil must pass.",
     )
     parser.add_argument(
         "--wokwi-timeout-ms",
@@ -1274,6 +1296,8 @@ def main(argv: Sequence[str]) -> int:
             run_id,
             results,
             repo_root / "docs" / "governance" / "health" / "evidence-manifest.json",
+            args.release_evidence,
+            args.target,
         )
 
     failed = any(r.status == "FAIL" for r in results)

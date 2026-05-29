@@ -28,4 +28,4 @@ inline esp_err_t http_tls_cert_begin_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
 inline esp_err_t http_tls_cert_append_for_cli(const char*) { return ESP_ERR_NOT_SUPPORTED; }
 inline esp_err_t http_tls_cert_commit_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
 inline esp_err_t http_tls_reset_for_cli() { return ESP_ERR_NOT_SUPPORTED; }
-#endif  // LUCE_HAS_HTTP
+#endif // LUCE_HAS_HTTP

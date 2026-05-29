@@ -81,7 +81,7 @@ inline bool is_valid_transition(State from, State to) {
   }
   switch (from) {
   case State::kEmpty:
-    return to == State::kCsrReady || to == State::kKeyReady;
+    return to == State::kKeyReady;
   case State::kKeyReady:
     return to == State::kCsrReady || to == State::kEmpty;
   case State::kCsrReady:

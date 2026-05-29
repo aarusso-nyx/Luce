@@ -53,8 +53,8 @@ struct CliNetSession {
   char peer[48] = "n/a";
 };
 
-CliNetConfig g_cfg {};
-CliNetSession g_session {};
+CliNetConfig g_cfg{};
+CliNetSession g_session{};
 TaskHandle_t g_task = nullptr;
 int g_listener = -1;
 
@@ -62,9 +62,7 @@ bool is_auth_line(int argc, char* argv[]) {
   return argc >= 2 && (std::strcmp(argv[0], "AUTH") == 0 || std::strcmp(argv[0], "auth") == 0);
 }
 
-const char* session_peer_or_na() {
-  return g_session.peer[0] != '\0' ? g_session.peer : "n/a";
-}
+const char* session_peer_or_na() { return g_session.peer[0] != '\0' ? g_session.peer : "n/a"; }
 
 void load_cli_net_config() {
   std::memset(&g_cfg, 0, sizeof(g_cfg));
@@ -113,9 +111,7 @@ void send_line(int sock, const char* text) {
   send(sock, out, std::strlen(out), 0);
 }
 
-void send_auth_prompt(int sock) {
-  send_line(sock, "AUTH <token>");
-}
+void send_auth_prompt(int sock) { send_line(sock, "AUTH <token>"); }
 
 void send_cmd_denied(int sock, const char* command) {
   if (!command) {
@@ -127,17 +123,11 @@ void send_cmd_denied(int sock, const char* command) {
   send_line(sock, out);
 }
 
-void send_ok(int sock, const char* text) {
-  send_line(sock, text ? text : "OK");
-}
+void send_ok(int sock, const char* text) { send_line(sock, text ? text : "OK"); }
 
-bool line_contains_printable(char ch) {
-  return ch >= 32 && ch <= 126;
-}
+bool line_contains_printable(char ch) { return ch >= 32 && ch <= 126; }
 
-bool command_allowed_readonly(const char* cmd) {
-  return cli_command_is_readonly(cmd);
-}
+bool command_allowed_readonly(const char* cmd) { return cli_command_is_readonly(cmd); }
 
 void handle_command(int sock, char* line_buffer) {
   char* argv[kTokenMax] = {nullptr};
@@ -214,10 +204,12 @@ bool ensure_tcp_stack_ready() {
     if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
       return true;
     }
-    ESP_LOGW(kTag, "[CLI_NET] esp_netif_init retry=%u err=%s", static_cast<unsigned>(attempt + 1), esp_err_to_name(err));
+    ESP_LOGW(kTag, "[CLI_NET] esp_netif_init retry=%u err=%s", static_cast<unsigned>(attempt + 1),
+             esp_err_to_name(err));
     vTaskDelay(pdMS_TO_TICKS(kNetStackWaitMs));
   }
-  ESP_LOGE(kTag, "[CLI_NET] tcp stack not ready after %u attempts", static_cast<unsigned>(kNetStackMaxWaitAttempts));
+  ESP_LOGE(kTag, "[CLI_NET] tcp stack not ready after %u attempts",
+           static_cast<unsigned>(kNetStackMaxWaitAttempts));
   return false;
 }
 
@@ -225,7 +217,8 @@ int open_listener_socket(std::uint16_t port) {
   int listener = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
   if (listener < 0) {
     const int socket_err = errno;
-    ESP_LOGW(kTag, "[CLI_NET] socket() failed port=%u errno=%d", static_cast<unsigned>(port), socket_err);
+    ESP_LOGW(kTag, "[CLI_NET] socket() failed port=%u errno=%d", static_cast<unsigned>(port),
+             socket_err);
     return -1;
   }
 
@@ -246,7 +239,8 @@ int open_listener_socket(std::uint16_t port) {
   if (listen(listener, 1) != 0) {
     const int listen_err = errno;
     close(listener);
-    ESP_LOGW(kTag, "[CLI_NET] listen failed port=%u errno=%d", static_cast<unsigned>(port), listen_err);
+    ESP_LOGW(kTag, "[CLI_NET] listen failed port=%u errno=%d", static_cast<unsigned>(port),
+             listen_err);
     return -1;
   }
   return listener;
@@ -289,10 +283,10 @@ void cli_net_task(void*) {
     g_session.authed = false;
     g_session.fail_count = 0;
 
-    fd_set rfds {};
+    fd_set rfds{};
     FD_ZERO(&rfds);
     FD_SET(g_listener, &rfds);
-    struct timeval timeout {};
+    struct timeval timeout{};
     timeout.tv_sec = 1;
     timeout.tv_usec = 0;
     const int ready = select(g_listener + 1, &rfds, nullptr, nullptr, &timeout);
@@ -300,7 +294,7 @@ void cli_net_task(void*) {
       continue;
     }
 
-    sockaddr_in peer {};
+    sockaddr_in peer{};
     socklen_t peer_len = sizeof(peer);
     const int session = accept(g_listener, reinterpret_cast<sockaddr*>(&peer), &peer_len);
     if (session < 0) {
@@ -314,10 +308,10 @@ void cli_net_task(void*) {
     std::size_t line_len = 0;
     TickType_t last_activity = xTaskGetTickCount();
     while (true) {
-      fd_set rd {};
+      fd_set rd{};
       FD_ZERO(&rd);
       FD_SET(session, &rd);
-      struct timeval to {};
+      struct timeval to{};
       to.tv_sec = 1;
       to.tv_usec = 0;
       const int r = select(session + 1, &rd, nullptr, nullptr, &to);
@@ -377,7 +371,7 @@ void cli_net_task(void*) {
   stop_listener();
 }
 
-}  // namespace
+} // namespace
 
 void cli_net_startup() {
   if (g_task == nullptr) {
@@ -385,29 +379,21 @@ void cli_net_startup() {
   }
 }
 
-bool cli_net_is_enabled() {
-  return g_cfg.enabled;
-}
+bool cli_net_is_enabled() { return g_cfg.enabled; }
 
-bool cli_net_is_listening() {
-  return g_listener >= 0;
-}
+bool cli_net_is_listening() { return g_listener >= 0; }
 
 void cli_net_status_for_cli() {
   ESP_LOGI(kTag, "cli_net.status enabled=%d running=%d authed=%d session=%d port=%u peer=%s",
-           g_cfg.enabled ? 1 : 0, g_listener >= 0 ? 1 : 0, g_session.authed ? 1 : 0, g_session.running ? 1 : 0,
-           g_session.port, session_peer_or_na());
+           g_cfg.enabled ? 1 : 0, g_listener >= 0 ? 1 : 0, g_session.authed ? 1 : 0,
+           g_session.running ? 1 : 0, g_session.port, session_peer_or_na());
 }
 
 #else
 
-bool cli_net_is_enabled() {
-  return false;
-}
+bool cli_net_is_enabled() { return false; }
 
-bool cli_net_is_listening() {
-  return false;
-}
+bool cli_net_is_listening() { return false; }
 
 void cli_net_startup() {}
 void cli_net_status_for_cli() {}

@@ -65,7 +65,8 @@ constexpr std::uint16_t kCaptiveHttpPort = 80;
 constexpr std::size_t kWsClientScanMax = 8;
 constexpr const char* kDefaultToken = "luce-token";
 constexpr const char* kUnauthorizedPayload = "{\"error\":\"unauthorized\"}";
-constexpr const char* kMethodNotAllowedPayload = "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
+constexpr const char* kMethodNotAllowedPayload =
+    "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
 constexpr const char* kBadRequestPayload = "{\"error\":\"bad_request\",\"message\":\"%s\"}";
 
 constexpr std::size_t kTlsCsrPemBufferSize = 1536;
@@ -83,7 +84,7 @@ struct HttpConfig {
   char token[64] = {};
 };
 
-HttpConfig g_cfg {};
+HttpConfig g_cfg{};
 HttpState g_state = HttpState::kDisabled;
 httpd_handle_t g_httpd = nullptr;
 httpd_handle_t g_captive_httpd = nullptr;
@@ -98,29 +99,30 @@ struct WebAsset {
 };
 
 const WebAsset kWebAppAssets[] = {
-    {"/index.html", "text/html; charset=utf-8", webapp_index_html, static_cast<std::size_t>(webapp_index_html_len)},
-    {"/app.css", "text/css; charset=utf-8", webapp_app_css, static_cast<std::size_t>(webapp_app_css_len)},
-    {"/script.js", "text/javascript; charset=utf-8", webapp_script_js, static_cast<std::size_t>(webapp_script_js_len)},
+    {"/index.html", "text/html; charset=utf-8", webapp_index_html,
+     static_cast<std::size_t>(webapp_index_html_len)},
+    {"/app.css", "text/css; charset=utf-8", webapp_app_css,
+     static_cast<std::size_t>(webapp_app_css_len)},
+    {"/script.js", "text/javascript; charset=utf-8", webapp_script_js,
+     static_cast<std::size_t>(webapp_script_js_len)},
 };
 
 const char* state_name(HttpState state) {
   switch (state) {
-    case HttpState::kDisabled:
-      return "DISABLED";
-    case HttpState::kInit:
-      return "INIT";
-    case HttpState::kStarted:
-      return "STARTED";
-    case HttpState::kFailed:
-      return "FAILED";
-    default:
-      return "UNKNOWN";
+  case HttpState::kDisabled:
+    return "DISABLED";
+  case HttpState::kInit:
+    return "INIT";
+  case HttpState::kStarted:
+    return "STARTED";
+  case HttpState::kFailed:
+    return "FAILED";
+  default:
+    return "UNKNOWN";
   }
 }
 
-const char* http_state_name_impl() {
-  return state_name(g_state);
-}
+const char* http_state_name_impl() { return state_name(g_state); }
 
 void set_state(HttpState next, const char* reason = nullptr) {
   luce::runtime::set_state(g_state, next, state_name, "[HTTP]", reason);
@@ -182,18 +184,19 @@ void load_http_config() {
 
   const luce::pki::Status pki_status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
 
-  set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled, g_cfg.enabled ? "config_enabled" : "config_disabled");
+  set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled,
+            g_cfg.enabled ? "config_enabled" : "config_disabled");
   ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u key_present=%d cert_present=%d tls_status=%s",
-           g_cfg.enabled ? 1 : 0, g_cfg.port,
-           pki_status.key_present ? 1 : 0, pki_status.cert_present ? 1 : 0,
-           tls_status_name());
+           g_cfg.enabled ? 1 : 0, g_cfg.port, pki_status.key_present ? 1 : 0,
+           pki_status.cert_present ? 1 : 0, tls_status_name());
 }
 
 const char* as_n_a(const char* value) {
   return (value != nullptr && value[0] != '\0') ? value : "n/a";
 }
 
-esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size_t payload_len = 0) {
+esp_err_t send_json(httpd_req_t* req, int status, const char* payload,
+                    std::size_t payload_len = 0) {
   char status_line[16] = {0};
   std::snprintf(status_line, sizeof(status_line), "%d", status);
   httpd_resp_set_status(req, status_line);
@@ -209,7 +212,8 @@ esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size
 
 esp_err_t send_method_not_allowed(httpd_req_t* req, const char* allowed_methods) {
   char payload[96] = {0};
-  std::snprintf(payload, sizeof(payload), kMethodNotAllowedPayload, allowed_methods ? allowed_methods : "GET");
+  std::snprintf(payload, sizeof(payload), kMethodNotAllowedPayload,
+                allowed_methods ? allowed_methods : "GET");
   httpd_resp_set_status(req, "405");
   if (allowed_methods != nullptr) {
     httpd_resp_set_hdr(req, "Allow", allowed_methods);
@@ -224,7 +228,8 @@ esp_err_t send_unauthorized(httpd_req_t* req) {
 
 esp_err_t send_bad_request(httpd_req_t* req, const char* message) {
   char payload[160] = {0};
-  std::snprintf(payload, sizeof(payload), kBadRequestPayload, message ? message : "invalid_request");
+  std::snprintf(payload, sizeof(payload), kBadRequestPayload,
+                message ? message : "invalid_request");
   return send_json(req, 400, payload, 0);
 }
 
@@ -285,7 +290,8 @@ bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
   }
 
   char query[96] = {0};
-  if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
+  if (httpd_req_get_url_query_len(req) > 0 &&
+      httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
       if (httpd_query_key_value(query, "value", out, out_size) == ESP_OK) {
         return out[0] != '\0';
@@ -295,9 +301,7 @@ bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
   return false;
 }
 
-void trim_ascii_whitespace_inplace(char* text) {
-  (void)luce::str::trim_ascii_inplace(text);
-}
+void trim_ascii_whitespace_inplace(char* text) { (void)luce::str::trim_ascii_inplace(text); }
 
 esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
@@ -322,12 +326,12 @@ void build_ws_snapshot_payload(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
     return;
   }
-  I2cSensorSnapshot snapshot {};
+  I2cSensorSnapshot snapshot{};
   const bool has_sensor = read_sensor_snapshot(snapshot);
-	  const std::uint16_t threshold = io_light_threshold();
-	  const std::uint8_t night_mask = io_relay_night_mask();
+  const std::uint16_t threshold = io_light_threshold();
+  const std::uint8_t night_mask = io_relay_night_mask();
   const bool hardware_degraded = io_hardware_degraded();
-	  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
+  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   std::time_t now = 0;
   (void)std::time(&now);
   luce::json::Writer writer(out, out_size);
@@ -358,7 +362,7 @@ void ws_broadcast_snapshot(httpd_handle_t server) {
   }
   char payload[512] = {0};
   build_ws_snapshot_payload(payload, sizeof(payload));
-  httpd_ws_frame_t ws_pkt {};
+  httpd_ws_frame_t ws_pkt{};
   ws_pkt.type = HTTPD_WS_TYPE_TEXT;
   ws_pkt.payload = reinterpret_cast<std::uint8_t*>(payload);
   ws_pkt.len = std::strlen(payload);
@@ -383,12 +387,12 @@ esp_err_t route_health_impl(httpd_req_t* req) {
 esp_err_t route_info_impl(httpd_req_t* req) {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  I2cSensorSnapshot snapshot {};
+  I2cSensorSnapshot snapshot{};
   const bool has_sensor = read_sensor_snapshot(snapshot);
-	  const std::uint16_t threshold = io_light_threshold();
-	  const std::uint8_t night_mask = io_relay_night_mask();
+  const std::uint16_t threshold = io_light_threshold();
+  const std::uint8_t night_mask = io_relay_night_mask();
   const bool hardware_degraded = io_hardware_degraded();
-	  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
+  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   const luce::pki::Status pki_status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
   const bool cert_present = pki_status.cert_present;
   const bool key_present = pki_status.key_present;
@@ -483,11 +487,14 @@ esp_err_t route_ota_check_impl(httpd_req_t* req) {
   if (req->content_len > 0 && req->content_len < static_cast<int>(sizeof(body_url))) {
     const int got = httpd_req_recv(req, body_url, req->content_len);
     if (got > 0) {
-      body_url[got < static_cast<int>(sizeof(body_url)) ? got : static_cast<int>(sizeof(body_url) - 1)] = '\0';
+      body_url[got < static_cast<int>(sizeof(body_url)) ? got
+                                                        : static_cast<int>(sizeof(body_url) - 1)] =
+          '\0';
       trim_ascii_whitespace_inplace(body_url);
     }
   }
-  if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
+  if (httpd_req_get_url_query_len(req) > 0 &&
+      httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
       if (httpd_query_key_value(query, "url", query_url, sizeof(query_url)) == ESP_OK) {
         trim_ascii_whitespace_inplace(query_url);
@@ -576,10 +583,11 @@ esp_err_t route_leds_state_0_impl(httpd_req_t* req) {
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
   char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"index\":0,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
-                static_cast<unsigned>(state & 0x1u),
-                (manual_enabled & 0x1u) ? (((manual_value & 0x1u) != 0u) ? "true" : "false") : "null",
-                led_manual_mode_name(led_status_manual_mode(0)));
+  std::snprintf(
+      payload, sizeof(payload), "{\"index\":0,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+      static_cast<unsigned>(state & 0x1u),
+      (manual_enabled & 0x1u) ? (((manual_value & 0x1u) != 0u) ? "true" : "false") : "null",
+      led_manual_mode_name(led_status_manual_mode(0)));
   return send_json(req, 200, payload, 0);
 }
 
@@ -599,10 +607,11 @@ esp_err_t route_leds_state_1_impl(httpd_req_t* req) {
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
   char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"index\":1,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
-                static_cast<unsigned>((state >> 1) & 0x1u),
-                (manual_enabled & 0x2u) ? (((manual_value & 0x2u) != 0u) ? "true" : "false") : "null",
-                led_manual_mode_name(led_status_manual_mode(1)));
+  std::snprintf(
+      payload, sizeof(payload), "{\"index\":1,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+      static_cast<unsigned>((state >> 1) & 0x1u),
+      (manual_enabled & 0x2u) ? (((manual_value & 0x2u) != 0u) ? "true" : "false") : "null",
+      led_manual_mode_name(led_status_manual_mode(1)));
   return send_json(req, 200, payload, 0);
 }
 
@@ -622,10 +631,11 @@ esp_err_t route_leds_state_2_impl(httpd_req_t* req) {
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
   char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"index\":2,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
-                static_cast<unsigned>((state >> 2) & 0x1u),
-                (manual_enabled & 0x4u) ? (((manual_value & 0x4u) != 0u) ? "true" : "false") : "null",
-                led_manual_mode_name(led_status_manual_mode(2)));
+  std::snprintf(
+      payload, sizeof(payload), "{\"index\":2,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+      static_cast<unsigned>((state >> 2) & 0x1u),
+      (manual_enabled & 0x4u) ? (((manual_value & 0x4u) != 0u) ? "true" : "false") : "null",
+      led_manual_mode_name(led_status_manual_mode(2)));
   return send_json(req, 200, payload, 0);
 }
 
@@ -633,14 +643,14 @@ esp_err_t route_ws(httpd_req_t* req) {
   if (req->method == HTTP_GET) {
     char payload[512] = {0};
     build_ws_snapshot_payload(payload, sizeof(payload));
-    httpd_ws_frame_t ws_pkt {};
+    httpd_ws_frame_t ws_pkt{};
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     ws_pkt.payload = reinterpret_cast<std::uint8_t*>(payload);
     ws_pkt.len = std::strlen(payload);
     return httpd_ws_send_frame(req, &ws_pkt);
   }
 
-  httpd_ws_frame_t ws_pkt {};
+  httpd_ws_frame_t ws_pkt{};
   ws_pkt.type = HTTPD_WS_TYPE_TEXT;
   esp_err_t rc = httpd_ws_recv_frame(req, &ws_pkt, 0);
   if (rc != ESP_OK) {
@@ -662,7 +672,7 @@ esp_err_t route_ws(httpd_req_t* req) {
   }
 
   if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
-    httpd_ws_frame_t pong {};
+    httpd_ws_frame_t pong{};
     pong.type = HTTPD_WS_TYPE_PONG;
     pong.payload = ws_pkt.payload;
     pong.len = ws_pkt.len;
@@ -670,7 +680,7 @@ esp_err_t route_ws(httpd_req_t* req) {
   } else if (ws_pkt.type != HTTPD_WS_TYPE_CLOSE) {
     char payload[512] = {0};
     build_ws_snapshot_payload(payload, sizeof(payload));
-    httpd_ws_frame_t reply {};
+    httpd_ws_frame_t reply{};
     reply.type = HTTPD_WS_TYPE_TEXT;
     reply.payload = reinterpret_cast<std::uint8_t*>(payload);
     reply.len = std::strlen(payload);
@@ -701,7 +711,8 @@ const WebAsset* resolve_captive_asset(const char* path) {
 esp_err_t route_captive(httpd_req_t* req) {
   const WebAsset* asset = resolve_captive_asset(req != nullptr ? req->uri : nullptr);
   if (asset == nullptr || asset->data == nullptr || asset->size == 0) {
-    ESP_LOGW(kTag, "[HTTP][CAPTIVE] requested asset missing uri=%s", req && req->uri ? req->uri : "<null>");
+    ESP_LOGW(kTag, "[HTTP][CAPTIVE] requested asset missing uri=%s",
+             req && req->uri ? req->uri : "<null>");
     return httpd_resp_send_404(req);
   }
 
@@ -710,16 +721,16 @@ esp_err_t route_captive(httpd_req_t* req) {
 }
 
 constexpr RouteSpec kJsonApiRoutes[] = {
-    {"/api/health",       kMethodGet,                false, route_health_impl,       "GET"},
-    {"/api/info",         kMethodGet,                true,  route_info_impl,         "GET"},
-    {"/api/version",      kMethodGet,                false, route_version_impl,      "GET"},
-    {"/api/state",        kMethodGet,                true,  route_state_impl,        "GET"},
-    {"/api/ota",          kMethodGet,                true,  route_ota_impl,          "GET"},
-    {"/api/ota/check",    kMethodPost | kMethodPut,  true,  route_ota_check_impl,    "POST, PUT"},
-    {"/api/leds/state",   kMethodGet | kMethodPut,   true,  route_leds_state_impl,   "GET, PUT"},
-    {"/api/leds/state/0", kMethodGet | kMethodPut,   true,  route_leds_state_0_impl, "GET, PUT"},
-    {"/api/leds/state/1", kMethodGet | kMethodPut,   true,  route_leds_state_1_impl, "GET, PUT"},
-    {"/api/leds/state/2", kMethodGet | kMethodPut,   true,  route_leds_state_2_impl, "GET, PUT"},
+    {"/api/health", kMethodGet, false, route_health_impl, "GET"},
+    {"/api/info", kMethodGet, true, route_info_impl, "GET"},
+    {"/api/version", kMethodGet, false, route_version_impl, "GET"},
+    {"/api/state", kMethodGet, true, route_state_impl, "GET"},
+    {"/api/ota", kMethodGet, true, route_ota_impl, "GET"},
+    {"/api/ota/check", kMethodPost | kMethodPut, true, route_ota_check_impl, "POST, PUT"},
+    {"/api/leds/state", kMethodGet | kMethodPut, true, route_leds_state_impl, "GET, PUT"},
+    {"/api/leds/state/0", kMethodGet | kMethodPut, true, route_leds_state_0_impl, "GET, PUT"},
+    {"/api/leds/state/1", kMethodGet | kMethodPut, true, route_leds_state_1_impl, "GET, PUT"},
+    {"/api/leds/state/2", kMethodGet | kMethodPut, true, route_leds_state_2_impl, "GET, PUT"},
 };
 constexpr std::size_t kJsonApiRouteCount = sizeof(kJsonApiRoutes) / sizeof(kJsonApiRoutes[0]);
 
@@ -734,13 +745,14 @@ esp_err_t route_dispatch_trampoline(httpd_req_t* req) {
     return send_method_not_allowed(req, "GET");
   }
   const bool authenticated = !spec->requires_auth || validate_auth(req);
-  switch (luce::http::route_dispatch_decision(spec->method_mask, req->method, spec->requires_auth, authenticated)) {
-    case luce::http::DispatchDecision::kMethodNotAllowed:
-      return send_method_not_allowed(req, spec->methods_label);
-    case luce::http::DispatchDecision::kUnauthorized:
-      return send_unauthorized(req);
-    case luce::http::DispatchDecision::kInvoke:
-      break;
+  switch (luce::http::route_dispatch_decision(spec->method_mask, req->method, spec->requires_auth,
+                                              authenticated)) {
+  case luce::http::DispatchDecision::kMethodNotAllowed:
+    return send_method_not_allowed(req, spec->methods_label);
+  case luce::http::DispatchDecision::kUnauthorized:
+    return send_unauthorized(req);
+  case luce::http::DispatchDecision::kInvoke:
+    break;
   }
   return spec->impl(req);
 }
@@ -803,15 +815,15 @@ void start_http_server() {
   }
 
   if (!pki_status.key_present) {
-    ESP_LOGE(kTag,
-             "[HTTP] start refused: missing local HTTPS PKI key; run pki.keygen https_server then pki.csr/sign/import");
+    ESP_LOGE(kTag, "[HTTP] start refused: missing local HTTPS PKI key; run pki.keygen https_server "
+                   "then pki.csr/sign/import");
     set_state(HttpState::kFailed, "tls_key_missing");
     return;
   }
 
   if (!pki_status.cert_present) {
-    ESP_LOGE(kTag,
-             "[HTTP] start refused: missing signed HTTPS PKI certificate; export CSR and import cert with pki.cert.*");
+    ESP_LOGE(kTag, "[HTTP] start refused: missing signed HTTPS PKI certificate; export CSR and "
+                   "import cert with pki.cert.*");
     set_state(HttpState::kFailed, "tls_cert_missing");
     return;
   }
@@ -863,7 +875,8 @@ void start_http_server() {
   }
   httpd_register_uri_handler(g_httpd, &g_uri_ws);
   ESP_LOGI(kTag, "[HTTP] started");
-  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, /api/ota/check, /api/leds/state, /api/leds/state/{0,1,2}, /ws");
+  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, "
+                 "/api/ota/check, /api/leds/state, /api/leds/state/{0,1,2}, /ws");
 }
 
 void start_captive_http_server() {
@@ -936,19 +949,13 @@ void http_loop(void*) {
   }
 }
 
-}  // namespace
+} // namespace
 
-const char* http_state_name() {
-  return http_state_name_impl();
-}
+const char* http_state_name() { return http_state_name_impl(); }
 
-bool http_is_enabled() {
-  return g_cfg.enabled;
-}
+bool http_is_enabled() { return g_cfg.enabled; }
 
-bool http_is_running() {
-  return g_httpd != nullptr || g_captive_httpd != nullptr;
-}
+bool http_is_running() { return g_httpd != nullptr || g_captive_httpd != nullptr; }
 
 void http_startup() {
   load_http_config();
@@ -962,9 +969,10 @@ void http_startup() {
 
 void http_status_for_cli() {
   ESP_LOGI(kTag,
-           "http.status state=%s enabled=%d https_running=%d https_port=%u captive_running=%d captive_port=%u",
-           state_name(g_state), g_cfg.enabled ? 1 : 0, g_httpd != nullptr ? 1 : 0,
-           g_cfg.port, g_captive_httpd != nullptr ? 1 : 0, static_cast<unsigned>(kCaptiveHttpPort));
+           "http.status state=%s enabled=%d https_running=%d https_port=%u captive_running=%d "
+           "captive_port=%u",
+           state_name(g_state), g_cfg.enabled ? 1 : 0, g_httpd != nullptr ? 1 : 0, g_cfg.port,
+           g_captive_httpd != nullptr ? 1 : 0, static_cast<unsigned>(kCaptiveHttpPort));
 }
 
 void http_tls_status_for_cli() {
@@ -976,9 +984,10 @@ void http_tls_status_for_cli() {
            "https_running=%d tls_state=%s last_error=%s start_err=%s ready=%d "
            "fingerprint=%s subject='%s' issuer='%s'",
            status.key_alg, status.key_present ? 1 : 0, static_cast<unsigned>(status.key_pem_bytes),
-           status.key_present ? 1 : 0, status.cert_present ? 1 : 0, static_cast<unsigned>(status.cert_pem_bytes),
-           state_name(g_state), g_httpd != nullptr ? 1 : 0, tls_status_name(),
-           status.last_error, esp_err_to_name(g_tls_start_err), ready ? 1 : 0,
+           status.key_present ? 1 : 0, status.cert_present ? 1 : 0,
+           static_cast<unsigned>(status.cert_pem_bytes), state_name(g_state),
+           g_httpd != nullptr ? 1 : 0, tls_status_name(), status.last_error,
+           esp_err_to_name(g_tls_start_err), ready ? 1 : 0,
            status.fingerprint[0] != '\0' ? status.fingerprint : "n/a",
            status.subject[0] != '\0' ? status.subject : "n/a",
            status.issuer[0] != '\0' ? status.issuer : "n/a");
@@ -1039,7 +1048,8 @@ esp_err_t http_tls_cert_commit_for_cli() {
     return err;
   }
   const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
-  ESP_LOGI(kTag, "tls.cert.commit ok fingerprint=%s subject='%s'", status.fingerprint, status.subject);
+  ESP_LOGI(kTag, "tls.cert.commit ok fingerprint=%s subject='%s'", status.fingerprint,
+           status.subject);
   return ESP_OK;
 }
 
@@ -1053,13 +1063,9 @@ esp_err_t http_tls_reset_for_cli() {
 
 #else
 
-bool http_is_enabled() {
-  return false;
-}
+bool http_is_enabled() { return false; }
 
-bool http_is_running() {
-  return false;
-}
+bool http_is_running() { return false; }
 
 void http_startup() {}
 void http_status_for_cli() {}

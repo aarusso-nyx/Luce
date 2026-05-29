@@ -87,5 +87,5 @@ inline bool parse_u32_token(const char* text, std::uint32_t* out_value, int base
   return true;
 }
 
-}  // namespace str
-}  // namespace luce
+} // namespace str
+} // namespace luce

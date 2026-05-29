@@ -57,24 +57,22 @@ std::uint64_t g_last_sync_unix = 0;
 
 const char* ntp_state_name(NtpState state) {
   switch (state) {
-    case NtpState::kDisabled:
-      return "DISABLED";
-    case NtpState::kUnsynced:
-      return "UNSYNCED";
-    case NtpState::kSyncing:
-      return "SYNCING";
-    case NtpState::kSynced:
-      return "SYNCED";
-    case NtpState::kFailed:
-      return "FAILED";
-    default:
-      return "UNKNOWN";
+  case NtpState::kDisabled:
+    return "DISABLED";
+  case NtpState::kUnsynced:
+    return "UNSYNCED";
+  case NtpState::kSyncing:
+    return "SYNCING";
+  case NtpState::kSynced:
+    return "SYNCED";
+  case NtpState::kFailed:
+    return "FAILED";
+  default:
+    return "UNKNOWN";
   }
 }
 
-const char* ntp_state_name_current_impl() {
-  return ntp_state_name(g_state);
-}
+const char* ntp_state_name_current_impl() { return ntp_state_name(g_state); }
 
 void set_state(NtpState next, const char* reason) {
   g_state_tick = xTaskGetTickCount();
@@ -95,8 +93,10 @@ void load_config() {
     luce::nvs::log_nvs_string(kNvsTag, "server1", kDefaultServer1, false, kDefaultServer1, true);
     luce::nvs::log_nvs_string(kNvsTag, "server2", kDefaultServer2, false, kDefaultServer2, true);
     luce::nvs::log_nvs_string(kNvsTag, "server3", "", false, "", true);
-    luce::nvs::log_nvs_u32(kNvsTag, "sync_timeout_s", g_cfg.sync_timeout_s, false, g_cfg.sync_timeout_s);
-    luce::nvs::log_nvs_u32(kNvsTag, "sync_interval_s", g_cfg.sync_interval_s, false, g_cfg.sync_interval_s);
+    luce::nvs::log_nvs_u32(kNvsTag, "sync_timeout_s", g_cfg.sync_timeout_s, false,
+                           g_cfg.sync_timeout_s);
+    luce::nvs::log_nvs_u32(kNvsTag, "sync_interval_s", g_cfg.sync_interval_s, false,
+                           g_cfg.sync_interval_s);
     return;
   }
 
@@ -107,11 +107,13 @@ void load_config() {
   luce::nvs::log_nvs_u8(kNvsTag, "enabled", u8, f_enabled, 0);
 
   bool f_s1 = false;
-  f_s1 = luce::nvs::read_string(nvs.raw(), "server1", g_cfg.server1, sizeof(g_cfg.server1), kDefaultServer1);
+  f_s1 = luce::nvs::read_string(nvs.raw(), "server1", g_cfg.server1, sizeof(g_cfg.server1),
+                                kDefaultServer1);
   luce::nvs::log_nvs_string(kNvsTag, "server1", g_cfg.server1, f_s1, kDefaultServer1, true);
 
   bool f_s2 = false;
-  f_s2 = luce::nvs::read_string(nvs.raw(), "server2", g_cfg.server2, sizeof(g_cfg.server2), kDefaultServer2);
+  f_s2 = luce::nvs::read_string(nvs.raw(), "server2", g_cfg.server2, sizeof(g_cfg.server2),
+                                kDefaultServer2);
   luce::nvs::log_nvs_string(kNvsTag, "server2", g_cfg.server2, f_s2, kDefaultServer2, true);
 
   bool f_s3 = false;
@@ -122,12 +124,14 @@ void load_config() {
   bool f_to = false;
   f_to = luce::nvs::read_u32(nvs.raw(), "sync_timeout_s", u32, 30);
   g_cfg.sync_timeout_s = luce::runtime::clamp_u32(u32, 5u, 600u);
-  luce::nvs::log_nvs_u32(kNvsTag, "sync_timeout_s", g_cfg.sync_timeout_s, f_to, g_cfg.sync_timeout_s);
+  luce::nvs::log_nvs_u32(kNvsTag, "sync_timeout_s", g_cfg.sync_timeout_s, f_to,
+                         g_cfg.sync_timeout_s);
 
   bool f_int = false;
   f_int = luce::nvs::read_u32(nvs.raw(), "sync_interval_s", u32, 3600);
   g_cfg.sync_interval_s = luce::runtime::clamp_u32(u32, 60u, 86400u);
-  luce::nvs::log_nvs_u32(kNvsTag, "sync_interval_s", g_cfg.sync_interval_s, f_int, g_cfg.sync_interval_s);
+  luce::nvs::log_nvs_u32(kNvsTag, "sync_interval_s", g_cfg.sync_interval_s, f_int,
+                         g_cfg.sync_interval_s);
 }
 
 std::uint32_t next_backoff_ms() {
@@ -174,16 +178,15 @@ void log_synced_status() {
 
   const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
   const std::uint64_t age = (now > g_last_sync_unix) ? (now - g_last_sync_unix) : 0;
-  std::tm tbuf {};
+  std::tm tbuf{};
   const std::time_t sync_time = static_cast<std::time_t>(g_last_sync_unix);
   const std::tm* const utc = gmtime_r(&sync_time, &tbuf);
   char utc_line[40] = "n/a";
   if (utc != nullptr) {
-    std::snprintf(utc_line, sizeof(utc_line), "%04d-%02d-%02dT%02d:%02d:%02dZ", utc->tm_year + 1900, utc->tm_mon + 1,
-                  utc->tm_mday, utc->tm_hour, utc->tm_min, utc->tm_sec);
+    std::snprintf(utc_line, sizeof(utc_line), "%04d-%02d-%02dT%02d:%02d:%02dZ", utc->tm_year + 1900,
+                  utc->tm_mon + 1, utc->tm_mday, utc->tm_hour, utc->tm_min, utc->tm_sec);
   }
-  ESP_LOGI(kTag,
-           "[NTP] time.status state=%s unix=%llu age_s=%llu utc=%s", ntp_state_name(g_state),
+  ESP_LOGI(kTag, "[NTP] time.status state=%s unix=%llu age_s=%llu utc=%s", ntp_state_name(g_state),
            static_cast<unsigned long long>(g_last_sync_unix), static_cast<unsigned long long>(age),
            utc_line);
 }
@@ -230,7 +233,8 @@ void ntp_task(void*) {
         g_backoff_count = 0;
         g_backoff_ms = 0;
         set_state(NtpState::kSynced, "sync_done");
-        ESP_LOGI(kTag, "[NTP] first successful sync unix=%llu", static_cast<unsigned long long>(g_last_sync_unix));
+        ESP_LOGI(kTag, "[NTP] first successful sync unix=%llu",
+                 static_cast<unsigned long long>(g_last_sync_unix));
         continue;
       }
       const TickType_t elapsed_ms = (now - g_sync_tick) * portTICK_PERIOD_MS;
@@ -243,7 +247,8 @@ void ntp_task(void*) {
         g_sync_tick = now;
         esp_sntp_stop();
         set_state(NtpState::kFailed, "sync_timeout");
-        ESP_LOGW(kTag, "[NTP] sync timeout after %lu s", static_cast<unsigned long>(g_cfg.sync_timeout_s));
+        ESP_LOGW(kTag, "[NTP] sync timeout after %lu s",
+                 static_cast<unsigned long>(g_cfg.sync_timeout_s));
       }
     } else if (g_state == NtpState::kSynced) {
       const TickType_t elapsed_ms = (now - g_last_sync_tick) * portTICK_PERIOD_MS;
@@ -261,19 +266,13 @@ void ntp_task(void*) {
   }
 }
 
-}  // namespace
+} // namespace
 
-const char* ntp_state_name_current() {
-  return ntp_state_name_current_impl();
-}
+const char* ntp_state_name_current() { return ntp_state_name_current_impl(); }
 
-bool ntp_is_enabled() {
-  return g_cfg.enabled;
-}
+bool ntp_is_enabled() { return g_cfg.enabled; }
 
-bool ntp_is_synced() {
-  return g_state == NtpState::kSynced;
-}
+bool ntp_is_synced() { return g_state == NtpState::kSynced; }
 
 void ntp_startup() {
   if (g_task == nullptr) {
@@ -286,22 +285,17 @@ void ntp_status_for_cli() {
     log_synced_status();
     return;
   }
-  ESP_LOGW(kTag, "[NTP] status state=%s time not synced: no valid time yet", ntp_state_name(g_state));
+  ESP_LOGW(kTag, "[NTP] status state=%s time not synced: no valid time yet",
+           ntp_state_name(g_state));
 }
 
 #else
 
-bool ntp_is_enabled() {
-  return false;
-}
+bool ntp_is_enabled() { return false; }
 
-bool ntp_is_synced() {
-  return false;
-}
+bool ntp_is_synced() { return false; }
 
-const char* ntp_state_name_current() {
-  return "DISABLED";
-}
+const char* ntp_state_name_current() { return "DISABLED"; }
 
 void ntp_status_for_cli() {}
 
