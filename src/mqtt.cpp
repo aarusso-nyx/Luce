@@ -1147,8 +1147,7 @@ void mqtt_loop(void*) {
     }
 
     static TickType_t last_publish = 0;
-    const MqttRuntimeSnapshot publish_snapshot = runtime_snapshot();
-    if (publish_snapshot.connected && (now - last_publish) > pdMS_TO_TICKS(kPublishIntervalMs)) {
+    if (mqtt_connected_flag() && (now - last_publish) > pdMS_TO_TICKS(kPublishIntervalMs)) {
       last_publish = now;
       publish_state();
     }
