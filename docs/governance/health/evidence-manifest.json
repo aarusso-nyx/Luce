@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "run_id": "20260529T022619Z",
+  "source": {
+    "git_sha": "ae3f47c476e3eafdb91a91eee3d01f4334593b93",
+    "target": "wave-e-local"
+  },
+  "checks": [
+    {
+      "name": "platformio:default",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "platformio:net0",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "platformio:net1",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "host-tests",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "docs-alignment",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "script-syntax",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "diff-check",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "clang-format:selected-helpers",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "hardware-hil",
+      "status": "PREREQ_MISSING",
+      "required": false
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/governance/health/evidence-latest.json",
+      "sha256": "134639ff7f4e14489e67b88930fa96e65a941c65832a8d3e74b0ad3cbccce443"
+    }
+  ]
+}

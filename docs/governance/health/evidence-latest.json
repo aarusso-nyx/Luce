@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "run_id": "20260529T022619Z",
+  "source": {
+    "git_sha": "ae3f47c476e3eafdb91a91eee3d01f4334593b93",
+    "target": "wave-e-local"
+  },
+  "checks": [
+    {
+      "name": "platformio:default",
+      "status": "PASS",
+      "required": true,
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1"
+    },
+    {
+      "name": "platformio:net0",
+      "status": "PASS",
+      "required": true,
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1"
+    },
+    {
+      "name": "platformio:net1",
+      "status": "PASS",
+      "required": true,
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1; focused net1 rebuild also passed"
+    },
+    {
+      "name": "host-tests",
+      "status": "PASS",
+      "required": true,
+      "details": "scripts/run_host_tests.sh, 722 assertions"
+    },
+    {
+      "name": "docs-alignment",
+      "status": "PASS",
+      "required": true,
+      "details": ".venv/bin/python -m pytest tests/test_docs_alignment.py"
+    },
+    {
+      "name": "script-syntax",
+      "status": "PASS",
+      "required": true,
+      "details": "python3 -m py_compile scripts/test_layers.py scripts/verify_evidence.py"
+    },
+    {
+      "name": "diff-check",
+      "status": "PASS",
+      "required": true,
+      "details": "git diff --check"
+    },
+    {
+      "name": "clang-format:selected-helpers",
+      "status": "PASS",
+      "required": true,
+      "details": "clang-format --dry-run --Werror include/luce/http_route_logic.h include/luce/led_manual_mode.h include/luce/pki_helpers.h"
+    },
+    {
+      "name": "hardware-hil",
+      "status": "PREREQ_MISSING",
+      "required": false,
+      "details": "No device IP, tokens, broker endpoint, or serial roundtrip capture was available in this local pass."
+    }
+  ],
+  "local_artifacts": [
+    {
+      "path": "docs/work/diag/20260529T022619Z/host-tests/summary.json",
+      "sha256": "53ff866c2835b9452dd8f5b9c9a90f3cc99ebcd152f50502aa710d67d723d679"
+    },
+    {
+      "path": "docs/work/diag/20260529T022120Z/wave-E.md",
+      "sha256": "16bfffa1f35ecdc056093bdba22db3ccf739be78f6d338c81a733914da81a2a4"
+    }
+  ]
+}
