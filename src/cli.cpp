@@ -32,6 +32,7 @@
 #include "luce/i2c_io.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
+#include "luce/pki.h"
 #include "luce/str_utils.h"
 #if LUCE_HAS_MDNS
 #include "luce/mdns.h"
@@ -110,6 +111,13 @@ int cli_handle_wifi_status(int, char*[]);
 int cli_handle_wifi(int, char*[]);
 int cli_handle_wifi_scan(int, char*[]);
 int cli_handle_time_status(int, char*[]);
+int cli_handle_pki_status(int, char*[]);
+int cli_handle_pki_keygen(int, char*[]);
+int cli_handle_pki_csr(int, char*[]);
+int cli_handle_pki_cert_begin(int, char*[]);
+int cli_handle_pki_cert_append(int, char*[]);
+int cli_handle_pki_cert_commit(int, char*[]);
+int cli_handle_pki_reset(int, char*[]);
 #if LUCE_HAS_OTA
 int cli_handle_ota_status(int, char*[]);
 int cli_handle_ota_check(int, char*[]);
@@ -169,6 +177,13 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"wifi.status", false, true, "wifi.status", cli_handle_wifi_status},
     {"wifi.scan", false, true, "wifi.scan", cli_handle_wifi_scan},
     {"time.status", false, true, "time.status", cli_handle_time_status},
+    {"pki.status", false, true, "pki.status [role]", cli_handle_pki_status},
+    {"pki.keygen", true, false, "pki.keygen <role>", cli_handle_pki_keygen},
+    {"pki.csr", false, false, "pki.csr <role>", cli_handle_pki_csr},
+    {"pki.cert.begin", true, false, "pki.cert.begin <role>", cli_handle_pki_cert_begin},
+    {"pki.cert.append", true, false, "pki.cert.append <role> <pem-line>", cli_handle_pki_cert_append},
+    {"pki.cert.commit", true, false, "pki.cert.commit <role>", cli_handle_pki_cert_commit},
+    {"pki.reset", true, false, "pki.reset <role>", cli_handle_pki_reset},
 #if LUCE_HAS_MDNS
     {"mdns.status", false, true, "mdns.status", cli_handle_mdns_status},
 #endif
@@ -907,6 +922,128 @@ int cli_handle_wifi_scan(int, char*[]) {
 int cli_handle_time_status(int, char*[]) {
   ntp_status_for_cli();
   return 0;
+}
+
+bool parse_pki_role_arg(const char* token, luce::pki::Role* out_role) {
+  bool ok = false;
+  const luce::pki::Role role = luce::pki::role_from_token(token, &ok);
+  if (!ok || out_role == nullptr) {
+    ESP_LOGW(kTag, "CLI command pki: invalid role '%s' (expected https_server|mqtt_client|ota_client)",
+             token ? token : "(null)");
+    return false;
+  }
+  *out_role = role;
+  return true;
+}
+
+void print_pki_status(luce::pki::Role role) {
+  const luce::pki::Status status = luce::pki::get_status(role);
+  ESP_LOGI(kTag,
+           "pki.status role=%s state=%s key_alg=%s key_present=%d key_pem_bytes=%u "
+           "csr_ready=%d staged=%d cert_present=%d cert_pem_bytes=%u last_error=%s "
+           "fingerprint=%s subject='%s' issuer='%s'",
+           status.role, luce::pki::state_name(status.state), status.key_alg,
+           status.key_present ? 1 : 0, static_cast<unsigned>(status.key_pem_bytes),
+           status.key_present ? 1 : 0, status.staged_present ? 1 : 0,
+           status.cert_present ? 1 : 0, static_cast<unsigned>(status.cert_pem_bytes),
+           status.last_error, status.fingerprint[0] != '\0' ? status.fingerprint : "n/a",
+           status.subject[0] != '\0' ? status.subject : "n/a",
+           status.issuer[0] != '\0' ? status.issuer : "n/a");
+}
+
+int cli_handle_pki_status(int argc, char* argv[]) {
+  if (argc == 1) {
+    print_pki_status(luce::pki::Role::kHttpsServer);
+    print_pki_status(luce::pki::Role::kMqttClient);
+    print_pki_status(luce::pki::Role::kOtaClient);
+    return 0;
+  }
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.status usage: pki.status [role]");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  if (!parse_pki_role_arg(argv[1], &role)) {
+    return 1;
+  }
+  print_pki_status(role);
+  return 0;
+}
+
+int cli_handle_pki_keygen(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.keygen usage: pki.keygen <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::ensure_key(role) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_csr(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.csr usage: pki.csr <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  if (!parse_pki_role_arg(argv[1], &role)) {
+    return 1;
+  }
+  char csr[1536] = {};
+  const esp_err_t err = luce::pki::export_csr(role, csr, sizeof(csr));
+  if (err != ESP_OK) {
+    const luce::pki::Status status = luce::pki::get_status(role);
+    ESP_LOGE(kTag, "pki.csr failed role=%s error=%s", luce::pki::role_name(role), status.last_error);
+    return 1;
+  }
+  ESP_LOGI(kTag, "pki.csr role=%s begin", luce::pki::role_name(role));
+  char* line = std::strtok(csr, "\n");
+  while (line != nullptr) {
+    ESP_LOGI(kTag, "%s", line);
+    line = std::strtok(nullptr, "\n");
+  }
+  ESP_LOGI(kTag, "pki.csr role=%s end", luce::pki::role_name(role));
+  return 0;
+}
+
+int cli_handle_pki_cert_begin(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.cert.begin usage: pki.cert.begin <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::stage_cert_begin(role) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_cert_append(int argc, char* argv[]) {
+  if (argc < 3) {
+    ESP_LOGW(kTag, "CLI command pki.cert.append usage: pki.cert.append <role> <pem-line>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  if (!parse_pki_role_arg(argv[1], &role)) {
+    return 1;
+  }
+  char line[kCliLineBuffer] = {};
+  append_argv_tokens(argc, argv, 2, line, sizeof(line));
+  return luce::pki::stage_cert_append(role, line) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_cert_commit(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.cert.commit usage: pki.cert.commit <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::stage_cert_commit(role) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_reset(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.reset usage: pki.reset <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::reset(role) == ESP_OK ? 0 : 1;
 }
 
 #if LUCE_HAS_OTA

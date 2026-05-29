@@ -54,6 +54,20 @@ the serial transport regardless of `tcp_ro`.
 | `buttons` | no | yes | `buttons` |
 | `lcd_print` | no | no  | `lcd_print <text>` |
 | `reboot` | yes | no  | `reboot` |
+| `pki.status` | no | yes | `pki.status [role]` |
+| `pki.keygen` | yes | no | `pki.keygen <role>` |
+| `pki.csr` | no | no | `pki.csr <role>` |
+| `pki.cert.begin` | yes | no | `pki.cert.begin <role>` |
+| `pki.cert.append` | yes | no | `pki.cert.append <role> <pem-line>` |
+| `pki.cert.commit` | yes | no | `pki.cert.commit <role>` |
+| `pki.reset` | yes | no | `pki.reset <role>` |
+
+`pki.*` manages on-device TLS identities for roles `https_server`,
+`mqtt_client`, and `ota_client`. `pki.keygen` creates a device-local EC P-256
+private key; `pki.csr` prints only a CSR; `pki.cert.*` imports a CA-signed
+certificate and rejects certificates that do not match the local key. `pki.status`
+prints role state, material presence, byte counts, fingerprint, subject, issuer,
+and last error without printing private-key material.
 
 ### NET0+ (`LUCE_NET_CORE=1`)
 
@@ -86,12 +100,9 @@ the serial transport regardless of `tcp_ro`.
 | `tls.cert.commit` | yes | no | `tls.cert.commit` |
 | `tls.reset` | yes | no | `tls.reset` |
 
-`tls.keygen` creates the device-local EC P-256 private key. `tls.csr` prints a
-CSR for external signing and never prints the private key. `tls.cert.*` imports
-the signed certificate line-by-line over serial and rejects certificates that do
-not match the local key. `tls.status` reports workflow, cert/key presence and
-byte counts, `https_running`, `tls_status`, the last TLS startup error reason,
-and certificate metadata without printing private-key material.
+`tls.*` commands are HTTPS compatibility aliases for `pki.* https_server`.
+`tls.status` also reports HTTP server startup state, `https_running`,
+`tls_status`, and the last TLS startup error reason.
 
 ### OTA (`LUCE_NET_OTA=1`)
 
@@ -99,6 +110,9 @@ and certificate metadata without printing private-key material.
 | --- | --- | --- | --- |
 | `ota.status` | no | yes | `ota.status` |
 | `ota.check` | yes | no  | `ota.check [url]` |
+
+`mqtt.status` and `ota.status` include optional client identity state from the
+`mqtt_client` and `ota_client` PKI roles.
 
 ## Parsing and errors
 

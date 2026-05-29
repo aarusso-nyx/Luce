@@ -30,6 +30,7 @@
 #include "luce/i2c_io.h"
 #include "luce_build.h"
 #include "luce/led_status.h"
+#include "luce/pki.h"
 #include "luce/task_budgets.h"
 
 namespace {
@@ -130,6 +131,16 @@ bool configure_mqtt_tls(esp_mqtt_client_config_t& client_cfg) {
     client_cfg.broker.verification.certificate_len = 0;
     client_cfg.broker.verification.skip_cert_common_name_check = false;
     ESP_LOGI(kTag, "[MQTT][TLS] broker verification via mqtt/ca_pem");
+    const luce::pki::Status identity = luce::pki::get_status(luce::pki::Role::kMqttClient);
+    if (identity.state == luce::pki::State::kActive) {
+      client_cfg.credentials.authentication.certificate = luce::pki::cert_pem_for_tls(luce::pki::Role::kMqttClient);
+      client_cfg.credentials.authentication.key = luce::pki::private_key_pem_for_tls(luce::pki::Role::kMqttClient);
+      ESP_LOGI(kTag, "[MQTT][TLS] client identity role=%s fingerprint=%s", identity.role,
+               identity.fingerprint[0] != '\0' ? identity.fingerprint : "n/a");
+    } else if (identity.key_present || identity.cert_present || identity.staged_present) {
+      ESP_LOGW(kTag, "[MQTT][TLS] client identity dormant state=%s error=%s",
+               luce::pki::state_name(identity.state), identity.last_error);
+    }
     return true;
   }
 
@@ -1081,13 +1092,16 @@ void mqtt_startup() {
 }
 
 void mqtt_status_for_cli() {
+  const luce::pki::Status identity = luce::pki::get_status(luce::pki::Role::kMqttClient);
   ESP_LOGI(kTag,
            "mqtt.status state=%s enabled=%d connected=%d tls=%d ca_source=%s ca_present=%d "
-           "connect_count=%u publish_count=%u reconnect_count=%u backoff_ms=%lu uri=%s qos=%lu keepalive=%lu",
+           "client_identity=%s client_cert_present=%d connect_count=%u publish_count=%u reconnect_count=%u "
+           "backoff_ms=%lu uri=%s qos=%lu keepalive=%lu",
            state_name(current_state()), g_cfg.enabled ? 1 : 0, mqtt_connected_flag() ? 1 : 0, mqtt_requires_tls() ? 1 : 0,
-	           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, g_connect_count, g_publish_count, g_reconnect_count,
-	           static_cast<unsigned long>(g_backoff_ms), g_cfg.uri, static_cast<unsigned long>(g_cfg.qos),
-	           static_cast<unsigned long>(g_cfg.keepalive_s));
+           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, luce::pki::state_name(identity.state),
+           identity.cert_present ? 1 : 0, g_connect_count, g_publish_count, g_reconnect_count,
+           static_cast<unsigned long>(g_backoff_ms), g_cfg.uri, static_cast<unsigned long>(g_cfg.qos),
+           static_cast<unsigned long>(g_cfg.keepalive_s));
 }
 
 void mqtt_pubtest_for_cli() {

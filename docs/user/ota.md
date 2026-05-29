@@ -33,11 +33,18 @@ HTTP check requests accept an optional URL from query string or plain-text body.
 - Checks require Wi-Fi IP and an OTA update partition.
 - Manual checks are queued from CLI or HTTP and consumed by the OTA task.
 - Periodic checks run only when `ota/check_interval_s` is greater than zero.
+- HTTPS endpoint verification still requires configured CA material. If PKI role
+  `ota_client` is active, OTA also presents that certificate and private key for
+  mutual TLS. If the role is empty, incomplete, staged, or in error, client
+  identity stays dormant and CA verification still fails closed.
 
 ## Security and completeness notes
 
 - OTA uses ESP-IDF `esp_https_ota`.
 - Set `ota/ca_pem_source=nvs` with `ota/ca_pem` to validate the OTA endpoint against the configured CA. Empty or unsupported CA configuration fails the check before download.
+- Provision `ota_client` with `pki.keygen ota_client`, `pki.csr ota_client`,
+  and `pki.cert.* ota_client` only when the OTA endpoint requires mutual TLS.
+  The private key is never printed or exported.
 
 ## Verification
 

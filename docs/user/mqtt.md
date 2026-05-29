@@ -25,6 +25,7 @@ MQTT client with inbound control subscriptions and outbound telemetry/compatibil
 - Enabled only when `mqtt/enabled = 1`.
 - If no IP yet, service remains initialized in `waiting_ip` state until networking is ready.
 - Connect/reconnect with exponential backoff.
+- TLS broker verification still requires configured CA material when TLS is enabled. If PKI role `mqtt_client` is active, the client also presents that certificate and private key for mutual TLS. If the role is empty, incomplete, staged, or in error, client identity stays dormant and CA verification still fails closed.
 - Subscribes to inbound control topics on connect (base topic):
   - `config/#`
   - `relays/#`
@@ -95,6 +96,7 @@ Unsupported legacy control topics now produce deterministic compatibility respon
 ## CLI
 
 - `mqtt.status` prints connected state, counters, URI summary, and last publish fields.
+- `mqtt.status` includes `client_identity` and `client_cert_present` from PKI role `mqtt_client`.
 - `mqtt.pubtest` publishes one test message and logs return code.
 
 ## Security
@@ -102,6 +104,7 @@ Unsupported legacy control topics now produce deterministic compatibility respon
 - Passwords are masked in logs.
 - TLS mode is selected by URI + `mqtt/tls_enabled`.
 - Set `mqtt/ca_pem_source=nvs` with `mqtt/ca_pem` to validate the broker against the configured CA. Empty or unsupported CA configuration prevents client startup.
+- Provision `mqtt_client` with `pki.keygen mqtt_client`, `pki.csr mqtt_client`, and `pki.cert.* mqtt_client` only when the broker requires mutual TLS. The private key is never printed or exported.
 
 ## Verification
 

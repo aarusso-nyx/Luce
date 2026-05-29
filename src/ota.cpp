@@ -14,6 +14,7 @@
 #include "luce/json_writer.h"
 #include "luce/net_wifi.h"
 #include "luce/nvs_helpers.h"
+#include "luce/pki.h"
 #include "luce/runtime_state.h"
 #include "luce/str_utils.h"
 #include "luce/task_budgets.h"
@@ -140,6 +141,16 @@ bool configure_ota_tls(esp_http_client_config_t& http_cfg, const char* url) {
     http_cfg.cert_pem = g_cfg.ca_pem;
     http_cfg.cert_len = 0;
     ESP_LOGI(kTag, "[OTA][TLS] server verification via ota/ca_pem");
+    const luce::pki::Status identity = luce::pki::get_status(luce::pki::Role::kOtaClient);
+    if (identity.state == luce::pki::State::kActive) {
+      http_cfg.client_cert_pem = luce::pki::cert_pem_for_tls(luce::pki::Role::kOtaClient);
+      http_cfg.client_key_pem = luce::pki::private_key_pem_for_tls(luce::pki::Role::kOtaClient);
+      ESP_LOGI(kTag, "[OTA][TLS] client identity role=%s fingerprint=%s", identity.role,
+               identity.fingerprint[0] != '\0' ? identity.fingerprint : "n/a");
+    } else if (identity.key_present || identity.cert_present || identity.staged_present) {
+      ESP_LOGW(kTag, "[OTA][TLS] client identity dormant state=%s error=%s",
+               luce::pki::state_name(identity.state), identity.last_error);
+    }
     return true;
   }
 
@@ -392,13 +403,16 @@ void ota_startup() {
 }
 
 void ota_status_for_cli() {
+  const luce::pki::Status identity = luce::pki::get_status(luce::pki::Role::kOtaClient);
   ESP_LOGI(kTag,
            "ota.status state=%s enabled=%d running=%d checks=%lu success=%lu fail=%lu interval_s=%lu "
-           "url='%s' ca_source=%s ca_present=%d last_error='%s' last_check_s=%llu last_success_s=%llu",
+           "url='%s' ca_source=%s ca_present=%d client_identity=%s client_cert_present=%d "
+           "last_error='%s' last_check_s=%llu last_success_s=%llu",
            state_name(g_state), g_cfg.enabled ? 1 : 0, (g_state == OtaState::kChecking) ? 1 : 0,
            static_cast<unsigned long>(g_rt.total_checks), static_cast<unsigned long>(g_rt.success_count),
            static_cast<unsigned long>(g_rt.failure_count), static_cast<unsigned long>(g_cfg.check_interval_s), g_cfg.url,
-           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, g_rt.last_error,
+           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, luce::pki::state_name(identity.state),
+           identity.cert_present ? 1 : 0, g_rt.last_error,
            static_cast<unsigned long long>(g_rt.last_check_s),
            static_cast<unsigned long long>(g_rt.last_success_s));
 }

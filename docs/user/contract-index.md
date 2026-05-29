@@ -4,7 +4,8 @@ Date: 2026-05-28
 
 ## Strategy/Feature Contracts
 
-- `cli-contract.md` — Serial + TCP command model (`help`, `status`, `wifi.status`, `time.status`, `mqtt.status`, `mdns.status`, `cli_net.status`, `http.status`)
+- `cli-contract.md` — Serial + TCP command model (`help`, `status`, `wifi.status`, `time.status`, `pki.status`, `mqtt.status`, `mdns.status`, `cli_net.status`, `http.status`)
+- `pki.md` — On-device PKI roles, state machine, and certificate provisioning workflow
 - `wifi-lifecycle.md` — NET0 behavior and event model
 - `ntp.md` — NET0 SNTP state machine and `time.status`
 - `mdns.md` — NET0 hostname + TXT records + `mdns.status`
@@ -31,10 +32,10 @@ mirrored in `cli-contract.md`. TCP CLI availability is limited to rows whose
 
 | Strategy | Commands |
 | --- | --- |
-| Baseline | `version`, `info`, `wakeup`, `uptime`, `system`, `state`, `nvs`, `free`, `sensor`, `sensors`, `set`, `log`, `logpage`, `test`, `reset`, `parts`, `help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `led_set`, `led_clear`, `led_status`, `buttons`, `lcd_print`, `reboot`, `wifi`, `wifi.status`, `wifi.scan`, `time.status` |
+| Baseline | `version`, `info`, `wakeup`, `uptime`, `system`, `state`, `nvs`, `free`, `sensor`, `sensors`, `set`, `log`, `logpage`, `test`, `reset`, `parts`, `help`, `status`, `nvs_dump`, `i2c_scan`, `mcp_read`, `relay_set`, `relay_mask`, `led_set`, `led_clear`, `led_status`, `buttons`, `lcd_print`, `reboot`, `wifi`, `wifi.status`, `wifi.scan`, `time.status`, `pki.status`, `pki.keygen`, `pki.csr`, `pki.cert.begin`, `pki.cert.append`, `pki.cert.commit`, `pki.reset` |
 | NET0 (`LUCE_NET_CORE=1`) | Baseline plus `mdns.status`, `cli_net.status` |
 | MQTT (`LUCE_NET_MQTT=1`) | NET0 plus `mqtt.status`, `mqtt.pubtest` |
-| HTTP (`LUCE_NET_HTTP=1`) | NET0 plus `http.status`, `tls.status`, `tls.keygen`, `tls.csr`, `tls.cert.begin`, `tls.cert.append`, `tls.cert.commit`, `tls.reset` |
+| HTTP (`LUCE_NET_HTTP=1`) | NET0 plus `http.status`, `tls.status`, `tls.keygen`, `tls.csr`, `tls.cert.begin`, `tls.cert.append`, `tls.cert.commit`, `tls.reset` compatibility aliases for `pki.* https_server` |
 | OTA (`LUCE_NET_OTA=1`) | NET1 plus `ota.status`, `ota.check` |
 
 ### HTTPS JSON API routes

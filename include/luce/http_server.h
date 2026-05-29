@@ -10,8 +10,8 @@ bool http_is_running();
 
 #if LUCE_HAS_HTTP
 const char* http_state_name();
-// TLS identity lifecycle. The private key is generated and kept on-device;
-// only key/certificate presence and certificate metadata are exposed.
+// Compatibility aliases for the HTTPS PKI role. The private key is generated
+// and kept on-device; only CSR/certificate status and metadata are exposed.
 void http_tls_status_for_cli();
 esp_err_t http_tls_keygen_for_cli();
 esp_err_t http_tls_csr_for_cli();
