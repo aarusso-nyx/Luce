@@ -8,6 +8,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "freertos/semphr.h"
 #include "luce/dht_sensor.h"
 #include "esp_log.h"
 #include "esp_log_write.h"
@@ -24,6 +25,7 @@
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
 #include "luce/led_status.h"
+#include "luce/relay_logic.h"
 #include "luce/task_budgets.h"
 
 constexpr const char* kTag = "[IO]";
@@ -96,6 +98,10 @@ TaskHandle_t g_i2c_task = nullptr;
 std::uint16_t g_light_threshold = kLightThresholdFallback;
 bool g_is_day = true;
 uint8_t g_relay_output_mask = kRelayOffValue;
+bool g_hardware_degraded = false;
+StaticSemaphore_t g_relay_op_lock_storage;
+SemaphoreHandle_t g_relay_op_lock = nullptr;
+portMUX_TYPE g_io_mask_lock = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_lcd_log_lock = portMUX_INITIALIZER_UNLOCKED;
 char g_lcd_log_lines[kLcdLogBufferDepth][kLcdLogLineStorage] = {0};
 std::size_t g_lcd_log_count = 0;
@@ -205,27 +211,83 @@ void ensure_lcd_log_capture() {
   g_lcd_log_hook_ready = true;
 }
 
-std::uint8_t relay_state_to_output_mask(std::uint8_t relay_mask) {
-  if (kRelayActiveHigh) {
-    return static_cast<uint8_t>(relay_mask & kRelayAllMask);
-  }
-  return static_cast<uint8_t>(relay_mask ^ kRelayAllMask);
+struct IoMaskSnapshot {
+  std::uint8_t relay_mask = 0;
+  std::uint8_t relay_output_mask = kRelayOffValue;
+  std::uint8_t relay_night_mask = 0;
+  std::uint8_t button_mask = 0;
+  bool mcp_available = false;
+  bool hardware_degraded = false;
+  bool is_day = true;
+};
+
+IoMaskSnapshot io_mask_snapshot() {
+  IoMaskSnapshot snapshot;
+  portENTER_CRITICAL(&g_io_mask_lock);
+  snapshot.relay_mask = g_relay_mask;
+  snapshot.relay_output_mask = g_relay_output_mask;
+  snapshot.relay_night_mask = g_relay_night_mask;
+  snapshot.button_mask = g_button_mask;
+  snapshot.mcp_available = g_mcp_available;
+  snapshot.hardware_degraded = g_hardware_degraded;
+  snapshot.is_day = g_is_day;
+  portEXIT_CRITICAL(&g_io_mask_lock);
+  return snapshot;
 }
 
-std::uint8_t relay_output_to_state_mask(std::uint8_t relay_mask) {
-  if (kRelayActiveHigh) {
-    return static_cast<uint8_t>(relay_mask & kRelayAllMask);
-  }
-  return static_cast<uint8_t>(relay_mask ^ kRelayAllMask);
+void set_io_masks(std::uint8_t relay_mask, std::uint8_t relay_output_mask, std::uint8_t button_mask,
+                  bool mcp_available, bool hardware_degraded) {
+  portENTER_CRITICAL(&g_io_mask_lock);
+  g_relay_mask = relay_mask;
+  g_relay_output_mask = relay_output_mask;
+  g_button_mask = button_mask;
+  g_mcp_available = mcp_available;
+  g_hardware_degraded = hardware_degraded;
+  portEXIT_CRITICAL(&g_io_mask_lock);
 }
 
-std::uint8_t apply_night_policy(std::uint8_t requested_mask) {
-  if (g_is_day) {
-    return static_cast<uint8_t>(requested_mask & static_cast<uint8_t>(~g_relay_night_mask));
-  }
-  return requested_mask;
+void set_button_mask(std::uint8_t button_mask) {
+  portENTER_CRITICAL(&g_io_mask_lock);
+  g_button_mask = button_mask;
+  portEXIT_CRITICAL(&g_io_mask_lock);
 }
 
+void set_hardware_degraded(bool degraded) {
+  portENTER_CRITICAL(&g_io_mask_lock);
+  g_hardware_degraded = degraded;
+  g_mcp_available = !degraded;
+  if (degraded) {
+    g_button_mask = 0;
+    g_relay_output_mask = kRelayOffValue;
+  }
+  portEXIT_CRITICAL(&g_io_mask_lock);
+}
+
+SemaphoreHandle_t relay_op_lock() {
+  if (g_relay_op_lock == nullptr) {
+    g_relay_op_lock = xSemaphoreCreateRecursiveMutexStatic(&g_relay_op_lock_storage);
+  }
+  return g_relay_op_lock;
+}
+
+class RelayOpGuard {
+ public:
+  RelayOpGuard() : lock_(relay_op_lock()) {
+    if (lock_ != nullptr) {
+      taken_ = xSemaphoreTakeRecursive(lock_, portMAX_DELAY) == pdTRUE;
+    }
+  }
+  ~RelayOpGuard() {
+    if (taken_) {
+      xSemaphoreGiveRecursive(lock_);
+    }
+  }
+  bool ok() const { return taken_; }
+
+ private:
+  SemaphoreHandle_t lock_ = nullptr;
+  bool taken_ = false;
+};
 
 const char* init_status_name(InitPathStatus status) {
   switch (status) {
@@ -532,11 +594,12 @@ void render_lcd_summary_page() {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
 
-  std::snprintf(line0, sizeof(line0), "LUCE %-11s", LUCE_STRATEGY_NAME);
-  const char* net_state = wifi_is_enabled() ? (wifi_is_ip_ready() ? "OK" : "CN") : "OFF";
-  std::snprintf(line1, sizeof(line1), "W:%-3s I:%-11.11s", net_state, ip);
-  std::snprintf(line2, sizeof(line2), "R:0x%02X N:0x%02X", g_relay_mask, g_relay_night_mask);
-  if (g_last_dht_read_ok) {
+	  std::snprintf(line0, sizeof(line0), "LUCE %-11s", LUCE_STRATEGY_NAME);
+	  const char* net_state = wifi_is_enabled() ? (wifi_is_ip_ready() ? "OK" : "CN") : "OFF";
+	  const IoMaskSnapshot masks = io_mask_snapshot();
+	  std::snprintf(line1, sizeof(line1), "W:%-3s I:%-11.11s", net_state, ip);
+	  std::snprintf(line2, sizeof(line2), "R:0x%02X N:0x%02X", masks.relay_mask, masks.relay_night_mask);
+	  if (g_last_dht_read_ok) {
     const uint8_t light_state = g_last_light_raw >= static_cast<int>(kLightBitThreshold) ? 1u : 0u;
     std::snprintf(line3, sizeof(line3), "T %.1f H%.1f L:%u", g_last_temperature_c, g_last_humidity_percent, light_state);
   } else {
@@ -556,14 +619,15 @@ void render_lcd_sensors_page() {
 
   char line0[21] = {0};
   char line1[21] = {0};
-  char line2[21] = {0};
-  char line3[21] = {0};
-  const char* day_state = (g_last_light_raw > static_cast<int>(g_light_threshold)) ? "DAY" : "NITE";
+	  char line2[21] = {0};
+	  char line3[21] = {0};
+	  const char* day_state = (g_last_light_raw > static_cast<int>(g_light_threshold)) ? "DAY" : "NITE";
+	  const IoMaskSnapshot masks = io_mask_snapshot();
 
   std::snprintf(line0, sizeof(line0), "L:%4d V:%4d", g_last_light_raw, g_last_voltage_raw);
   std::snprintf(line1, sizeof(line1), "Thr:%4u %s", static_cast<unsigned>(g_light_threshold), day_state);
   std::snprintf(line2, sizeof(line2), "T:%.1fC H:%.1f%%", g_last_temperature_c, g_last_humidity_percent);
-  std::snprintf(line3, sizeof(line3), "LED raw:0x%02X", g_relay_output_mask);
+	  std::snprintf(line3, sizeof(line3), "LED raw:0x%02X", masks.relay_output_mask);
   write_lcd_line(0, line0);
   write_lcd_line(1, line1);
   write_lcd_line(2, line2);
@@ -605,22 +669,23 @@ void render_lcd_relays_page() {
 
   char line0[21] = {0};
   char line1[21] = {0};
-  char line2[21] = {0};
-  char line3[21] = {0};
-  std::uint8_t on_count = 0;
-  for (std::size_t idx = 0; idx < 8; ++idx) {
-    if ((g_relay_mask & (1u << idx)) != 0u) {
-      ++on_count;
-    }
-  }
-  const char* day_state = g_is_day ? "DAY" : "NITE";
-  std::snprintf(line0, sizeof(line0), "State:0x%02X (on:%u)", g_relay_mask, static_cast<unsigned>(on_count));
-  std::snprintf(line1, sizeof(line1), "Night:0x%02X", g_relay_night_mask);
-  std::snprintf(line2, sizeof(line2), "Bits %c%c%c%c%c%c%c%c", (g_relay_mask & 0x80u) ? '1' : '0',
-                (g_relay_mask & 0x40u) ? '1' : '0', (g_relay_mask & 0x20u) ? '1' : '0',
-                (g_relay_mask & 0x10u) ? '1' : '0', (g_relay_mask & 0x08u) ? '1' : '0',
-                (g_relay_mask & 0x04u) ? '1' : '0', (g_relay_mask & 0x02u) ? '1' : '0',
-                (g_relay_mask & 0x01u) ? '1' : '0');
+	  char line2[21] = {0};
+	  char line3[21] = {0};
+	  const IoMaskSnapshot masks = io_mask_snapshot();
+	  std::uint8_t on_count = 0;
+	  for (std::size_t idx = 0; idx < 8; ++idx) {
+	    if ((masks.relay_mask & (1u << idx)) != 0u) {
+	      ++on_count;
+	    }
+	  }
+	  const char* day_state = masks.is_day ? "DAY" : "NITE";
+	  std::snprintf(line0, sizeof(line0), "State:0x%02X (on:%u)", masks.relay_mask, static_cast<unsigned>(on_count));
+	  std::snprintf(line1, sizeof(line1), "Night:0x%02X", masks.relay_night_mask);
+	  std::snprintf(line2, sizeof(line2), "Bits %c%c%c%c%c%c%c%c", (masks.relay_mask & 0x80u) ? '1' : '0',
+	                (masks.relay_mask & 0x40u) ? '1' : '0', (masks.relay_mask & 0x20u) ? '1' : '0',
+	                (masks.relay_mask & 0x10u) ? '1' : '0', (masks.relay_mask & 0x08u) ? '1' : '0',
+	                (masks.relay_mask & 0x04u) ? '1' : '0', (masks.relay_mask & 0x02u) ? '1' : '0',
+	                (masks.relay_mask & 0x01u) ? '1' : '0');
   std::snprintf(line3, sizeof(line3), "Policy:%s", day_state);
   write_lcd_line(0, line0);
   write_lcd_line(1, line1);
@@ -782,9 +847,9 @@ void io_lcd_show_logs_page() {
     return;
   }
   g_lcd_page = LcdPage::kLogs;
-  g_lcd_log_view_offset = 0u;
   g_lcd_page_tick = xTaskGetTickCount();
   portENTER_CRITICAL(&g_lcd_log_lock);
+  g_lcd_log_view_offset = 0u;
   clamp_lcd_log_view_offset(g_lcd_log_count);
   portEXIT_CRITICAL(&g_lcd_log_lock);
   render_lcd_logs_page();
@@ -977,6 +1042,9 @@ esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value) {
   if (!value) {
     return ESP_ERR_INVALID_ARG;
   }
+  if (!g_i2c_initialized || !g_mcp_available || g_hardware_degraded) {
+    return ESP_ERR_INVALID_STATE;
+  }
   return i2c_master_write_read_device(kI2CPort, kMcpAddress, &reg, sizeof(reg), value,
                                      sizeof(*value), pdMS_TO_TICKS(100));
 }
@@ -1008,12 +1076,9 @@ bool init_mcp23017(Mcp23017State& state) {
     }
   }
 
-  state.connected = true;
-  state.relay_mask = kRelayOffValue;
-  g_mcp_available = true;
-  g_relay_mask = 0x00;
-  g_relay_output_mask = kRelayOffValue;
-  g_button_mask = 0x00;
+	  state.connected = true;
+	  state.relay_mask = kRelayOffValue;
+	  set_io_masks(0x00, kRelayOffValue, 0x00, true, false);
   ESP_LOGI(kTag,
            "MCP23017 configured: relays OFF, buttons pullups enabled, IOCON=0x%02X",
            kIoconValue);
@@ -1021,14 +1086,26 @@ bool init_mcp23017(Mcp23017State& state) {
 }
 
 esp_err_t set_relay_mask_internal(Mcp23017State& state, uint8_t state_mask, bool persist_state) {
-  const std::uint8_t requested_mask = static_cast<std::uint8_t>(state_mask & kRelayAllMask);
-  const std::uint8_t filtered_mask = apply_night_policy(requested_mask);
-  const std::uint8_t output_mask = relay_state_to_output_mask(filtered_mask);
-  const esp_err_t err = mcp_write_reg(kGpioa, output_mask);
-  if (err == ESP_OK) {
-    state.relay_mask = output_mask;
-    g_relay_mask = requested_mask;
-    g_relay_output_mask = output_mask;
+  RelayOpGuard guard;
+  if (!guard.ok()) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (!state.connected || !g_mcp_available) {
+    return ESP_ERR_INVALID_STATE;
+  }
+	  const std::uint8_t requested_mask = static_cast<std::uint8_t>(state_mask & kRelayAllMask);
+  const IoMaskSnapshot masks = io_mask_snapshot();
+	  const std::uint8_t filtered_mask = luce::relay::apply_night_policy(requested_mask, masks.relay_night_mask, masks.is_day);
+	  const std::uint8_t output_mask = luce::relay::state_to_output_mask(filtered_mask, kRelayActiveHigh);
+	  const esp_err_t err = mcp_write_reg(kGpioa, output_mask);
+	  if (err == ESP_OK) {
+	    state.relay_mask = output_mask;
+    portENTER_CRITICAL(&g_io_mask_lock);
+	    g_relay_mask = requested_mask;
+	    g_relay_output_mask = output_mask;
+    g_hardware_degraded = false;
+    g_mcp_available = true;
+    portEXIT_CRITICAL(&g_io_mask_lock);
     if (persist_state) {
       nvs_handle_t handle {};
       if (nvs_open(kRelaysNs, NVS_READWRITE, &handle) == ESP_OK) {
@@ -1056,13 +1133,27 @@ esp_err_t set_relay_mask(Mcp23017State& state, uint8_t mask) {
 }
 
 esp_err_t set_relay_mask_safe(uint8_t mask) {
-  if (!g_i2c_initialized || !g_mcp_available) {
+	  if (!g_i2c_initialized || !g_mcp_available || g_hardware_degraded) {
+	    return ESP_ERR_INVALID_STATE;
+	  }
+	  Mcp23017State state;
+  const IoMaskSnapshot masks = io_mask_snapshot();
+	  state.connected = masks.mcp_available;
+	  state.relay_mask = masks.relay_output_mask;
+	  return set_relay_mask(state, mask);
+	}
+
+esp_err_t set_relay_channel_safe(int channel, bool on) {
+  if (channel < 0 || channel >= 8) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  RelayOpGuard guard;
+  if (!guard.ok()) {
     return ESP_ERR_INVALID_STATE;
   }
-  Mcp23017State state;
-  state.connected = g_mcp_available;
-  state.relay_mask = g_relay_output_mask;
-  return set_relay_mask(state, mask);
+  const std::uint8_t current_mask = io_relay_mask();
+  const std::uint8_t next_mask = relay_mask_for_channel_state(channel, on, current_mask);
+  return set_relay_mask_safe(next_mask);
 }
 
 uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask) {
@@ -1090,8 +1181,8 @@ std::uint8_t load_relay_state_from_nvs(std::uint8_t fallback) {
                                (format == kRelaysStateFormatV1);
   nvs_close(handle);
   const std::uint8_t stored_mask = static_cast<std::uint8_t>(state_u32 & 0xFFu);
-  return is_state_format ? stored_mask : relay_output_to_state_mask(stored_mask);
-}
+	  return is_state_format ? stored_mask : luce::relay::output_to_state_mask(stored_mask, kRelayActiveHigh);
+	}
 
 std::uint8_t load_relay_night_mask_from_nvs() {
   nvs_handle_t handle {};
@@ -1117,7 +1208,9 @@ void load_light_threshold_from_nvs() {
 }
 
 void io_set_relay_night_mask(std::uint8_t night_mask) {
+  portENTER_CRITICAL(&g_io_mask_lock);
   g_relay_night_mask = night_mask;
+  portEXIT_CRITICAL(&g_io_mask_lock);
   nvs_handle_t handle {};
   if (nvs_open(kRelaysNs, NVS_READWRITE, &handle) == ESP_OK) {
     if (nvs_set_u8(handle, kRelaysNightKey, night_mask) == ESP_OK) {
@@ -1149,18 +1242,40 @@ void io_set_light_threshold(std::uint16_t threshold) {
 }
 
 void io_apply_relay_policy() {
-  if (!g_i2c_initialized || !g_mcp_available) {
+  if (!g_i2c_initialized || !g_mcp_available || g_hardware_degraded) {
     return;
   }
-  g_is_day = (g_last_light_raw > static_cast<int>(g_light_threshold));
+  const bool is_day = (g_last_light_raw > static_cast<int>(g_light_threshold));
+  portENTER_CRITICAL(&g_io_mask_lock);
+  g_is_day = is_day;
+  const std::uint8_t relay_mask = g_relay_mask;
+  const std::uint8_t relay_output_mask = g_relay_output_mask;
+  const bool mcp_available = g_mcp_available;
+  portEXIT_CRITICAL(&g_io_mask_lock);
   Mcp23017State state;
-  state.connected = g_mcp_available;
-  state.relay_mask = g_relay_output_mask;
-  (void)set_relay_mask_internal(state, g_relay_mask, false);
+  state.connected = mcp_available;
+  state.relay_mask = relay_output_mask;
+  (void)set_relay_mask_internal(state, relay_mask, false);
+}
+
+std::uint8_t io_relay_mask() {
+  return io_mask_snapshot().relay_mask;
+}
+
+std::uint8_t io_relay_output_mask() {
+  return io_mask_snapshot().relay_output_mask;
+}
+
+std::uint8_t io_button_mask() {
+  return io_mask_snapshot().button_mask;
 }
 
 std::uint8_t io_relay_night_mask() {
-  return g_relay_night_mask;
+  return io_mask_snapshot().relay_night_mask;
+}
+
+bool io_hardware_degraded() {
+  return io_mask_snapshot().hardware_degraded;
 }
 
 std::uint16_t io_light_threshold() {
@@ -1184,53 +1299,8 @@ void configure_int_pin() {
   }
 }
 
-void run_i2c_diagnostics() {
-  luce_log_heap_integrity("run_i2c_diagnostics_enter");
-  I2cScanResult scan{};
-  const InitPathResult scan_result = run_i2c_scan_flow(scan, nullptr, true);
-  if (!scan_result.ok) {
-    ESP_LOGW(kTag, "I/O diagnostics abort: I2C bus init failed");
-    led_status_set_device_ready(false, false, false);
-    return;
-  }
-
-  g_lcd_present = scan_result.ok && g_lcd_present;
-  led_status_set_device_ready(true, scan.mcp, scan.lcd);
-
-  Mcp23017State mcp_state;
-  if (!init_mcp23017(mcp_state)) {
-    ESP_LOGW(kTag, "I/O diagnostics degraded: MCP23017 missing or unresponsive");
-    led_status_set_device_ready(true, false, scan.lcd);
-    update_lcd_status_if_present();
-    g_mcp_available = false;
-    g_relay_mask = 0x00;
-    g_button_mask = 0x00;
-    while (true) {
-      update_lcd_status_if_present();
-      vTaskDelay(pdMS_TO_TICKS(100));
-    }
-  }
-
-  configure_int_pin();
-  g_mcp_available = mcp_state.connected;
-  g_relay_mask = relay_output_to_state_mask(mcp_state.relay_mask);
-  g_relay_output_mask = mcp_state.relay_mask;
-  g_button_mask = 0x00;
-  g_relay_night_mask = load_relay_night_mask_from_nvs();
-  load_light_threshold_from_nvs();
-  log_sensor_readings();
-  g_is_day = g_last_light_raw > static_cast<int>(g_light_threshold);
-
-  const std::uint8_t startup_mask = load_relay_state_from_nvs(0x00);
-  if (set_relay_mask(mcp_state, startup_mask) != ESP_OK) {
-    ESP_LOGW(kTag, "I/O diagnostics degraded: cannot write initial relay state");
-    g_mcp_available = false;
-    return;
-  }
-
-  g_lcd.set_mcp_ok(scan.mcp);
-  update_lcd_status_if_present();
-
+struct I2cRuntimeContext {
+  Mcp23017State mcp_state {};
   uint8_t debounce_counts[8] = {0};
   uint8_t debounced_buttons = 0x00;
   uint8_t last_reported_buttons = 0x00;
@@ -1242,98 +1312,206 @@ void run_i2c_diagnostics() {
   TickType_t last_night_tick = 0;
   int last_int_level = gpio_get_level(kMcpIntPin);
   TickType_t last_lcd_tick = 0;
+  TickType_t last_reprobe_tick = 0;
+};
+
+void enter_degraded_mode(bool bus_ready, bool lcd_ready, const char* reason) {
+  ESP_LOGW(kTag, "I/O diagnostics degraded: %s", reason ? reason : "hardware_degraded");
+  set_hardware_degraded(true);
+  led_status_set_device_ready(bus_ready, false, lcd_ready);
+  g_lcd.set_mcp_ok(false);
+  update_lcd_status_if_present();
+}
+
+bool configure_mcp_runtime(I2cRuntimeContext& ctx, const I2cScanResult& scan) {
+  if (!init_mcp23017(ctx.mcp_state)) {
+    return false;
+  }
+
+  configure_int_pin();
+  const std::uint8_t state_mask = luce::relay::output_to_state_mask(ctx.mcp_state.relay_mask, kRelayActiveHigh);
+  set_io_masks(state_mask, ctx.mcp_state.relay_mask, 0x00, ctx.mcp_state.connected, false);
+  const std::uint8_t night_mask = load_relay_night_mask_from_nvs();
+  portENTER_CRITICAL(&g_io_mask_lock);
+  g_relay_night_mask = night_mask;
+  portEXIT_CRITICAL(&g_io_mask_lock);
+  load_light_threshold_from_nvs();
+  log_sensor_readings();
+  portENTER_CRITICAL(&g_io_mask_lock);
+  g_is_day = g_last_light_raw > static_cast<int>(g_light_threshold);
+  portEXIT_CRITICAL(&g_io_mask_lock);
+
+  const std::uint8_t startup_mask = load_relay_state_from_nvs(0x00);
+  if (set_relay_mask(ctx.mcp_state, startup_mask) != ESP_OK) {
+    return false;
+  }
+
+  g_lcd.set_mcp_ok(true);
+  led_status_set_device_ready(true, true, scan.lcd);
+  update_lcd_status_if_present();
+  ESP_LOGI(kTag, "I/O diagnostics MCP runtime active");
+  return true;
+}
+
+void sample_buttons(I2cRuntimeContext& ctx) {
+  if (read_button_inputs(&ctx.current_buttons)) {
+    if (!ctx.have_button_snapshot) {
+      ctx.debounced_buttons = ctx.current_buttons;
+      ctx.last_reported_buttons = ctx.current_buttons;
+      ctx.have_button_snapshot = true;
+      set_button_mask(ctx.debounced_buttons);
+      ESP_LOGI(kTag, "Button init mask: 0x%02X", ctx.current_buttons);
+      return;
+    }
+
+    bool changed = false;
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      const uint8_t bit_mask = static_cast<uint8_t>(1u << bit);
+      bool raw = (ctx.current_buttons & (1u << bit)) != 0;
+      bool stable = (ctx.debounced_buttons & (1u << bit)) != 0;
+
+      if (raw == stable) {
+        ctx.debounce_counts[bit] = 0;
+        continue;
+      }
+
+      if (++ctx.debounce_counts[bit] < kButtonDebounceThreshold) {
+        continue;
+      }
+
+      ctx.debounced_buttons ^= bit_mask;
+      ctx.debounce_counts[bit] = 0;
+      changed = true;
+      const bool next_pressed =
+          kButtonActiveLow ? ((ctx.debounced_buttons & bit_mask) == 0) : ((ctx.debounced_buttons & bit_mask) != 0);
+      if (!next_pressed) {
+        continue;
+      }
+
+      if (g_lcd_page == LcdPage::kLogs && bit <= 1u) {
+        portENTER_CRITICAL(&g_lcd_log_lock);
+        if (bit == 0u) {
+          lcd_log_adjust_view_offset(1);
+          ESP_LOGI(kTag, "Log page scroll older");
+        } else {
+          lcd_log_adjust_view_offset(-1);
+          ESP_LOGI(kTag, "Log page scroll newer");
+        }
+        portEXIT_CRITICAL(&g_lcd_log_lock);
+        continue;
+      }
+
+      const uint8_t next_relay_mask = static_cast<std::uint8_t>(io_relay_mask() ^ bit_mask);
+      const bool relay_on = ((next_relay_mask & bit_mask) != 0u);
+      led_status_notify_user_input();
+      ESP_LOGI(kTag, "Toggling Relay %u %s", static_cast<unsigned>(bit), relay_on ? "ON" : "OFF");
+      if (set_relay_mask(ctx.mcp_state, next_relay_mask) == ESP_OK) {
+        ESP_LOGI(kTag, "Button %u relay state applied mask=0x%02X", static_cast<unsigned>(bit), next_relay_mask);
+      } else {
+        led_status_notify_user_error();
+        ESP_LOGW(kTag, "Button %u relay write failed", static_cast<unsigned>(bit));
+      }
+    }
+
+    if (changed && ctx.debounced_buttons != ctx.last_reported_buttons) {
+      set_button_mask(ctx.debounced_buttons);
+      ctx.last_reported_buttons = ctx.debounced_buttons;
+      update_lcd_status_if_present();
+    }
+    return;
+  }
+
+  led_status_notify_user_error();
+  ESP_LOGW(kTag, "Button read failed; retaining last stable mask");
+}
+
+void sample_mcp_interrupt(I2cRuntimeContext& ctx) {
+  const int level = gpio_get_level(kMcpIntPin);
+  if (level != ctx.last_int_level) {
+    ESP_LOGI(kTag, "MCP INTB changed to %d", level);
+    ctx.last_int_level = level;
+  }
+}
+
+void sample_sensors() {
+  log_sensor_readings();
+}
+
+void apply_night_policy_step() {
+  io_apply_relay_policy();
+}
+
+void update_lcd_step(I2cRuntimeContext& ctx, TickType_t now) {
+  ctx.last_lcd_tick = now;
+  rotate_lcd_page_if_needed(now);
+  update_lcd_status_if_present();
+}
+
+void run_degraded_step(I2cRuntimeContext& ctx, TickType_t now, const I2cScanResult& scan) {
+  if ((now - ctx.last_sensor_tick) >= kSensorReadPeriod) {
+    ctx.last_sensor_tick = now;
+    sample_sensors();
+  }
+  if ((now - ctx.last_lcd_tick) >= kLcdStatusUpdateTicks) {
+    update_lcd_step(ctx, now);
+  }
+  if ((now - ctx.last_reprobe_tick) < pdMS_TO_TICKS(5000)) {
+    return;
+  }
+  ctx.last_reprobe_tick = now;
+  if (configure_mcp_runtime(ctx, scan)) {
+    ESP_LOGI(kTag, "I/O diagnostics recovered from degraded MCP state");
+  }
+}
+
+void run_i2c_diagnostics() {
+  luce_log_heap_integrity("run_i2c_diagnostics_enter");
+  I2cScanResult scan{};
+  const InitPathResult scan_result = run_i2c_scan_flow(scan, nullptr, true);
+  if (!scan_result.ok) {
+    enter_degraded_mode(false, false, "I2C bus init failed");
+  } else {
+    g_lcd_present = scan_result.ok && g_lcd_present;
+    led_status_set_device_ready(true, scan.mcp, scan.lcd);
+  }
+
+  I2cRuntimeContext ctx;
+  if (scan_result.ok && !configure_mcp_runtime(ctx, scan)) {
+    enter_degraded_mode(true, scan.lcd, "MCP23017 missing or unresponsive");
+  }
 
   ESP_LOGI(kTag, "Entering I/O runtime diagnostics loop (button-toggle relay control)");
   while (true) {
     const TickType_t now = xTaskGetTickCount();
 
-    if ((now - last_button_tick) >= kButtonSamplePeriod) {
-      last_button_tick = now;
-      if (read_button_inputs(&current_buttons)) {
-        if (!have_button_snapshot) {
-          debounced_buttons = current_buttons;
-          last_reported_buttons = current_buttons;
-          have_button_snapshot = true;
-          ESP_LOGI(kTag, "Button init mask: 0x%02X", current_buttons);
-        } else {
-          bool changed = false;
-          for (uint8_t bit = 0; bit < 8; ++bit) {
-            const uint8_t bit_mask = static_cast<uint8_t>(1u << bit);
-            bool raw = (current_buttons & (1u << bit)) != 0;
-            bool stable = (debounced_buttons & (1u << bit)) != 0;
-
-            if (raw == stable) {
-              debounce_counts[bit] = 0;
-              continue;
-            }
-
-            if (++debounce_counts[bit] >= kButtonDebounceThreshold) {
-              debounced_buttons ^= bit_mask;
-              debounce_counts[bit] = 0;
-              changed = true;
-              const bool next_pressed =
-                  kButtonActiveLow ? ((debounced_buttons & bit_mask) == 0) : ((debounced_buttons & bit_mask) != 0);
-              if (next_pressed) {
-                if (g_lcd_page == LcdPage::kLogs && bit <= 1u) {
-                  portENTER_CRITICAL(&g_lcd_log_lock);
-                  if (bit == 0u) {
-                    lcd_log_adjust_view_offset(1);
-                    ESP_LOGI(kTag, "Log page scroll older");
-                  } else {
-                    lcd_log_adjust_view_offset(-1);
-                    ESP_LOGI(kTag, "Log page scroll newer");
-                  }
-                  portEXIT_CRITICAL(&g_lcd_log_lock);
-                } else {
-                  const uint8_t next_relay_mask = g_relay_mask ^ bit_mask;
-                  const bool relay_on = ((next_relay_mask & bit_mask) != 0u);
-                  led_status_notify_user_input();
-                  ESP_LOGI(kTag, "Toggling Relay %u %s", static_cast<unsigned>(bit), relay_on ? "ON" : "OFF");
-                  if (set_relay_mask(mcp_state, next_relay_mask) == ESP_OK) {
-                    ESP_LOGI(kTag, "Button %u relay state applied mask=0x%02X", static_cast<unsigned>(bit), next_relay_mask);
-                  } else {
-                    led_status_notify_user_error();
-                    ESP_LOGW(kTag, "Button %u relay write failed", static_cast<unsigned>(bit));
-                  }
-                }
-              }
-            }
-          }
-          if (changed && debounced_buttons != last_reported_buttons) {
-            g_button_mask = debounced_buttons;
-            last_reported_buttons = debounced_buttons;
-            update_lcd_status_if_present();
-          }
-        }
-      } else {
-        led_status_notify_user_error();
-        ESP_LOGW(kTag, "Button read failed; retaining last stable mask");
-      }
+    if (io_hardware_degraded()) {
+      run_degraded_step(ctx, now, scan);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
     }
 
-    if ((now - last_int_tick) >= kIntSamplePeriod) {
-      last_int_tick = now;
-      const int level = gpio_get_level(kMcpIntPin);
-      if (level != last_int_level) {
-        ESP_LOGI(kTag, "MCP INTB changed to %d", level);
-        last_int_level = level;
-      }
+    if ((now - ctx.last_button_tick) >= kButtonSamplePeriod) {
+      ctx.last_button_tick = now;
+      sample_buttons(ctx);
     }
 
-    if ((now - last_sensor_tick) >= kSensorReadPeriod) {
-      last_sensor_tick = now;
-      log_sensor_readings();
+    if ((now - ctx.last_int_tick) >= kIntSamplePeriod) {
+      ctx.last_int_tick = now;
+      sample_mcp_interrupt(ctx);
     }
 
-    if ((now - last_night_tick) >= kNightUpdatePeriod) {
-      last_night_tick = now;
-      io_apply_relay_policy();
+    if ((now - ctx.last_sensor_tick) >= kSensorReadPeriod) {
+      ctx.last_sensor_tick = now;
+      sample_sensors();
     }
 
-    if ((now - last_lcd_tick) >= kLcdStatusUpdateTicks) {
-      last_lcd_tick = now;
-      rotate_lcd_page_if_needed(now);
-      update_lcd_status_if_present();
+    if ((now - ctx.last_night_tick) >= kNightUpdatePeriod) {
+      ctx.last_night_tick = now;
+      apply_night_policy_step();
+    }
+
+    if ((now - ctx.last_lcd_tick) >= kLcdStatusUpdateTicks) {
+      update_lcd_step(ctx, now);
     }
 
     vTaskDelay(pdMS_TO_TICKS(20));

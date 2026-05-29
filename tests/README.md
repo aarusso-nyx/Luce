@@ -26,9 +26,18 @@ Run the local Wokwi simulator lane:
 ./scripts/luce.sh test --target wokwi --layers build,boot,http,tcp,ws,mqtt --env net1 --spawn-test-mqtt-broker
 ```
 
-Wokwi mode requires `wokwi-cli`, `WOKWI_CLI_TOKEN`, and Private IoT Gateway
-incoming port forwarding. It covers boot, UART CLI smoke, HTTP, TCP, WS, and
-MQTT contracts only; hardware-in-loop remains the release gate.
+Wokwi mode requires `wokwi-cli` and `WOKWI_CLI_TOKEN`. Current `wokwi-cli`
+covers build, boot, and UART CLI smoke. HTTP, TCP, WS, and MQTT layers are
+recorded as `DESELECTED` with `deselected:wokwi` by default because CLI
+simulations do not attach to the Private IoT Gateway for incoming forwarded
+ports. Hardware-in-loop remains the release gate for protocol contracts.
+
+Fail-loud policy:
+
+- A selected layer must have its prerequisites. Missing tokens, serial ports,
+  broker connectivity, or Python dependencies fail preflight.
+- Skips are reserved for layers that are not selected. The summary reports
+  `ran`, `fail`, and `deselected` counts so coverage loss is visible.
 
 Layer model:
 

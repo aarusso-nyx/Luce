@@ -271,15 +271,15 @@ def test_mqtt_reconnect_after_managed_broker_restart(
 ):
     require_token(luce_http_token, "--luce-http-token")
     if managed_mqtt_broker_pid <= 0:
-        pytest.skip("requires --luce-test-mqtt-broker-pid from managed broker mode")
+        pytest.fail("selected MQTT reconnect coverage requires --luce-test-mqtt-broker-pid from managed broker mode")
 
     if not _wait_mqtt_connected_state(http_requester, luce_host, luce_http_token, connected=True, timeout_s=20.0):
-        pytest.skip("device MQTT client is not connected to the managed broker")
+        pytest.fail("device MQTT client is not connected to the managed broker")
 
     try:
         os.kill(managed_mqtt_broker_pid, signal.SIGTERM)
     except ProcessLookupError:
-        pytest.skip("managed broker process no longer running")
+        pytest.fail("managed broker process no longer running")
 
     disconnected = _wait_mqtt_connected_state(http_requester, luce_host, luce_http_token, connected=False, timeout_s=30.0)
     assert disconnected, "mqttConnected did not drop after broker termination"

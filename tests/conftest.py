@@ -146,7 +146,7 @@ def http_requester() -> Any:
 
 def require_token(token: str, flag_name: str) -> None:
     if not token:
-        pytest.skip(f"missing token; provide {flag_name} or env")
+        pytest.fail(f"selected layer requires token; provide {flag_name} or matching env")
 
 
 def recv_line(sock: socket.socket, timeout: float = 3.0) -> str:
@@ -188,10 +188,10 @@ def serial_config(pytestconfig: pytest.Config) -> dict[str, Any]:
 
 def require_serial(serial_config: dict[str, Any]) -> Any:
     if not serial_config.get("port"):
-        pytest.skip("missing serial port; provide --luce-serial-port or LUCE_MONITOR_PORT")
+        pytest.fail("selected serial/HIL layer requires --luce-serial-port or LUCE_MONITOR_PORT")
     serial_mod = _import_pyserial()
     if serial_mod is None:
-        pytest.skip("pyserial not installed")
+        pytest.fail("selected serial/HIL layer requires pyserial from tests/requirements.txt")
     return serial_mod
 
 
@@ -276,7 +276,7 @@ def spawn_local_amqtt_broker(host: str, port: int) -> subprocess.Popen[str]:
     try:
         import amqtt  # noqa: F401
     except ModuleNotFoundError:
-        pytest.skip("amqtt not installed")
+        pytest.fail("selected MQTT managed-broker coverage requires amqtt from tests/requirements.txt")
     script = tempfile.NamedTemporaryFile("w", delete=False, suffix="_luce_test_broker.py")
     try:
         script.write(
@@ -411,7 +411,7 @@ def mqtt_client_factory() -> Any:
     try:
         import paho.mqtt.client as mqtt  # type: ignore
     except ModuleNotFoundError:
-        pytest.skip("paho-mqtt not installed")
+        pytest.fail("selected MQTT layer requires paho-mqtt from tests/requirements.txt")
 
     def _factory(cfg: dict[str, Any]) -> tuple[Any, queue.Queue[tuple[str, str]]]:
         messages: queue.Queue[tuple[str, str]] = queue.Queue()

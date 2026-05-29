@@ -250,13 +250,13 @@ def test_ota_periodic_cadence_when_configured(http_requester, luce_host, luce_ht
     before_payload = before.json()
 
     if not bool(before_payload.get("enabled", False)):
-        pytest.skip("OTA disabled")
+        pytest.fail("selected HTTP layer expected OTA periodic coverage but OTA is disabled")
 
     interval_s = int(before_payload.get("interval_s", 0))
     if interval_s <= 0:
-        pytest.skip("periodic OTA disabled by config (interval_s=0)")
+        pytest.fail("selected HTTP layer expected OTA periodic coverage but interval_s=0")
     if interval_s > 60:
-        pytest.skip(f"periodic OTA interval too long for contract run ({interval_s}s)")
+        pytest.fail(f"selected HTTP layer expected OTA periodic coverage but interval is too long ({interval_s}s)")
 
     before_checks = int(before_payload.get("checks", 0))
     deadline = time.monotonic() + interval_s + 8.0

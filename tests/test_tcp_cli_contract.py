@@ -32,7 +32,7 @@ def test_tcp_cli_auth_fail_then_abort(tcp_config):
 def test_tcp_cli_readonly_policy(tcp_config):
     host, port, token = tcp_config
     if not token:
-        pytest.skip("missing --luce-tcp-token")
+        pytest.fail("selected TCP layer requires --luce-tcp-token or LUCE_CLI_NET_TOKEN")
 
     with socket.create_connection((host, port), timeout=5.0) as sock:
         prompt = recv_line(sock)

@@ -49,6 +49,12 @@ Use the integrated layered test entrypoint to validate transport and lifecycle b
 
 The wrapper delegates to `python3 scripts/test_layers.py` and writes a wrapper log beside the layered test outputs.
 
+Selected layers fail loudly when prerequisites are missing. Missing HTTP/TCP
+tokens, serial ports, broker connectivity, or Python dependencies are reported
+as layer failures in `summary.md` and `summary.json`; they are not silent skips.
+Skips are reserved for layers that were not selected, and simulator-unsupported
+layers are reported as `DESELECTED`.
+
 Dependencies:
 
 - `python3 -m venv .venv`
@@ -70,13 +76,13 @@ Prerequisites:
 
 - `wokwi-cli` on `PATH`
 - `WOKWI_CLI_TOKEN` set
-- Wokwi Private IoT Gateway support for incoming forwarded ports
 - Python dependencies from `tests/requirements.txt`
 
 Simulator behavior:
 
 - `boot` runs Wokwi, captures serial output, checks NET1 boot markers, and runs a UART CLI smoke scenario for non-I2C commands.
-- `http`, `tcp`, `ws`, and `mqtt` reuse the existing pytest contract layers against forwarded localhost ports.
+- Current `wokwi-cli` validates `build` and `boot`; `http`, `tcp`, `ws`, and `mqtt` are recorded as `DESELECTED` with `deselected:wokwi` by default because the CLI does not attach to the Wokwi Private IoT Gateway for incoming forwarded ports.
+- `--wokwi-network-mode gateway` is available as an experimental local attempt using `wokwigw`, but hardware-backed transport tests remain the canonical protocol evidence.
 - Generated simulator NVS, TLS material, Wokwi project files, merged firmware, serial logs, and pytest evidence are written under `docs/work/diag/<run_id>/`.
 - Runtime simulator tokens default to `LUCE_SIM_HTTP_TOKEN` or `luce-token`, and `LUCE_SIM_CLI_TOKEN` or `luce-cli`.
 - `LUCE_SIM_WOKWI_TIMEOUT_MS` controls the Wokwi CLI simulation timeout.

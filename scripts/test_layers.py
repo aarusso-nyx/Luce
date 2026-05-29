@@ -28,6 +28,7 @@ LAYERS = ("build", "boot", "http", "tcp", "ws", "mqtt", "serial")
 LAYER_GROUPS = {
     "critical": ("http", "tcp", "ws", "mqtt"),
 }
+WOKWI_NETWORK_LAYERS = {"http", "tcp", "ws", "mqtt"}
 
 
 @dataclass
@@ -188,6 +189,13 @@ def require_wokwi_cli() -> str:
     return cli
 
 
+def require_wokwi_gateway() -> str:
+    gateway = shutil.which("wokwigw")
+    if gateway is None:
+        raise RuntimeError("wokwigw not found on PATH; install Wokwi Private IoT Gateway for forwarded network tests")
+    return gateway
+
+
 def resolve_layers(raw: str) -> list[str]:
     raw = raw.strip().lower()
     if raw in ("all", "full"):
@@ -342,6 +350,9 @@ def write_wokwi_project_files(workspace: WokwiWorkspace) -> None:
             version = 1
             firmware = 'luce-wokwi.bin'
             elf = 'firmware.elf'
+
+            [net]
+            gateway = "ws://localhost:9011"
 
             [[net.forward]]
             from = "localhost:8443"
@@ -591,7 +602,32 @@ def start_wokwi_network(args: argparse.Namespace, repo_root: Path, out_dir: Path
     log = out_dir / "wokwi-network.log"
     workspace = ensure_wokwi_workspace(args, repo_root, out_dir, log_path=log)
     cli = require_wokwi_cli()
+    gateway = require_wokwi_gateway()
     serial_log = out_dir / "wokwi_network_serial.log"
+
+    gateway_log = out_dir / "wokwi-gateway.log"
+    gateway_fh = gateway_log.open("w", encoding="utf-8")
+    gateway_cmd = [
+        gateway,
+        "--listenPort",
+        "9011",
+        "--forward",
+        "8443:10.13.37.2:443",
+        "--forward",
+        "8080:10.13.37.2:80",
+        "--forward",
+        "2323:10.13.37.2:2323",
+    ]
+    gateway_fh.write(f"==> {shell_join(gateway_cmd)}\n")
+    gateway_fh.flush()
+    gateway_proc = subprocess.Popen(gateway_cmd, stdout=gateway_fh, stderr=subprocess.STDOUT, text=True)
+    args.wokwi_gateway_proc = gateway_proc
+    args.wokwi_gateway_stdout_fh = gateway_fh
+
+    if not wait_for_tcp("127.0.0.1", 9011, timeout_s=8.0):
+        stop_wokwi_network(args)
+        raise RuntimeError("wokwigw did not become ready on 127.0.0.1:9011")
+
     stdout_fh = log.open("w", encoding="utf-8")
     cmd = [
         cli,
@@ -609,13 +645,12 @@ def start_wokwi_network(args: argparse.Namespace, repo_root: Path, out_dir: Path
     args.wokwi_proc = proc
     args.wokwi_stdout_fh = stdout_fh
 
+    if not wait_for_file_text(serial_log, "[HTTP] started", timeout_s=args.wokwi_ready_timeout_s):
+        stop_wokwi_network(args)
+        raise RuntimeError("Wokwi HTTP server did not report ready before timeout")
+
     if not wait_for_tcp("127.0.0.1", 8443, timeout_s=args.wokwi_ready_timeout_s):
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        stdout_fh.close()
+        stop_wokwi_network(args)
         raise RuntimeError("Wokwi HTTPS forward did not become ready on 127.0.0.1:8443")
     return proc
 
@@ -632,6 +667,17 @@ def stop_wokwi_network(args: argparse.Namespace) -> None:
     stdout_fh = getattr(args, "wokwi_stdout_fh", None)
     if stdout_fh is not None:
         stdout_fh.close()
+    gateway_proc = getattr(args, "wokwi_gateway_proc", None)
+    if gateway_proc is not None and gateway_proc.poll() is None:
+        gateway_proc.terminate()
+        try:
+            gateway_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            gateway_proc.kill()
+            gateway_proc.wait(timeout=3)
+    gateway_stdout_fh = getattr(args, "wokwi_gateway_stdout_fh", None)
+    if gateway_stdout_fh is not None:
+        gateway_stdout_fh.close()
 
 
 def pytest_cmd_for_layer(args: argparse.Namespace, repo_root: Path, out_dir: Path, layer: str) -> list[str]:
@@ -713,6 +759,17 @@ def wait_for_tcp(host: str, port: int, timeout_s: float) -> bool:
                 return True
             except OSError:
                 pass
+        sleep_short()
+    return False
+
+
+def wait_for_file_text(path: Path, needle: str, timeout_s: float) -> bool:
+    deadline = time_monotonic() + timeout_s
+    while time_monotonic() < deadline:
+        if path.exists():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if needle in text:
+                return True
         sleep_short()
     return False
 
@@ -819,10 +876,41 @@ def stop_test_mqtt_broker(broker: SpawnedBroker) -> None:
         broker.proc.wait(timeout=3)
 
 
+def layer_preflight(args: argparse.Namespace, layer: str, out_dir: Path) -> LayerResult | None:
+    log = out_dir / f"{layer}-preflight.log"
+
+    def fail(message: str) -> LayerResult:
+        append_log(log, message)
+        return LayerResult(layer, "FAIL", 2, str(log), f"preflight: {message}")
+
+    if layer == "boot" and args.target == "hardware":
+        missing = [path for path in (args.upload_port, args.monitor_port) if path and not Path(path).exists()]
+        if missing:
+            return fail("missing serial device(s): " + ", ".join(missing))
+    if layer == "http" and not args.http_token:
+        return fail("missing HTTP token; provide --http-token or LUCE_HTTP_TOKEN")
+    if layer == "tcp" and not args.tcp_token:
+        return fail("missing TCP CLI token; provide --tcp-token or LUCE_CLI_NET_TOKEN")
+    if layer == "serial":
+        if not args.monitor_port or not Path(args.monitor_port).exists():
+            return fail("missing monitor serial port; provide --monitor-port or LUCE_MONITOR_PORT")
+        serial_check = subprocess.run([args.repo_python, "-c", "import serial"], capture_output=True, text=True)
+        if serial_check.returncode != 0:
+            return fail("pyserial unavailable; install tests/requirements.txt")
+    if layer == "mqtt":
+        if not args.http_token:
+            return fail("missing HTTP token required for MQTT state/reconnect assertions")
+        if not args.spawn_test_mqtt_broker and not wait_for_tcp(args.mqtt_host, int(args.mqtt_port), timeout_s=1.5):
+            return fail(f"MQTT broker unreachable at {args.mqtt_host}:{args.mqtt_port}; use --spawn-test-mqtt-broker or provide broker")
+    return None
+
+
 def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> None:
     pass_count = sum(1 for r in results if r.status == "PASS")
     fail_count = sum(1 for r in results if r.status == "FAIL")
     skip_count = sum(1 for r in results if r.status == "SKIP")
+    deselected_count = sum(1 for r in results if r.status == "DESELECTED")
+    ran_count = sum(1 for r in results if r.status in {"PASS", "FAIL"})
 
     md = out_dir / "summary.md"
     js = out_dir / "summary.json"
@@ -835,6 +923,8 @@ def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> N
         f"- pass: {pass_count}",
         f"- fail: {fail_count}",
         f"- skip: {skip_count}",
+        f"- deselected: {deselected_count}",
+        f"- ran: {ran_count}",
         "",
         "## Results",
     ]
@@ -849,6 +939,8 @@ def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> N
         "pass": pass_count,
         "fail": fail_count,
         "skip": skip_count,
+        "deselected": deselected_count,
+        "ran": ran_count,
         "results": [r.__dict__ for r in results],
     }
     js.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -971,6 +1063,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=float(os.getenv("LUCE_SIM_WOKWI_READY_TIMEOUT_S", "75")),
         help="Seconds to wait for Wokwi forwarded HTTPS readiness.",
     )
+    parser.add_argument(
+        "--wokwi-network-mode",
+        choices=("skip", "gateway"),
+        default=os.getenv("LUCE_WOKWI_NETWORK_MODE", "skip"),
+        help=(
+            "Wokwi protocol layer mode. Default 'skip' records HTTP/TCP/WS/MQTT as unsupported "
+            "for current wokwi-cli. 'gateway' attempts experimental wokwigw forwarding."
+        ),
+    )
 
     parser.add_argument("--pytest-arg", action="append", default=[], help="Extra pytest arg (repeatable).")
 
@@ -1035,7 +1136,10 @@ def main(argv: Sequence[str]) -> int:
     }
 
     try:
-        if args.spawn_test_mqtt_broker and "mqtt" in args.layer_list:
+        mqtt_layer_will_run = not (
+            args.target == "wokwi" and args.wokwi_network_mode == "skip" and "mqtt" in args.layer_list
+        )
+        if args.spawn_test_mqtt_broker and "mqtt" in args.layer_list and mqtt_layer_will_run:
             try:
                 spawned_broker = spawn_test_mqtt_broker(args, out_dir)
                 args.mqtt_host = spawned_broker.host
@@ -1057,7 +1161,26 @@ def main(argv: Sequence[str]) -> int:
                 return 1
 
         for layer in args.layer_list:
-            if args.target == "wokwi" and layer in {"http", "tcp", "ws", "mqtt"}:
+            if args.target == "wokwi" and layer in WOKWI_NETWORK_LAYERS and args.wokwi_network_mode == "skip":
+                log = out_dir / f"{layer}.log"
+                details = (
+                    "wokwi-cli 0.26.x does not attach to Wokwi Private IoT Gateway; "
+                    "run protocol layers against hardware, or opt into experimental "
+                    "--wokwi-network-mode gateway"
+                )
+                append_log(log, details)
+                result = LayerResult(layer, "DESELECTED", 0, str(log), f"deselected:wokwi {details}")
+                results.append(result)
+                print(f"{layer}: {result.status} (rc={result.rc})")
+                continue
+            preflight = layer_preflight(args, layer, out_dir)
+            if preflight is not None:
+                results.append(preflight)
+                print(f"{layer}: {preflight.status} (rc={preflight.rc})")
+                if not args.continue_on_fail:
+                    break
+                continue
+            if args.target == "wokwi" and layer in WOKWI_NETWORK_LAYERS:
                 try:
                     start_wokwi_network(args, repo_root, out_dir)
                 except RuntimeError as exc:

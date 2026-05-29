@@ -623,17 +623,18 @@ void build_ws_snapshot_payload(char* out, std::size_t out_size) {
   }
   I2cSensorSnapshot snapshot {};
   const bool has_sensor = read_sensor_snapshot(snapshot);
-  const std::uint16_t threshold = io_light_threshold();
-  const std::uint8_t night_mask = io_relay_night_mask();
-  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
+	  const std::uint16_t threshold = io_light_threshold();
+	  const std::uint8_t night_mask = io_relay_night_mask();
+  const bool hardware_degraded = io_hardware_degraded();
+	  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   std::time_t now = 0;
   (void)std::time(&now);
   std::snprintf(
       out, out_size,
-      "{\"type\":\"state\",\"tstamp\":%llu,\"state\":%u,\"night\":%u,\"day\":%u,\"threshold\":%u,"
-      "\"light\":%d,\"voltage\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s}",
-      static_cast<unsigned long long>(now > 0 ? now : 0), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask),
-      day ? 1u : 0u, static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
+	      "{\"type\":\"state\",\"tstamp\":%llu,\"state\":%u,\"night\":%u,\"day\":%u,\"hardware_degraded\":%s,\"threshold\":%u,"
+	      "\"light\":%d,\"voltage\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s}",
+	      static_cast<unsigned long long>(now > 0 ? now : 0), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask),
+	      day ? 1u : 0u, hardware_degraded ? "true" : "false", static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
       has_sensor ? snapshot.voltage_raw : 0, has_sensor ? snapshot.temperature_c : 0.0f,
       has_sensor ? snapshot.humidity_percent : 0.0f, has_sensor && snapshot.dht_ok ? "true" : "false");
 }
@@ -676,9 +677,10 @@ esp_err_t route_info_impl(httpd_req_t* req) {
   wifi_copy_ip_str(ip, sizeof(ip));
   I2cSensorSnapshot snapshot {};
   const bool has_sensor = read_sensor_snapshot(snapshot);
-  const std::uint16_t threshold = io_light_threshold();
-  const std::uint8_t night_mask = io_relay_night_mask();
-  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
+	  const std::uint16_t threshold = io_light_threshold();
+	  const std::uint8_t night_mask = io_relay_night_mask();
+  const bool hardware_degraded = io_hardware_degraded();
+	  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   const bool cert_present = (g_cfg.cert_pem[0] != '\0');
   const bool key_present = (g_cfg.key_pem[0] != '\0');
   char payload[1792] = {0};
@@ -689,7 +691,7 @@ esp_err_t route_info_impl(httpd_req_t* req) {
                 "\"https_running\":%s,\"tls_state\":\"%s\",\"tls_status\":\"%s\",\"tls_last_error\":\"%s\","
                 "\"key_present\":%s,\"csr_ready\":%s,\"cert_present\":%s,"
                 "\"cert_fingerprint\":\"%s\",\"cert_subject\":\"%s\",\"cert_issuer\":\"%s\","
-                "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"threshold\":%u,"
+	                "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"hardware_degraded\":%s,\"threshold\":%u,"
                 "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
                 "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
                 "luce", LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__,
@@ -699,8 +701,8 @@ esp_err_t route_info_impl(httpd_req_t* req) {
                 g_httpd != nullptr ? "true" : "false", tls_status_name(), tls_status_name(), g_tls_last_error,
                 key_present ? "true" : "false", key_present ? "true" : "false", cert_present ? "true" : "false",
                 g_cfg.cert_fingerprint, g_cfg.cert_subject, g_cfg.cert_issuer,
-                static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
-                static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
+	                static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
+	                hardware_degraded ? "true" : "false", static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
                 has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
                 has_sensor && snapshot.dht_ok ? "true" : "false", as_n_a(ip), wifi_is_connected() ? "true" : "false",
                 mqtt_is_connected() ? "true" : "false", ntp_is_synced() ? "true" : "false");
@@ -719,11 +721,11 @@ esp_err_t route_state_impl(httpd_req_t* req) {
   char payload[384] = {0};
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  std::snprintf(payload, sizeof(payload),
-               "{\"state\":\"running\",\"wifi_ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"requests\":1,\"unauth\":0,"
-               "\"service\":\"luce\",\"strategy\":\"%s\",\"ntp_state\":0}",
-               as_n_a(ip), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
-               LUCE_STRATEGY_NAME);
+	  std::snprintf(payload, sizeof(payload),
+	               "{\"state\":\"running\",\"wifi_ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"hardware_degraded\":%s,\"requests\":1,\"unauth\":0,"
+	               "\"service\":\"luce\",\"strategy\":\"%s\",\"ntp_state\":0}",
+	               as_n_a(ip), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
+	               io_hardware_degraded() ? "true" : "false", LUCE_STRATEGY_NAME);
   return send_json(req, 200, payload, 0);
 }
 

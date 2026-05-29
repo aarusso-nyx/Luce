@@ -12,6 +12,7 @@
 #if LUCE_HAS_MQTT
 
 #include "luce/nvs_helpers.h"
+#include "luce/backoff.h"
 #include "luce/runtime_state.h"
 #include "esp_err.h"
 #include "esp_event.h"
@@ -33,8 +34,8 @@ namespace {
 constexpr const char* kTag = "[MQTT]";
 constexpr const char* kMqttNs = "mqtt";
 constexpr std::uint32_t kPublishIntervalMs = 30000;
-constexpr std::uint32_t kBackoffMinMs = 30000;
-constexpr std::uint32_t kBackoffMaxMs = 60000;
+constexpr std::uint32_t kBackoffMinMs = 1000;
+constexpr std::uint32_t kBackoffMaxMs = 300000;
 constexpr const char* kMqttNvsTag = "[MQTT][NVS]";
 constexpr std::uint16_t kPayloadBufferBytes = 256;
 constexpr std::uint16_t kPayloadTextBufferBytes = 128;
@@ -70,17 +71,21 @@ struct MqttConfig {
 
 MqttConfig g_cfg {};
 MqttState g_state = MqttState::kDisabled;
+portMUX_TYPE g_mqtt_state_lock = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t g_task = nullptr;
 esp_mqtt_client_handle_t g_client = nullptr;
 std::uint32_t g_connect_count = 0;
 std::uint32_t g_publish_count = 0;
 std::uint32_t g_reconnect_count = 0;
+std::uint32_t g_backoff_attempt = 0;
 TickType_t g_next_retry_tick = 0;
 std::uint32_t g_backoff_ms = 0;
+bool g_backoff_scheduled = false;
 bool g_connected = false;
 std::uint32_t g_last_rcvd = 0;
 
 int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std::size_t payload_len = 0);
+bool mqtt_connected_flag();
 
 bool parse_u32_value(const char* text, std::uint32_t* out_value) {
   if (!text || !out_value || *text == '\0') {
@@ -389,11 +394,11 @@ void handle_relay_state_index(const char* index_text, const char* payload) {
     return;
   }
 
-  const std::uint8_t next_mask = relay_mask_for_channel_state(static_cast<int>(index), on, g_relay_mask);
-  if (set_relay_mask_safe(next_mask) != ESP_OK) {
-    ESP_LOGW(kTag, "[MQTT][IN] relays/state/%u failed (i/o unavailable)", static_cast<unsigned>(index));
-    led_status_notify_user_error();
-    return;
+	  if (set_relay_channel_safe(static_cast<int>(index), on) != ESP_OK) {
+	    ESP_LOGW(kTag, "[MQTT][IN] relays/state/%u failed (%s)", static_cast<unsigned>(index),
+	             io_hardware_degraded() ? "hardware_degraded" : "i/o unavailable");
+	    led_status_notify_user_error();
+	    return;
   }
   led_status_notify_user_input();
   ESP_LOGI(kTag, "[MQTT][IN] relays/state/%u=%s", static_cast<unsigned>(index), on ? "on" : "off");
@@ -409,7 +414,8 @@ void handle_relay_state(const char* payload) {
 
   const std::uint8_t next_mask = static_cast<std::uint8_t>(mask & 0xFFu);
   if (set_relay_mask_safe(next_mask) != ESP_OK) {
-    ESP_LOGW(kTag, "[MQTT][IN] relays/state failed (i/o unavailable)");
+	    ESP_LOGW(kTag, "[MQTT][IN] relays/state failed (%s)",
+	             io_hardware_degraded() ? "hardware_degraded" : "i/o unavailable");
     led_status_notify_user_error();
     return;
   }
@@ -494,6 +500,68 @@ void handle_relay_topic(const char* subtopic, const char* payload) {
   publish_unsupported_legacy_topic(topic, "unhandled_relays_topic", payload);
 }
 
+enum class ConfigValueKind : std::uint8_t {
+  kString,
+  kBool,
+  kU32,
+};
+
+struct ConfigRoute {
+  const char* suffix;
+  const char* ns;
+  const char* key;
+  ConfigValueKind kind;
+  bool mask_value;
+  std::uint32_t min_value;
+  std::uint32_t max_value;
+};
+
+bool apply_config_route(const ConfigRoute& route, const char* value_text) {
+  switch (route.kind) {
+    case ConfigValueKind::kString:
+      if (nvs_write_string(route.ns, route.key, value_text, route.mask_value)) {
+        ESP_LOGI(kTag, "[MQTT][IN] config/%s updated %s/%s%s (reboot to apply)", route.suffix, route.ns, route.key,
+                 route.mask_value ? " (masked)" : "");
+        return true;
+      }
+      return false;
+    case ConfigValueKind::kBool:
+      return persist_config_bool(route.ns, route.key, value_text, route.ns);
+    case ConfigValueKind::kU32:
+      return persist_config_u32(route.ns, route.key, value_text, route.ns, route.min_value, route.max_value);
+    default:
+      return false;
+  }
+}
+
+constexpr ConfigRoute kConfigRoutes[] = {
+    {"name", "net", "hostname", ConfigValueKind::kString, false, 0u, 0u},
+    {"hostname", "net", "hostname", ConfigValueKind::kString, false, 0u, 0u},
+    {"ssid", "wifi", "ssid", ConfigValueKind::kString, false, 0u, 0u},
+    {"pass", "wifi", "pass", ConfigValueKind::kString, true, 0u, 0u},
+    {"ssid2", "wifi", "ssid2", ConfigValueKind::kString, false, 0u, 0u},
+    {"pass2", "wifi", "pass2", ConfigValueKind::kString, true, 0u, 0u},
+    {"wifi/ssid", "wifi", "ssid", ConfigValueKind::kString, false, 0u, 0u},
+    {"wifi/pass", "wifi", "pass", ConfigValueKind::kString, true, 0u, 0u},
+    {"logConsoleFmt", "compat", "log_console_fmt", ConfigValueKind::kString, false, 0u, 0u},
+    {"logFileFmt", "compat", "log_file_fmt", ConfigValueKind::kString, false, 0u, 0u},
+    {"logConsoleLevel", "compat", "log_console_level", ConfigValueKind::kString, false, 0u, 0u},
+    {"logFileLevel", "compat", "log_file_level", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt", "mqtt", "uri", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt/uri", "mqtt", "uri", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt/client_id", "mqtt", "client_id", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt/base_topic", "mqtt", "base_topic", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt/username", "mqtt", "username", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt/password", "mqtt", "password", ConfigValueKind::kString, true, 0u, 0u},
+    {"mqtt/tls_enabled", "mqtt", "tls_enabled", ConfigValueKind::kBool, false, 0u, 0u},
+    {"mqtt/ca_pem_source", "mqtt", "ca_pem_source", ConfigValueKind::kString, false, 0u, 0u},
+    {"mqtt/qos", "mqtt", "qos", ConfigValueKind::kU32, false, 0u, 2u},
+    {"mqtt/keepalive_s", "mqtt", "keepalive_s", ConfigValueKind::kU32, false, 30u, 7200u},
+    {"mdns/instance", "mdns", "instance", ConfigValueKind::kString, false, 0u, 0u},
+    {"http/token", "http", "token", ConfigValueKind::kString, true, 0u, 0u},
+    {"cli_net/token", "cli_net", "token", ConfigValueKind::kString, true, 0u, 0u},
+};
+
 void handle_config_topic(const char* subtopic, const char* payload) {
   if (!subtopic || subtopic[0] == '\0') {
     ESP_LOGW(kTag, "[MQTT][IN] empty config topic");
@@ -506,139 +574,11 @@ void handle_config_topic(const char* subtopic, const char* payload) {
     return;
   }
 
-  if (std::strcmp(subtopic, "name") == 0) {
-    if (nvs_write_string("net", "hostname", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/name set net/hostname=%s (reboot to apply)", value_text);
+  for (const auto& route : kConfigRoutes) {
+    if (std::strcmp(subtopic, route.suffix) == 0) {
+      (void)apply_config_route(route, value_text);
+      return;
     }
-    return;
-  }
-  if (std::strcmp(subtopic, "hostname") == 0) {
-    if (nvs_write_string("net", "hostname", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/hostname set net/hostname=%s (reboot to apply)", value_text);
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "ssid") == 0) {
-    if (nvs_write_string("wifi", "ssid", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/ssid set wifi/ssid=%s (reboot to apply)", value_text);
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "pass") == 0) {
-    if (nvs_write_string("wifi", "pass", value_text, true)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/pass set wifi/pass (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "ssid2") == 0) {
-    if (nvs_write_string("wifi", "ssid2", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/ssid2 set wifi/ssid2=%s (reboot to apply)", value_text);
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "pass2") == 0) {
-    if (nvs_write_string("wifi", "pass2", value_text, true)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/pass2 set wifi/pass2 (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "wifi/ssid") == 0) {
-    if (nvs_write_string("wifi", "ssid", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/wifi/ssid updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "wifi/pass") == 0) {
-    if (nvs_write_string("wifi", "pass", value_text, true)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/wifi/pass updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "logConsoleFmt") == 0) {
-    ESP_LOGI(kTag, "[MQTT][IN] config/logConsoleFmt='%s' (compat, retained only)", value_text);
-    (void)nvs_write_string("compat", "log_console_fmt", value_text);
-    return;
-  }
-  if (std::strcmp(subtopic, "logFileFmt") == 0) {
-    ESP_LOGI(kTag, "[MQTT][IN] config/logFileFmt='%s' (compat, retained only)", value_text);
-    (void)nvs_write_string("compat", "log_file_fmt", value_text);
-    return;
-  }
-  if (std::strcmp(subtopic, "logConsoleLevel") == 0) {
-    ESP_LOGI(kTag, "[MQTT][IN] config/logConsoleLevel='%s' (compat, retained only)", value_text);
-    (void)nvs_write_string("compat", "log_console_level", value_text);
-    return;
-  }
-  if (std::strcmp(subtopic, "logFileLevel") == 0) {
-    ESP_LOGI(kTag, "[MQTT][IN] config/logFileLevel='%s' (compat, retained only)", value_text);
-    (void)nvs_write_string("compat", "log_file_level", value_text);
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt") == 0 || std::strcmp(subtopic, "mqtt/uri") == 0) {
-    if (nvs_write_string("mqtt", "uri", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt uri updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/client_id") == 0) {
-    if (nvs_write_string("mqtt", "client_id", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/client_id updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/base_topic") == 0) {
-    if (nvs_write_string("mqtt", "base_topic", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/base_topic updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/username") == 0) {
-    if (nvs_write_string("mqtt", "username", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/username updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/password") == 0) {
-    if (nvs_write_string("mqtt", "password", value_text, true)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/password updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/tls_enabled") == 0) {
-    (void)persist_config_bool("mqtt", "tls_enabled", value_text, "mqtt");
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/ca_pem_source") == 0) {
-    if (nvs_write_string("mqtt", "ca_pem_source", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mqtt/ca_pem_source set=%s (reboot to apply)", value_text);
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/qos") == 0) {
-    (void)persist_config_u32("mqtt", "qos", value_text, "mqtt", 0u, 2u);
-    return;
-  }
-  if (std::strcmp(subtopic, "mqtt/keepalive_s") == 0) {
-    (void)persist_config_u32("mqtt", "keepalive_s", value_text, "mqtt", 30u, 7200u);
-    return;
-  }
-  if (std::strcmp(subtopic, "mdns/instance") == 0) {
-    if (nvs_write_string("mdns", "instance", value_text)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/mdns/instance set=%s (reboot to apply)", value_text);
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "http/token") == 0) {
-    if (nvs_write_string("http", "token", value_text, true)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/http/token updated (reboot to apply)");
-    }
-    return;
-  }
-  if (std::strcmp(subtopic, "cli_net/token") == 0) {
-    if (nvs_write_string("cli_net", "token", value_text, true)) {
-      ESP_LOGI(kTag, "[MQTT][IN] config/cli_net/token updated (reboot to apply)");
-    }
-    return;
   }
 
   publish_unsupported_config(subtopic, value_text);
@@ -754,16 +694,17 @@ void dispatch_inbound_message(const char* subtopic, const char* payload) {
 }
 
 void publish_relay_aliases() {
-  if (!g_client || !g_connected) {
+  if (!g_client || !mqtt_connected_flag()) {
     return;
   }
   char payload[kPayloadTextBufferBytes] = {0};
-  std::snprintf(payload, sizeof(payload), "%u", static_cast<unsigned>(g_relay_mask));
+  const std::uint8_t relay_mask = io_relay_mask();
+  std::snprintf(payload, sizeof(payload), "%u", static_cast<unsigned>(relay_mask));
   (void)publish_with_topic_suffix("relays/state", payload);
 
   for (std::uint8_t idx = 0; idx < kRelayCount; ++idx) {
-    const std::uint8_t on_mask = relay_mask_for_channel_state(static_cast<int>(idx), true, g_relay_mask);
-    const bool on = (on_mask != g_relay_mask);
+    const std::uint8_t on_mask = relay_mask_for_channel_state(static_cast<int>(idx), true, relay_mask);
+    const bool on = (on_mask != relay_mask);
     char idx_topic[kTopicTextBufferBytes] = {0};
     std::snprintf(idx_topic, sizeof(idx_topic), "relays/state/%u", static_cast<unsigned>(idx));
     std::snprintf(payload, sizeof(payload), "%d", on ? 1 : 0);
@@ -772,7 +713,7 @@ void publish_relay_aliases() {
 }
 
 void publish_sensor_aliases() {
-  if (!g_client || !g_connected) {
+  if (!g_client || !mqtt_connected_flag()) {
     return;
   }
   I2cSensorSnapshot snapshot {};
@@ -809,11 +750,59 @@ const char* state_name(MqttState state) {
 }
 
 const char* mqtt_state_name_impl() {
-  return state_name(g_state);
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  const MqttState state = g_state;
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
+  return state_name(state);
 }
 
 void set_state(MqttState next, const char* reason = nullptr) {
-  luce::runtime::set_state(g_state, next, state_name, "[MQTT][LIFECYCLE]", reason);
+  bool changed = false;
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  if (g_state != next) {
+    g_state = next;
+    changed = true;
+  }
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
+  if (!changed) {
+    return;
+  }
+  if (reason && *reason) {
+    ESP_LOGI("[MQTT][LIFECYCLE]", "state=%s reason=%s", state_name(next), reason);
+  } else {
+    ESP_LOGI("[MQTT][LIFECYCLE]", "state=%s", state_name(next));
+  }
+}
+
+MqttState current_state() {
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  const MqttState state = g_state;
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
+  return state;
+}
+
+bool mqtt_connected_flag() {
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  const bool connected = g_connected;
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
+  return connected;
+}
+
+void set_connected_flag(bool connected) {
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  g_connected = connected;
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
+}
+
+void note_connected() {
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  g_connected = true;
+  ++g_connect_count;
+  g_backoff_ms = 0;
+  g_backoff_attempt = 0;
+  g_backoff_scheduled = false;
+  g_reconnect_count = 0;
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
 }
 
 void load_mqtt_config() {
@@ -891,17 +880,33 @@ void load_mqtt_config() {
 }
 
 void schedule_backoff() {
-  if (g_backoff_ms == 0) {
-    g_backoff_ms = kBackoffMinMs;
-  } else {
-    g_backoff_ms = g_backoff_ms * 2;
-    if (g_backoff_ms > kBackoffMaxMs) {
-      g_backoff_ms = kBackoffMaxMs;
-    }
+  TickType_t retry_tick = 0;
+  std::uint32_t delay_ms = 0;
+  std::uint32_t attempt = 0;
+  portENTER_CRITICAL(&g_mqtt_state_lock);
+  if (g_backoff_scheduled) {
+    delay_ms = g_backoff_ms;
+    retry_tick = g_next_retry_tick;
+    attempt = g_backoff_attempt;
+    portEXIT_CRITICAL(&g_mqtt_state_lock);
+    ESP_LOGW(kTag, "[MQTT][BACKOFF] already scheduled attempt=%lu delay_ms=%lu retry_tick=%lu",
+             static_cast<unsigned long>(attempt), static_cast<unsigned long>(delay_ms),
+             static_cast<unsigned long>(retry_tick));
+    return;
   }
-  g_next_retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(g_backoff_ms);
+  attempt = g_backoff_attempt++;
+  delay_ms = luce::backoff::next_backoff_ms(attempt, kBackoffMinMs, kBackoffMaxMs,
+                                            static_cast<std::uint32_t>(xTaskGetTickCount()));
+  retry_tick = xTaskGetTickCount() + pdMS_TO_TICKS(delay_ms);
+  g_backoff_ms = delay_ms;
+  g_next_retry_tick = retry_tick;
+  g_backoff_scheduled = true;
+  ++g_reconnect_count;
+  portEXIT_CRITICAL(&g_mqtt_state_lock);
   set_state(MqttState::kBackoff, "backoff");
-  ESP_LOGW(kTag, "[MQTT][BACKOFF] delay_ms=%lu", static_cast<unsigned long>(g_backoff_ms));
+  ESP_LOGW(kTag, "[MQTT][BACKOFF] attempt=%lu delay_ms=%lu retry_tick=%lu",
+           static_cast<unsigned long>(attempt), static_cast<unsigned long>(delay_ms),
+           static_cast<unsigned long>(retry_tick));
 }
 
 void setup_client() {
@@ -939,25 +944,21 @@ void setup_client() {
                                                     void* event_data) {
     auto* event = static_cast<esp_mqtt_event_t*>(event_data);
     switch (event_id) {
-      case MQTT_EVENT_CONNECTED:
-        g_connected = true;
-        ++g_connect_count;
-        g_backoff_ms = 0;
-        g_reconnect_count = 0;
-        set_state(MqttState::kConnected, "connected");
-        subscribe_control_topics();
+	      case MQTT_EVENT_CONNECTED:
+	        note_connected();
+	        set_state(MqttState::kConnected, "connected");
+	        subscribe_control_topics();
         ESP_LOGI(kTag, "[MQTT][EVENT] connected");
         break;
-      case MQTT_EVENT_DISCONNECTED:
-        g_connected = false;
-        g_last_rcvd = 0;
-        ++g_reconnect_count;
-        ESP_LOGW(kTag, "[MQTT][EVENT] disconnected");
-        schedule_backoff();
-        break;
-      case MQTT_EVENT_ERROR:
-        g_connected = false;
-        set_state(MqttState::kBackoff, "error");
+	      case MQTT_EVENT_DISCONNECTED:
+	        set_connected_flag(false);
+	        g_last_rcvd = 0;
+	        ESP_LOGW(kTag, "[MQTT][EVENT] disconnected");
+	        schedule_backoff();
+	        break;
+	      case MQTT_EVENT_ERROR:
+	        set_connected_flag(false);
+	        set_state(MqttState::kBackoff, "error");
         ESP_LOGW(kTag, "[MQTT][EVENT] error");
         schedule_backoff();
         break;
@@ -997,7 +998,7 @@ void setup_client() {
 }
 
 int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std::size_t payload_len) {
-  if (!g_client || !g_connected || topic_suffix == nullptr || *topic_suffix == '\0' || payload == nullptr) {
+  if (!g_client || !mqtt_connected_flag() || topic_suffix == nullptr || *topic_suffix == '\0' || payload == nullptr) {
     return -1;
   }
   char topic[kTopicSuffixBufferBytes] = {0};
@@ -1008,7 +1009,7 @@ int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std
 }
 
 void publish_state() {
-  if (!g_client || !g_connected) {
+  if (!g_client || !mqtt_connected_flag()) {
     return;
   }
   char payload[kPayloadBufferBytes] = {0};
@@ -1018,10 +1019,10 @@ void publish_state() {
   wifi_get_rssi(&wifi_rssi);
 
   std::snprintf(payload, sizeof(payload),
-               "{\"fw\":\"%s\",\"strategy\":\"%s\",\"ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"wifi_rssi\":%d,"
-               "\"connected\":true}",
-               LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(g_relay_mask),
-               static_cast<unsigned>(g_button_mask), wifi_rssi);
+                "{\"fw\":\"%s\",\"strategy\":\"%s\",\"ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"wifi_rssi\":%d,"
+                "\"hardware_degraded\":%s,\"connected\":true}",
+                LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(io_relay_mask()),
+                static_cast<unsigned>(io_button_mask()), wifi_rssi, io_hardware_degraded() ? "true" : "false");
   const int rc = publish_with_topic_suffix("telemetry/state", payload);
   if (rc < 0) {
     ESP_LOGW(kTag, "[MQTT][PUB] failed rc=%d", rc);
@@ -1052,16 +1053,34 @@ void mqtt_loop(void*) {
       continue;
     }
 
-    if (g_state == MqttState::kBackoff && xTaskGetTickCount() < g_next_retry_tick) {
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
+	    const MqttState state = current_state();
+	    if (state == MqttState::kBackoff && xTaskGetTickCount() < g_next_retry_tick) {
+	      vTaskDelay(pdMS_TO_TICKS(100));
+	      continue;
+	    }
 
-    if ((g_state == MqttState::kInitialized || g_state == MqttState::kBackoff || g_state == MqttState::kFailed) &&
-        g_client == nullptr) {
-      setup_client();
-      if (g_state != MqttState::kFailed && g_client != nullptr) {
-        const esp_err_t start_rc = esp_mqtt_client_start(g_client);
+	    if (state == MqttState::kBackoff && g_client != nullptr && xTaskGetTickCount() >= g_next_retry_tick) {
+	      portENTER_CRITICAL(&g_mqtt_state_lock);
+	      g_backoff_scheduled = false;
+	      portEXIT_CRITICAL(&g_mqtt_state_lock);
+	      const esp_err_t reconnect_rc = esp_mqtt_client_reconnect(g_client);
+	      if (reconnect_rc == ESP_OK) {
+	        set_state(MqttState::kConnecting, "manual_reconnect");
+	      } else {
+	        ESP_LOGW(kTag, "[MQTT][BACKOFF] reconnect failed rc=%s", esp_err_to_name(reconnect_rc));
+	        schedule_backoff();
+	      }
+	    }
+
+	    const MqttState setup_state = current_state();
+	    if ((setup_state == MqttState::kInitialized || setup_state == MqttState::kBackoff || setup_state == MqttState::kFailed) &&
+	        g_client == nullptr) {
+      portENTER_CRITICAL(&g_mqtt_state_lock);
+      g_backoff_scheduled = false;
+      portEXIT_CRITICAL(&g_mqtt_state_lock);
+	      setup_client();
+	      if (current_state() != MqttState::kFailed && g_client != nullptr) {
+	        const esp_err_t start_rc = esp_mqtt_client_start(g_client);
         if (start_rc == ESP_OK) {
           set_state(MqttState::kConnecting, "start");
         } else {
@@ -1072,7 +1091,7 @@ void mqtt_loop(void*) {
     }
 
     static TickType_t last_publish = 0;
-    if (g_connected && (xTaskGetTickCount() - last_publish) > pdMS_TO_TICKS(kPublishIntervalMs)) {
+	    if (mqtt_connected_flag() && (xTaskGetTickCount() - last_publish) > pdMS_TO_TICKS(kPublishIntervalMs)) {
       last_publish = xTaskGetTickCount();
       publish_state();
     }
@@ -1092,11 +1111,11 @@ bool mqtt_is_enabled() {
 }
 
 bool mqtt_is_connected() {
-  return g_connected;
+  return mqtt_connected_flag();
 }
 
 bool mqtt_is_running() {
-  return g_connected;
+  return mqtt_connected_flag();
 }
 
 void mqtt_startup() {
@@ -1112,10 +1131,11 @@ void mqtt_startup() {
 void mqtt_status_for_cli() {
   ESP_LOGI(kTag,
            "mqtt.status state=%s enabled=%d connected=%d tls=%d ca_source=%s ca_present=%d "
-           "connect_count=%u publish_count=%u uri=%s qos=%lu keepalive=%lu",
-           state_name(g_state), g_cfg.enabled ? 1 : 0, g_connected ? 1 : 0, mqtt_requires_tls() ? 1 : 0,
-           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, g_connect_count, g_publish_count, g_cfg.uri,
-           static_cast<unsigned long>(g_cfg.qos), static_cast<unsigned long>(g_cfg.keepalive_s));
+           "connect_count=%u publish_count=%u reconnect_count=%u backoff_ms=%lu uri=%s qos=%lu keepalive=%lu",
+           state_name(current_state()), g_cfg.enabled ? 1 : 0, mqtt_connected_flag() ? 1 : 0, mqtt_requires_tls() ? 1 : 0,
+	           g_cfg.ca_pem_source, g_cfg.ca_pem[0] != '\0' ? 1 : 0, g_connect_count, g_publish_count, g_reconnect_count,
+	           static_cast<unsigned long>(g_backoff_ms), g_cfg.uri, static_cast<unsigned long>(g_cfg.qos),
+	           static_cast<unsigned long>(g_cfg.keepalive_s));
 }
 
 void mqtt_pubtest_for_cli() {
@@ -1123,7 +1143,7 @@ void mqtt_pubtest_for_cli() {
     ESP_LOGW(kTag, "CLI command mqtt.pubtest: disabled");
     return;
   }
-  if (!g_client || !g_connected) {
+  if (!g_client || !mqtt_connected_flag()) {
     ESP_LOGW(kTag, "CLI command mqtt.pubtest: not connected");
     return;
   }

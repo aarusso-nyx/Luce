@@ -152,8 +152,9 @@ void luce_log_status_health() {
            "status: feature i2c=1 lcd=1 cli=1 wifi=%d ntp=%d mdns=%d mqtt=%d http=%d", LUCE_HAS_WIFI,
            LUCE_HAS_NTP, LUCE_HAS_MDNS,
            LUCE_HAS_MQTT, LUCE_HAS_HTTP);
-  relay_mask = g_relay_mask;
-  button_mask = g_button_mask;
-  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d REL:0x%02X BTN:0x%02X", g_i2c_initialized ? 1 : 0,
-           g_mcp_available ? 1 : 0, relay_mask, button_mask);
-}
+	  relay_mask = io_relay_mask();
+	  button_mask = io_button_mask();
+	  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d hardware_degraded=%d REL:0x%02X BTN:0x%02X",
+	           g_i2c_initialized ? 1 : 0, g_mcp_available ? 1 : 0, io_hardware_degraded() ? 1 : 0, relay_mask,
+	           button_mask);
+	}

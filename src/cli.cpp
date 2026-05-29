@@ -769,7 +769,7 @@ int cli_handle_set(int argc, char* argv[]) {
     return 1;
   }
 
-  std::uint8_t next_mask = g_relay_mask;
+  std::uint8_t next_mask = io_relay_mask();
   std::uint16_t applied = 0;
   luce::parse::IdSetIssue issue {};
   const auto result = luce::parse::parse_id_set(
@@ -1118,14 +1118,12 @@ void cli_cmd_test() {
     return;
   }
   ESP_LOGI(kTag, "CLI command test: cycling each relay");
-  const std::uint8_t start_mask = g_relay_mask;
+  const std::uint8_t start_mask = io_relay_mask();
   for (int i = 0; i < 8; ++i) {
-    const std::uint8_t on_mask = relay_mask_for_channel_state(i, true, g_relay_mask);
-    (void)set_relay_mask_safe(on_mask);
+    (void)set_relay_channel_safe(i, true);
     vTaskDelay(pdMS_TO_TICKS(250));
 
-    const std::uint8_t off_mask = relay_mask_for_channel_state(i, false, g_relay_mask);
-    (void)set_relay_mask_safe(off_mask);
+    (void)set_relay_channel_safe(i, false);
     vTaskDelay(pdMS_TO_TICKS(120));
   }
   (void)set_relay_mask_safe(start_mask);
@@ -1155,7 +1153,7 @@ void cli_cmd_i2c_scan() {
 
 void cli_cmd_mcp_read(const char* port) {
   if (!g_mcp_available) {
-    ESP_LOGW(kTag, "CLI command mcp_read: MCP unavailable");
+    ESP_LOGW(kTag, "CLI command mcp_read: %s", io_hardware_degraded() ? "hardware_degraded" : "MCP unavailable");
     return;
   }
   const std::uint8_t reg = (std::strcmp(port, "gpioa") == 0 || std::strcmp(port, "a") == 0)
@@ -1167,21 +1165,26 @@ void cli_cmd_mcp_read(const char* port) {
 }
 
 void cli_cmd_relay_set(int channel, int on_off) {
-  const std::uint8_t new_mask = relay_mask_for_channel_state(channel, on_off != 0, g_relay_mask);
-  const esp_err_t err = set_relay_mask_safe(new_mask);
-  ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d new_mask=0x%02X rc=%s", channel, on_off,
-           new_mask, esp_err_to_name(err));
+  const esp_err_t err = set_relay_channel_safe(channel, on_off != 0);
+  ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d mask=0x%02X rc=%s", channel, on_off,
+           io_relay_mask(), esp_err_to_name(err));
+  if (err != ESP_OK && io_hardware_degraded()) {
+    ESP_LOGW(kTag, "CLI command relay_set: hardware_degraded");
+  }
 }
 
 void cli_cmd_relay_mask(std::uint32_t value) {
   const std::uint8_t mask = static_cast<std::uint8_t>(value & 0xFF);
   const esp_err_t err = set_relay_mask_safe(mask);
   ESP_LOGI(kTag, "CLI command relay_mask: mask=0x%02X rc=%s", mask, esp_err_to_name(err));
+  if (err != ESP_OK && io_hardware_degraded()) {
+    ESP_LOGW(kTag, "CLI command relay_mask: hardware_degraded");
+  }
 }
 
 void cli_cmd_buttons() {
   if (!g_mcp_available) {
-    ESP_LOGW(kTag, "CLI command buttons: MCP unavailable");
+    ESP_LOGW(kTag, "CLI command buttons: %s", io_hardware_degraded() ? "hardware_degraded" : "MCP unavailable");
     return;
   }
   std::uint8_t value = 0x00;
