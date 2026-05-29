@@ -89,8 +89,8 @@ void load_config() {
   g_cfg.sync_timeout_s = 30;
   g_cfg.sync_interval_s = 3600;
 
-  nvs_handle_t handle {};
-  if (nvs_open(kNs, NVS_READONLY, &handle) != ESP_OK) {
+  auto nvs = luce::nvs::Handle::Open(kNs, NVS_READONLY);
+  if (!nvs.ok()) {
     luce::nvs::log_nvs_u8(kNvsTag, "enabled", 0, false, 0);
     luce::nvs::log_nvs_string(kNvsTag, "server1", kDefaultServer1, false, kDefaultServer1, true);
     luce::nvs::log_nvs_string(kNvsTag, "server2", kDefaultServer2, false, kDefaultServer2, true);
@@ -102,34 +102,32 @@ void load_config() {
 
   bool f_enabled = false;
   std::uint8_t u8 = 0;
-  f_enabled = luce::nvs::read_u8(handle, "enabled", u8, 0);
+  f_enabled = luce::nvs::read_u8(nvs.raw(), "enabled", u8, 0);
   g_cfg.enabled = (u8 != 0);
   luce::nvs::log_nvs_u8(kNvsTag, "enabled", u8, f_enabled, 0);
 
   bool f_s1 = false;
-  f_s1 = luce::nvs::read_string(handle, "server1", g_cfg.server1, sizeof(g_cfg.server1), kDefaultServer1);
+  f_s1 = luce::nvs::read_string(nvs.raw(), "server1", g_cfg.server1, sizeof(g_cfg.server1), kDefaultServer1);
   luce::nvs::log_nvs_string(kNvsTag, "server1", g_cfg.server1, f_s1, kDefaultServer1, true);
 
   bool f_s2 = false;
-  f_s2 = luce::nvs::read_string(handle, "server2", g_cfg.server2, sizeof(g_cfg.server2), kDefaultServer2);
+  f_s2 = luce::nvs::read_string(nvs.raw(), "server2", g_cfg.server2, sizeof(g_cfg.server2), kDefaultServer2);
   luce::nvs::log_nvs_string(kNvsTag, "server2", g_cfg.server2, f_s2, kDefaultServer2, true);
 
   bool f_s3 = false;
-  f_s3 = luce::nvs::read_string(handle, "server3", g_cfg.server3, sizeof(g_cfg.server3), "");
+  f_s3 = luce::nvs::read_string(nvs.raw(), "server3", g_cfg.server3, sizeof(g_cfg.server3), "");
   luce::nvs::log_nvs_string(kNvsTag, "server3", g_cfg.server3, f_s3, "", true);
 
   std::uint32_t u32 = 0;
   bool f_to = false;
-  f_to = luce::nvs::read_u32(handle, "sync_timeout_s", u32, 30);
+  f_to = luce::nvs::read_u32(nvs.raw(), "sync_timeout_s", u32, 30);
   g_cfg.sync_timeout_s = luce::runtime::clamp_u32(u32, 5u, 600u);
   luce::nvs::log_nvs_u32(kNvsTag, "sync_timeout_s", g_cfg.sync_timeout_s, f_to, g_cfg.sync_timeout_s);
 
   bool f_int = false;
-  f_int = luce::nvs::read_u32(handle, "sync_interval_s", u32, 3600);
+  f_int = luce::nvs::read_u32(nvs.raw(), "sync_interval_s", u32, 3600);
   g_cfg.sync_interval_s = luce::runtime::clamp_u32(u32, 60u, 86400u);
   luce::nvs::log_nvs_u32(kNvsTag, "sync_interval_s", g_cfg.sync_interval_s, f_int, g_cfg.sync_interval_s);
-
-  nvs_close(handle);
 }
 
 std::uint32_t next_backoff_ms() {

@@ -45,8 +45,10 @@ extern "C" {
 #include "luce/mqtt.h"
 #include "luce/ota.h"
 #include "luce_build.h"
+#include "luce/json_writer.h"
 #include "luce/nvs_helpers.h"
 #include "luce/runtime_state.h"
+#include "luce/str_utils.h"
 #include "luce/task_budgets.h"
 
 // Captive-portal webapp assets are embedded by src/CMakeLists.txt as
@@ -307,8 +309,8 @@ esp_err_t nvs_set_http_str(const char* key, const char* value) {
   if (!nvs.ok()) {
     return nvs.error();
   }
-  ESP_RETURN_ON_ERROR(nvs_set_str(nvs.raw(), key, value ? value : ""), kTag, "nvs_set_str(%s)", key);
-  ESP_RETURN_ON_ERROR(nvs_commit(nvs.raw()), kTag, "nvs_commit(%s)", key);
+  ESP_RETURN_ON_ERROR(luce::nvs::write_string(nvs.raw(), key, value), kTag, "nvs_set_str(%s)", key);
+  ESP_RETURN_ON_ERROR(luce::nvs::commit(nvs.raw()), kTag, "nvs_commit(%s)", key);
   return ESP_OK;
 }
 
@@ -322,7 +324,7 @@ esp_err_t nvs_erase_http_key(const char* key) {
     err = ESP_OK;
   }
   ESP_RETURN_ON_ERROR(err, kTag, "nvs_erase_key(%s)", key);
-  ESP_RETURN_ON_ERROR(nvs_commit(nvs.raw()), kTag, "nvs_commit erase %s", key);
+  ESP_RETURN_ON_ERROR(luce::nvs::commit(nvs.raw()), kTag, "nvs_commit erase %s", key);
   return ESP_OK;
 }
 
@@ -478,20 +480,7 @@ bool validate_auth(httpd_req_t* req) {
 }
 
 bool parse_bool_token(const char* text, bool* out_value) {
-  if (!text || !out_value || text[0] == '\0') {
-    return false;
-  }
-  if (std::strcmp(text, "1") == 0 || strcasecmp(text, "on") == 0 || strcasecmp(text, "true") == 0 ||
-      strcasecmp(text, "yes") == 0) {
-    *out_value = true;
-    return true;
-  }
-  if (std::strcmp(text, "0") == 0 || strcasecmp(text, "off") == 0 || strcasecmp(text, "false") == 0 ||
-      strcasecmp(text, "no") == 0) {
-    *out_value = false;
-    return true;
-  }
-  return false;
+  return luce::str::parse_bool_token(text, out_value);
 }
 
 bool parse_led_manual_mode_token(const char* text, LedManualMode* out_mode) {
@@ -548,16 +537,7 @@ const char* led_manual_mode_name(LedManualMode mode) {
 }
 
 bool parse_u32_token(const char* text, std::uint32_t* out_value) {
-  if (!text || !out_value || text[0] == '\0') {
-    return false;
-  }
-  char* end = nullptr;
-  const std::uint32_t parsed = static_cast<std::uint32_t>(std::strtoul(text, &end, 0));
-  if (!end || *end != '\0') {
-    return false;
-  }
-  *out_value = parsed;
-  return true;
+  return luce::str::parse_u32_token(text, out_value);
 }
 
 bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
@@ -586,21 +566,7 @@ bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
 }
 
 void trim_ascii_whitespace_inplace(char* text) {
-  if (!text) {
-    return;
-  }
-  std::size_t len = std::strlen(text);
-  while (len > 0 && std::isspace(static_cast<unsigned char>(text[len - 1])) != 0) {
-    text[len - 1] = '\0';
-    --len;
-  }
-  std::size_t start = 0;
-  while (text[start] != '\0' && std::isspace(static_cast<unsigned char>(text[start])) != 0) {
-    ++start;
-  }
-  if (start > 0) {
-    std::memmove(text, text + start, std::strlen(text + start) + 1);
-  }
+  (void)luce::str::trim_ascii_inplace(text);
 }
 
 esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
@@ -609,11 +575,16 @@ esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   }
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  std::snprintf(out, out_size,
-                "{\"service\":\"luce\",\"strategy\":\"%s\",\"status\":\"ok\",\"build\":\"%s\",\"sha\":\"%s\","
-                "\"uptime_s\":%lld,\"wifi_ip\":\"%s\"}",
-                LUCE_STRATEGY_NAME, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
-                as_n_a(ip));
+  luce::json::Writer writer(out, out_size);
+  writer.begin_object();
+  writer.key_str("service", "luce");
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("status", "ok");
+  writer.key_str("build", __DATE__ " " __TIME__);
+  writer.key_str("sha", LUCE_GIT_SHA);
+  writer.key_uint("uptime_s", static_cast<std::uint32_t>(esp_timer_get_time() / 1000000ULL));
+  writer.key_str("wifi_ip", as_n_a(ip));
+  writer.end_object();
   return ESP_OK;
 }
 
@@ -629,14 +600,21 @@ void build_ws_snapshot_payload(char* out, std::size_t out_size) {
 	  const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   std::time_t now = 0;
   (void)std::time(&now);
-  std::snprintf(
-      out, out_size,
-	      "{\"type\":\"state\",\"tstamp\":%llu,\"state\":%u,\"night\":%u,\"day\":%u,\"hardware_degraded\":%s,\"threshold\":%u,"
-	      "\"light\":%d,\"voltage\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s}",
-	      static_cast<unsigned long long>(now > 0 ? now : 0), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask),
-	      day ? 1u : 0u, hardware_degraded ? "true" : "false", static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
-      has_sensor ? snapshot.voltage_raw : 0, has_sensor ? snapshot.temperature_c : 0.0f,
-      has_sensor ? snapshot.humidity_percent : 0.0f, has_sensor && snapshot.dht_ok ? "true" : "false");
+  luce::json::Writer writer(out, out_size);
+  writer.begin_object();
+  writer.key_str("type", "state");
+  writer.key_uint("tstamp", static_cast<std::uint32_t>(now > 0 ? now : 0));
+  writer.key_uint("state", g_relay_mask);
+  writer.key_uint("night", night_mask);
+  writer.key_uint("day", day ? 1u : 0u);
+  writer.key_bool("hardware_degraded", hardware_degraded);
+  writer.key_uint("threshold", threshold);
+  writer.key_int("light", has_sensor ? snapshot.light_raw : 0);
+  writer.key_int("voltage", has_sensor ? snapshot.voltage_raw : 0);
+  writer.key_double("temperature", has_sensor ? snapshot.temperature_c : 0.0f, 1);
+  writer.key_double("humidity", has_sensor ? snapshot.humidity_percent : 0.0f, 1);
+  writer.key_bool("sensor_ok", has_sensor && snapshot.dht_ok);
+  writer.end_object();
 }
 
 void ws_broadcast_snapshot(httpd_handle_t server) {
@@ -684,36 +662,59 @@ esp_err_t route_info_impl(httpd_req_t* req) {
   const bool cert_present = (g_cfg.cert_pem[0] != '\0');
   const bool key_present = (g_cfg.key_pem[0] != '\0');
   char payload[1792] = {0};
-  std::snprintf(payload, sizeof(payload),
-                "{\"service\":\"luce\",\"name\":\"%s\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\","
-                "\"build\":\"%s %s\",\"uptimeMs\":%llu,\"uptime_s\":%llu,\"wifi_ip\":\"%s\","
-                "\"http_enabled\":%s,\"http_port\":%u,\"http_state\":\"%s\","
-                "\"https_running\":%s,\"tls_state\":\"%s\",\"tls_status\":\"%s\",\"tls_last_error\":\"%s\","
-                "\"key_present\":%s,\"csr_ready\":%s,\"cert_present\":%s,"
-                "\"cert_fingerprint\":\"%s\",\"cert_subject\":\"%s\",\"cert_issuer\":\"%s\","
-	                "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"hardware_degraded\":%s,\"threshold\":%u,"
-                "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
-                "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
-                "luce", LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__,
-                static_cast<unsigned long long>(esp_timer_get_time() / 1000ULL),
-                static_cast<unsigned long long>(esp_timer_get_time() / 1000000ULL), as_n_a(ip),
-                g_cfg.enabled ? "true" : "false", g_cfg.port, state_name(g_state),
-                g_httpd != nullptr ? "true" : "false", tls_status_name(), tls_status_name(), g_tls_last_error,
-                key_present ? "true" : "false", key_present ? "true" : "false", cert_present ? "true" : "false",
-                g_cfg.cert_fingerprint, g_cfg.cert_subject, g_cfg.cert_issuer,
-	                static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
-	                hardware_degraded ? "true" : "false", static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
-                has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
-                has_sensor && snapshot.dht_ok ? "true" : "false", as_n_a(ip), wifi_is_connected() ? "true" : "false",
-                mqtt_is_connected() ? "true" : "false", ntp_is_synced() ? "true" : "false");
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("service", "luce");
+  writer.key_str("name", "luce");
+  writer.key_str("version", LUCE_PROJECT_VERSION);
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("sha", LUCE_GIT_SHA);
+  writer.key_str("build", __DATE__ " " __TIME__);
+  writer.key_uint("uptimeMs", static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL));
+  writer.key_uint("uptime_s", static_cast<std::uint32_t>(esp_timer_get_time() / 1000000ULL));
+  writer.key_str("wifi_ip", as_n_a(ip));
+  writer.key_bool("http_enabled", g_cfg.enabled);
+  writer.key_uint("http_port", g_cfg.port);
+  writer.key_str("http_state", state_name(g_state));
+  writer.key_bool("https_running", g_httpd != nullptr);
+  writer.key_str("tls_state", tls_status_name());
+  writer.key_str("tls_status", tls_status_name());
+  writer.key_str("tls_last_error", g_tls_last_error);
+  writer.key_bool("key_present", key_present);
+  writer.key_bool("csr_ready", key_present);
+  writer.key_bool("cert_present", cert_present);
+  writer.key_str("cert_fingerprint", g_cfg.cert_fingerprint);
+  writer.key_str("cert_subject", g_cfg.cert_subject);
+  writer.key_str("cert_issuer", g_cfg.cert_issuer);
+  writer.key_uint("relays", g_relay_mask);
+  writer.key_uint("nightMask", night_mask);
+  writer.key_bool("day", day);
+  writer.key_bool("hardware_degraded", hardware_degraded);
+  writer.key_uint("threshold", threshold);
+  writer.key_int("light", has_sensor ? snapshot.light_raw : 0);
+  writer.key_double("temperature", has_sensor ? snapshot.temperature_c : 0.0f, 1);
+  writer.key_double("humidity", has_sensor ? snapshot.humidity_percent : 0.0f, 1);
+  writer.key_bool("sensor_ok", has_sensor && snapshot.dht_ok);
+  writer.key_object_begin("network");
+  writer.key_str("ip", as_n_a(ip));
+  writer.key_bool("wifiConnected", wifi_is_connected());
+  writer.key_bool("mqttConnected", mqtt_is_connected());
+  writer.key_bool("ntpSynced", ntp_is_synced());
+  writer.end_object();
+  writer.end_object();
   return send_json(req, 200, payload, 0);
 }
 
 esp_err_t route_version_impl(httpd_req_t* req) {
   char payload[192] = {0};
-  std::snprintf(payload, sizeof(payload),
-                "{\"service\":\"luce\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\",\"build\":\"%s %s\"}",
-                LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__);
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("service", "luce");
+  writer.key_str("version", LUCE_PROJECT_VERSION);
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("sha", LUCE_GIT_SHA);
+  writer.key_str("build", __DATE__ " " __TIME__);
+  writer.end_object();
   return send_json(req, 200, payload, 0);
 }
 
@@ -721,11 +722,19 @@ esp_err_t route_state_impl(httpd_req_t* req) {
   char payload[384] = {0};
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-	  std::snprintf(payload, sizeof(payload),
-	               "{\"state\":\"running\",\"wifi_ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"hardware_degraded\":%s,\"requests\":1,\"unauth\":0,"
-	               "\"service\":\"luce\",\"strategy\":\"%s\",\"ntp_state\":0}",
-	               as_n_a(ip), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
-	               io_hardware_degraded() ? "true" : "false", LUCE_STRATEGY_NAME);
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("state", "running");
+  writer.key_str("wifi_ip", as_n_a(ip));
+  writer.key_uint("relay", g_relay_mask);
+  writer.key_uint("buttons", g_button_mask);
+  writer.key_bool("hardware_degraded", io_hardware_degraded());
+  writer.key_uint("requests", 1);
+  writer.key_uint("unauth", 0);
+  writer.key_str("service", "luce");
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_uint("ntp_state", 0);
+  writer.end_object();
   return send_json(req, 200, payload, 0);
 }
 
@@ -765,7 +774,11 @@ esp_err_t route_ota_check_impl(httpd_req_t* req) {
     source = "default";
   }
   char payload[160] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"status\":\"queued\",\"source\":\"%s\"}", source);
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("status", "queued");
+  writer.key_str("source", source);
+  writer.end_object();
   return send_json(req, 202, payload, 0);
 }
 
@@ -776,13 +789,15 @@ esp_err_t build_leds_payload(char* out, std::size_t out_size) {
   const std::uint8_t state = led_status_current_mask();
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
-  std::snprintf(out, out_size,
-                "{\"state\":%u,\"manual_enabled\":%u,\"manual_value\":%u,"
-                "\"mode0\":\"%s\",\"mode1\":\"%s\",\"mode2\":\"%s\"}",
-                static_cast<unsigned>(state), static_cast<unsigned>(manual_enabled), static_cast<unsigned>(manual_value),
-                led_manual_mode_name(led_status_manual_mode(0)),
-                led_manual_mode_name(led_status_manual_mode(1)),
-                led_manual_mode_name(led_status_manual_mode(2)));
+  luce::json::Writer writer(out, out_size);
+  writer.begin_object();
+  writer.key_uint("state", state);
+  writer.key_uint("manual_enabled", manual_enabled);
+  writer.key_uint("manual_value", manual_value);
+  writer.key_str("mode0", led_manual_mode_name(led_status_manual_mode(0)));
+  writer.key_str("mode1", led_manual_mode_name(led_status_manual_mode(1)));
+  writer.key_str("mode2", led_manual_mode_name(led_status_manual_mode(2)));
+  writer.end_object();
   return ESP_OK;
 }
 

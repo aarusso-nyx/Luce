@@ -13,7 +13,10 @@
 
 #include "luce/nvs_helpers.h"
 #include "luce/backoff.h"
+#include "luce/json_writer.h"
 #include "luce/runtime_state.h"
+#include "luce/str_utils.h"
+#include "luce/tls_material.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -88,31 +91,13 @@ int publish_with_topic_suffix(const char* topic_suffix, const char* payload, std
 bool mqtt_connected_flag();
 
 bool parse_u32_value(const char* text, std::uint32_t* out_value) {
-  if (!text || !out_value || *text == '\0') {
-    return false;
-  }
-  char* end = nullptr;
-  const std::uint32_t parsed = static_cast<std::uint32_t>(std::strtoul(text, &end, 0));
-  if (*end != '\0') {
-    return false;
-  }
-  *out_value = parsed;
-  return true;
+  return luce::str::parse_u32_token(text, out_value);
 }
 
 bool parse_bool_value(const char* text, bool* out_value) {
   if (!text || !out_value || *text == '\0') {
     return false;
   }
-  if (std::strcmp(text, "1") == 0) {
-    *out_value = true;
-    return true;
-  }
-  if (std::strcmp(text, "0") == 0) {
-    *out_value = false;
-    return true;
-  }
-
   char lowered[kPayloadTextBufferBytes] = {0};
   std::size_t idx = 0;
   for (const char* read = text; *read != '\0' && idx + 1 < sizeof(lowered); ++read) {
@@ -122,26 +107,11 @@ bool parse_bool_value(const char* text, bool* out_value) {
     }
     lowered[idx++] = static_cast<char>(std::tolower(ch));
   }
-  if (std::strcmp(lowered, "on") == 0 || std::strcmp(lowered, "true") == 0 || std::strcmp(lowered, "yes") == 0) {
-    *out_value = true;
-    return true;
-  }
-  if (std::strcmp(lowered, "off") == 0 || std::strcmp(lowered, "false") == 0 || std::strcmp(lowered, "no") == 0) {
-    *out_value = false;
-    return true;
-  }
-  return false;
-}
-
-bool starts_with(const char* text, const char* prefix) {
-  if (!text || !prefix) {
-    return false;
-  }
-  return std::strncmp(text, prefix, std::strlen(prefix)) == 0;
+  return luce::str::parse_bool_token(lowered, out_value);
 }
 
 bool mqtt_requires_tls() {
-  return g_cfg.tls_enabled || starts_with(g_cfg.uri, "mqtts://") || starts_with(g_cfg.uri, "wss://");
+  return g_cfg.tls_enabled || luce::str::starts_with(g_cfg.uri, "mqtts://") || luce::str::starts_with(g_cfg.uri, "wss://");
 }
 
 bool configure_mqtt_tls(esp_mqtt_client_config_t& client_cfg) {
@@ -150,8 +120,10 @@ bool configure_mqtt_tls(esp_mqtt_client_config_t& client_cfg) {
   }
 
   if (std::strcmp(g_cfg.ca_pem_source, "nvs") == 0) {
-    if (g_cfg.ca_pem[0] == '\0') {
-      ESP_LOGE(kTag, "[MQTT][TLS] mqtt/ca_pem_source=nvs but mqtt/ca_pem is empty");
+    const esp_err_t ca_err = luce::tls::load_ca_pem_from_nvs(kMqttNs, "ca_pem", g_cfg.ca_pem_source,
+                                                             g_cfg.ca_pem, sizeof(g_cfg.ca_pem));
+    if (ca_err != ESP_OK) {
+      ESP_LOGE(kTag, "[MQTT][TLS] failed to load mqtt/ca_pem from NVS rc=0x%x", static_cast<unsigned>(ca_err));
       return false;
     }
     client_cfg.broker.verification.certificate = g_cfg.ca_pem;
@@ -227,14 +199,13 @@ bool trim_to_buffer(const char* text, char* out, std::size_t out_size) {
 }
 
 bool nvs_write_u8(const char* ns, const char* key, std::uint8_t value) {
-  nvs_handle_t handle = 0;
-  if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+  auto nvs = luce::nvs::Handle::Open(ns, NVS_READWRITE);
+  if (!nvs.ok()) {
     ESP_LOGW(kTag, "[MQTT][NVS] failed to open namespace '%s' for update", ns);
     return false;
   }
-  const esp_err_t set_rc = nvs_set_u8(handle, key, value);
-  const bool ok = (set_rc == ESP_OK) ? (nvs_commit(handle) == ESP_OK) : false;
-  nvs_close(handle);
+  const esp_err_t set_rc = luce::nvs::write_u8(nvs.raw(), key, value);
+  const bool ok = (set_rc == ESP_OK) ? (luce::nvs::commit(nvs.raw()) == ESP_OK) : false;
   if (!ok) {
     ESP_LOGW(kTag, "[MQTT][NVS] failed to persist %s/%s=%u", ns, key, static_cast<unsigned>(value));
   }
@@ -242,14 +213,13 @@ bool nvs_write_u8(const char* ns, const char* key, std::uint8_t value) {
 }
 
 bool nvs_write_u32(const char* ns, const char* key, std::uint32_t value) {
-  nvs_handle_t handle = 0;
-  if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+  auto nvs = luce::nvs::Handle::Open(ns, NVS_READWRITE);
+  if (!nvs.ok()) {
     ESP_LOGW(kTag, "[MQTT][NVS] failed to open namespace '%s' for update", ns);
     return false;
   }
-  const esp_err_t set_rc = nvs_set_u32(handle, key, value);
-  const bool ok = (set_rc == ESP_OK) ? (nvs_commit(handle) == ESP_OK) : false;
-  nvs_close(handle);
+  const esp_err_t set_rc = luce::nvs::write_u32(nvs.raw(), key, value);
+  const bool ok = (set_rc == ESP_OK) ? (luce::nvs::commit(nvs.raw()) == ESP_OK) : false;
   if (!ok) {
     ESP_LOGW(kTag, "[MQTT][NVS] failed to persist %s/%s=%lu", ns, key, static_cast<unsigned long>(value));
   }
@@ -260,53 +230,32 @@ bool nvs_write_string(const char* ns, const char* key, const char* value, bool m
   if (!value) {
     return false;
   }
-  nvs_handle_t handle = 0;
-  if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+  auto nvs = luce::nvs::Handle::Open(ns, NVS_READWRITE);
+  if (!nvs.ok()) {
     ESP_LOGW(kTag, "[MQTT][NVS] failed to open namespace '%s' for update", ns);
     return false;
   }
-  const esp_err_t set_rc = nvs_set_str(handle, key, value);
-  const bool ok = (set_rc == ESP_OK) ? (nvs_commit(handle) == ESP_OK) : false;
-  nvs_close(handle);
+  const esp_err_t set_rc = luce::nvs::write_string(nvs.raw(), key, value);
+  const bool ok = (set_rc == ESP_OK) ? (luce::nvs::commit(nvs.raw()) == ESP_OK) : false;
   if (!ok) {
     ESP_LOGW(kTag, "[MQTT][NVS] failed to persist %s/%s=%s", ns, key, mask_value ? "********" : value);
   }
   return ok;
 }
 
-void sanitize_json_text(const char* input, char* out, std::size_t out_size) {
-  if (!out || out_size == 0) {
-    return;
-  }
-  if (!input) {
-    out[0] = '\0';
-    return;
-  }
-  std::size_t w = 0;
-  for (std::size_t i = 0; input[i] != '\0' && w + 1 < out_size; ++i) {
-    const unsigned char ch = static_cast<unsigned char>(input[i]);
-    if (ch == '"' || ch == '\\' || ch < 0x20u || ch >= 0x7Fu) {
-      out[w++] = '_';
-    } else {
-      out[w++] = static_cast<char>(ch);
-    }
-  }
-  out[w] = '\0';
-}
-
 void publish_unsupported_legacy_topic(const char* topic_suffix, const char* reason, const char* payload) {
   if (!topic_suffix || topic_suffix[0] == '\0') {
     return;
   }
-  char safe_topic[kTopicSuffixBufferBytes] = {0};
-  char safe_reason[48] = {0};
-  sanitize_json_text(topic_suffix, safe_topic, sizeof(safe_topic));
-  sanitize_json_text(reason ? reason : "unsupported", safe_reason, sizeof(safe_reason));
 
   char body[kPayloadBufferBytes] = {0};
-  std::snprintf(body, sizeof(body),
-                "{\"status\":\"unsupported\",\"topic\":\"%s\",\"reason\":\"%s\",\"payload_present\":%s}",
-                safe_topic, safe_reason, (payload && payload[0] != '\0') ? "true" : "false");
+  luce::json::Writer writer(body, sizeof(body));
+  writer.begin_object();
+  writer.key_str("status", "unsupported");
+  writer.key_str("topic", topic_suffix);
+  writer.key_str("reason", reason ? reason : "unsupported");
+  writer.key_bool("payload_present", payload && payload[0] != '\0');
+  writer.end_object();
   (void)publish_with_topic_suffix("compat/unsupported", body);
 }
 
@@ -833,7 +782,6 @@ void load_mqtt_config() {
   bool f_user = false;
   bool f_pass = false;
   bool f_ca = false;
-  bool f_ca_pem = false;
   bool f_tls = false;
   bool f_qos = false;
   bool f_keepalive = false;
@@ -845,7 +793,6 @@ void load_mqtt_config() {
   f_user = luce::nvs::read_string(handle, "username", g_cfg.username, sizeof(g_cfg.username), "");
   f_pass = luce::nvs::read_string(handle, "password", g_cfg.password, sizeof(g_cfg.password), "");
   f_ca = luce::nvs::read_string(handle, "ca_pem_source", g_cfg.ca_pem_source, sizeof(g_cfg.ca_pem_source), "nvs");
-  f_ca_pem = luce::nvs::read_string(handle, "ca_pem", g_cfg.ca_pem, sizeof(g_cfg.ca_pem), "");
   f_tls = luce::nvs::read_u8(handle, "tls_enabled", tls, 0);
   g_cfg.tls_enabled = (tls != 0);
   f_qos = luce::nvs::read_u32(handle, "qos", u32, 0);
@@ -864,7 +811,6 @@ void load_mqtt_config() {
   luce::nvs::log_nvs_string(kMqttNvsTag, "username", g_cfg.username, f_user, "", true);
   luce::nvs::log_nvs_string(kMqttNvsTag, "password", g_cfg.password, f_pass, "", true, true);
   luce::nvs::log_nvs_string(kMqttNvsTag, "ca_pem_source", g_cfg.ca_pem_source, f_ca, "nvs", true);
-  luce::nvs::log_nvs_string(kMqttNvsTag, "ca_pem", g_cfg.ca_pem, f_ca_pem, "", false, true);
   luce::nvs::log_nvs_u8(kMqttNvsTag, "tls_enabled", tls, f_tls, 0);
   luce::nvs::log_nvs_u32(kMqttNvsTag, "qos", g_cfg.qos, f_qos, g_cfg.qos);
   luce::nvs::log_nvs_u32(kMqttNvsTag, "keepalive_s", g_cfg.keepalive_s, f_keepalive, g_cfg.keepalive_s);
@@ -1018,11 +964,17 @@ void publish_state() {
   int wifi_rssi = 0;
   wifi_get_rssi(&wifi_rssi);
 
-  std::snprintf(payload, sizeof(payload),
-                "{\"fw\":\"%s\",\"strategy\":\"%s\",\"ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"wifi_rssi\":%d,"
-                "\"hardware_degraded\":%s,\"connected\":true}",
-                LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, ip[0] != '\0' ? ip : "n/a", static_cast<unsigned>(io_relay_mask()),
-                static_cast<unsigned>(io_button_mask()), wifi_rssi, io_hardware_degraded() ? "true" : "false");
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("fw", LUCE_PROJECT_VERSION);
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("ip", ip[0] != '\0' ? ip : "n/a");
+  writer.key_uint("relay", io_relay_mask());
+  writer.key_uint("buttons", io_button_mask());
+  writer.key_int("wifi_rssi", wifi_rssi);
+  writer.key_bool("hardware_degraded", io_hardware_degraded());
+  writer.key_bool("connected", true);
+  writer.end_object();
   const int rc = publish_with_topic_suffix("telemetry/state", payload);
   if (rc < 0) {
     ESP_LOGW(kTag, "[MQTT][PUB] failed rc=%d", rc);

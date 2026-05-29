@@ -32,6 +32,7 @@
 #include "luce/i2c_io.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
+#include "luce/str_utils.h"
 #if LUCE_HAS_MDNS
 #include "luce/mdns.h"
 #endif
@@ -243,15 +244,7 @@ bool parse_u32_with_base(const char* text, int base, std::uint32_t* value, char*
     token_context[31] = '\0';
   }
 
-  errno = 0;
-  char* end = nullptr;
-  const unsigned long long parsed = std::strtoull(text, &end, base);
-  if (errno != 0 || end == text || *end != '\0' || parsed > 0xFFFFFFFFULL) {
-    return false;
-  }
-
-  *value = static_cast<std::uint32_t>(parsed);
-  return true;
+  return luce::str::parse_u32_token(text, value, base);
 }
 
 void append_argv_tokens(int argc, char* argv[], int start, char* out, std::size_t out_size) {
@@ -375,20 +368,7 @@ const char* wakeup_reason_name(esp_sleep_wakeup_cause_t reason) {
 }
 
 bool parse_bool_value(const char* token, bool* out_value) {
-  if (!token || !out_value) {
-    return false;
-  }
-  if (std::strcmp(token, "1") == 0 || strcasecmp(token, "on") == 0 ||
-      strcasecmp(token, "true") == 0 || strcasecmp(token, "yes") == 0) {
-    *out_value = true;
-    return true;
-  }
-  if (std::strcmp(token, "0") == 0 || strcasecmp(token, "off") == 0 ||
-      strcasecmp(token, "false") == 0 || strcasecmp(token, "no") == 0) {
-    *out_value = false;
-    return true;
-  }
-  return false;
+  return luce::str::parse_bool_token(token, out_value);
 }
 
 bool parse_onoff(const char* token, bool* value) {
@@ -449,6 +429,32 @@ const char* led_manual_mode_name(LedManualMode mode) {
     default:
       return "auto";
   }
+}
+
+int log_set_id_error(const char* kind,
+                     luce::parse::IdSetError result,
+                     const luce::parse::IdSetIssue& issue,
+                     std::uint32_t min_id,
+                     std::uint32_t max_id) {
+  switch (result) {
+    case luce::parse::IdSetError::kOk:
+      return 0;
+    case luce::parse::IdSetError::kEmpty:
+      ESP_LOGW(kTag, "CLI command set: no %s ids selected", kind);
+      return 1;
+    case luce::parse::IdSetError::kInvalidToken:
+      ESP_LOGW(kTag, "CLI command set: invalid %s token '%s'", kind, issue.token);
+      return 1;
+    case luce::parse::IdSetError::kInvalidRange:
+      ESP_LOGW(kTag, "CLI command set: invalid %s range '%s'", kind, issue.token);
+      return 1;
+    case luce::parse::IdSetError::kOutOfRange:
+      ESP_LOGW(kTag, "CLI command set: invalid %s id %lu (expected %lu..%lu)", kind,
+               static_cast<unsigned long>(issue.bad_id), static_cast<unsigned long>(min_id),
+               static_cast<unsigned long>(max_id));
+      return 1;
+  }
+  return 1;
 }
 
 int cli_handle_help(int, char*[]) {
@@ -704,8 +710,9 @@ int cli_handle_set(int argc, char* argv[]) {
     ESP_LOGW(kTag, "CLI command set: invalid target '%s'", mode);
     return 1;
   }
+  const char* const eq = std::strchr(spec, '=');
+  const std::size_t eq_pos = static_cast<std::size_t>(eq - spec);
   if (target_is_led) {
-    const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
     const std::string ids(spec, eq_pos);
     const std::string value_str(spec + eq_pos + 1);
     LedManualMode led_mode = LedManualMode::kAuto;
@@ -726,22 +733,8 @@ int cli_handle_set(int argc, char* argv[]) {
           (void)led_status_set_manual_mode(static_cast<std::uint8_t>(id), led_mode);
         },
         &issue);
-    switch (result) {
-      case luce::parse::IdSetError::kOk:
-        break;
-      case luce::parse::IdSetError::kEmpty:
-        ESP_LOGW(kTag, "CLI command set: no led ids selected");
-        return 1;
-      case luce::parse::IdSetError::kInvalidToken:
-        ESP_LOGW(kTag, "CLI command set: invalid led token '%s'", issue.token);
-        return 1;
-      case luce::parse::IdSetError::kInvalidRange:
-        ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", issue.token);
-        return 1;
-      case luce::parse::IdSetError::kOutOfRange:
-        ESP_LOGW(kTag, "CLI command set: invalid led id %lu (expected 0..2)",
-                 static_cast<unsigned long>(issue.bad_id));
-        return 1;
+    if (result != luce::parse::IdSetError::kOk) {
+      return log_set_id_error("led", result, issue, 0, 2);
     }
     if (applied == 0) {
       ESP_LOGW(kTag, "CLI command set: no led ids selected");
@@ -751,11 +744,6 @@ int cli_handle_set(int argc, char* argv[]) {
     return 0;
   }
 
-  const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
-  if (eq_pos == std::string::npos) {
-    ESP_LOGW(kTag, "CLI command set usage: set <relay|mask|led> <ids>=<on|off>");
-    return 1;
-  }
   const std::string ids(spec, eq_pos);
   const std::string value_str(spec + eq_pos + 1);
   bool value = false;
@@ -779,22 +767,8 @@ int cli_handle_set(int argc, char* argv[]) {
         next_mask = relay_mask_for_channel_state(static_cast<int>(next_channel), value, next_mask);
       },
       &issue);
-  switch (result) {
-    case luce::parse::IdSetError::kOk:
-      break;
-    case luce::parse::IdSetError::kEmpty:
-      ESP_LOGW(kTag, "CLI command set: no channels selected");
-      return 1;
-    case luce::parse::IdSetError::kInvalidToken:
-      ESP_LOGW(kTag, "CLI command set: invalid id token '%s'", issue.token);
-      return 1;
-    case luce::parse::IdSetError::kInvalidRange:
-      ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", issue.token);
-      return 1;
-    case luce::parse::IdSetError::kOutOfRange:
-      ESP_LOGW(kTag, "CLI command set: invalid relay id %lu",
-               static_cast<unsigned long>(issue.bad_id));
-      return 1;
+  if (result != luce::parse::IdSetError::kOk) {
+    return log_set_id_error("relay", result, issue, 1, 8);
   }
 
   if (applied == 0) {
@@ -921,9 +895,8 @@ int cli_handle_wifi_status(int, char*[]) {
   return 0;
 }
 
-int cli_handle_wifi(int, char*[]) {
-  wifi_status_for_cli();
-  return 0;
+int cli_handle_wifi(int argc, char* argv[]) {
+  return cli_handle_wifi_status(argc, argv);
 }
 
 int cli_handle_wifi_scan(int, char*[]) {

@@ -9,6 +9,8 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "luce/nvs_helpers.h"
+
 #include <string>
 
 constexpr const char* kTag = "[BOOT]";
@@ -202,11 +204,11 @@ esp_err_t bump_boot_state_in_handle(nvs_handle_t handle, uint32_t* boot_count_ou
   boot_count += 1;
   const uint32_t reset_reason = static_cast<uint32_t>(esp_reset_reason());
 
-  ESP_RETURN_ON_ERROR(nvs_set_u32(handle, "boot_count", boot_count), kTag,
+  ESP_RETURN_ON_ERROR(luce::nvs::write_u32(handle, "boot_count", boot_count), kTag,
                       "NVS set boot_count");
-  ESP_RETURN_ON_ERROR(nvs_set_u32(handle, "last_reset_reason", reset_reason), kTag,
+  ESP_RETURN_ON_ERROR(luce::nvs::write_u32(handle, "last_reset_reason", reset_reason), kTag,
                       "NVS set last_reset_reason");
-  ESP_RETURN_ON_ERROR(nvs_commit(handle), kTag, "NVS commit");
+  ESP_RETURN_ON_ERROR(luce::nvs::commit(handle), kTag, "NVS commit");
 
   *boot_count_out = boot_count;
   *reset_reason_out = reset_reason;

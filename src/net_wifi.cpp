@@ -13,6 +13,7 @@
 
 #if LUCE_HAS_WIFI
 
+#include "esp_check.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -32,7 +33,6 @@ constexpr const char* kWifiNs = "wifi";
 constexpr const char* kDefaultHostname = "luce-esp32";
 constexpr const char* kDefaultSsid = "";
 constexpr const char* kDefaultPass = "";
-constexpr TickType_t kStatusLogPeriodMs = 3000;
 constexpr TickType_t kStoppedLogPeriodMs = 10000;
 constexpr TickType_t kBackoffLogPeriodMs = 5000;
 
@@ -290,31 +290,40 @@ void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
   }
 }
 
-void initialize_wifi_stack() {
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+esp_err_t initialize_wifi_stack_impl() {
+  ESP_RETURN_ON_ERROR(esp_netif_init(), kTag, "esp_netif_init");
+  const esp_err_t loop_err = esp_event_loop_create_default();
+  if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
+    ESP_RETURN_ON_ERROR(loop_err, kTag, "esp_event_loop_create_default");
+  }
   g_sta_if = esp_netif_create_default_wifi_sta();
   if (g_sta_if == nullptr) {
-    ESP_LOGE(kTag, "[WIFI] failed to create default Wi-Fi STA interface");
-    return;
+    return ESP_FAIL;
   }
 
   wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
-  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-  ESP_ERROR_CHECK(
-      esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr, &g_wifi_handler_instance));
-  ESP_ERROR_CHECK(
-      esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr, &g_ip_handler_instance));
+  ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), kTag, "esp_wifi_init");
+  ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), kTag, "esp_wifi_set_storage");
+  ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr,
+                                                          &g_wifi_handler_instance),
+                      kTag, "register wifi handler");
+  ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr,
+                                                          &g_ip_handler_instance),
+                      kTag, "register ip handler");
+  ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "esp_wifi_set_mode");
+  ESP_RETURN_ON_ERROR(esp_wifi_start(), kTag, "esp_wifi_start");
+  return ESP_OK;
+}
 
-  if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
-    ESP_LOGW(kTag, "[WIFI] unable to set Wi-Fi mode");
-  }
-  if (esp_wifi_start() != ESP_OK) {
-    ESP_LOGW(kTag, "[WIFI] esp_wifi_start failed");
+void initialize_wifi_stack() {
+  const esp_err_t err = initialize_wifi_stack_impl();
+  // Wi-Fi is optional for the baseline build, so init failures are reported
+  // and leave the task stopped instead of aborting the firmware.
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "[WIFI] stack initialization failed: %s", esp_err_to_name(err));
+    set_state(WifiState::kStopped, "init_failed");
     return;
   }
-
   set_state(WifiState::kInit, "stack_initialized");
 }
 
@@ -346,12 +355,6 @@ void wifi_task(void*) {
         g_last_backoff_tick = now;
         ESP_LOGW(kTag, "[WIFI][BACKOFF] remaining_ms=%lu", static_cast<unsigned long>(g_next_backoff_ms));
       }
-    }
-
-    if ((g_state == WifiState::kGotIp || g_state == WifiState::kConnecting || g_state == WifiState::kBackoff ||
-         g_state == WifiState::kInit) &&
-        now - g_last_status_tick > pdMS_TO_TICKS(kStatusLogPeriodMs)) {
-      g_last_status_tick = now;
     }
 
     vTaskDelay(pdMS_TO_TICKS(100));
