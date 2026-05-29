@@ -1,10 +1,11 @@
 {
   "schema": 1,
-  "run_id": "20260529T022619Z",
+  "run_id": "20260529T024655Z",
   "source": {
-    "git_sha": "ae3f47c476e3eafdb91a91eee3d01f4334593b93",
-    "target": "wave-e-local"
+    "git_sha": "4dc5e7cdc2605d696092581c4973de8de0d17e88",
+    "target": "wave-f-local"
   },
+  "release": false,
   "checks": [
     {
       "name": "platformio:default",
@@ -37,12 +38,27 @@
       "required": true
     },
     {
+      "name": "evidence-verifier",
+      "status": "PASS",
+      "required": true
+    },
+    {
       "name": "diff-check",
       "status": "PASS",
       "required": true
     },
     {
-      "name": "clang-format:selected-helpers",
+      "name": "clang-format:src-include",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "release-gate-negative",
+      "status": "PASS",
+      "required": true
+    },
+    {
+      "name": "release-gate-positive",
       "status": "PASS",
       "required": true
     },
@@ -55,7 +71,7 @@
   "artifacts": [
     {
       "path": "docs/governance/health/evidence-latest.json",
-      "sha256": "134639ff7f4e14489e67b88930fa96e65a941c65832a8d3e74b0ad3cbccce443"
+      "sha256": "df35028db6420b4eeb1d0ae694a7314642f2a03dcdcf62caae7a603f8c9dc694"
     }
   ]
 }

@@ -1,10 +1,11 @@
 {
   "schema": 1,
-  "run_id": "20260529T022619Z",
+  "run_id": "20260529T024655Z",
   "source": {
-    "git_sha": "ae3f47c476e3eafdb91a91eee3d01f4334593b93",
-    "target": "wave-e-local"
+    "git_sha": "4dc5e7cdc2605d696092581c4973de8de0d17e88",
+    "target": "wave-f-local"
   },
+  "release": false,
   "checks": [
     {
       "name": "platformio:default",
@@ -22,13 +23,13 @@
       "name": "platformio:net1",
       "status": "PASS",
       "required": true,
-      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1; focused net1 rebuild also passed"
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1"
     },
     {
       "name": "host-tests",
       "status": "PASS",
       "required": true,
-      "details": "scripts/run_host_tests.sh, 722 assertions"
+      "details": "scripts/run_host_tests.sh, 725 assertions"
     },
     {
       "name": "docs-alignment",
@@ -43,16 +44,34 @@
       "details": "python3 -m py_compile scripts/test_layers.py scripts/verify_evidence.py"
     },
     {
+      "name": "evidence-verifier",
+      "status": "PASS",
+      "required": true,
+      "details": "python scripts/verify_evidence.py"
+    },
+    {
       "name": "diff-check",
       "status": "PASS",
       "required": true,
       "details": "git diff --check"
     },
     {
-      "name": "clang-format:selected-helpers",
+      "name": "clang-format:src-include",
       "status": "PASS",
       "required": true,
-      "details": "clang-format --dry-run --Werror include/luce/http_route_logic.h include/luce/led_manual_mode.h include/luce/pki_helpers.h"
+      "details": "tracked src and include/luce files through clang-format --dry-run --Werror"
+    },
+    {
+      "name": "release-gate-negative",
+      "status": "PASS",
+      "required": true,
+      "details": "release manifest with advisory PREREQ_MISSING hardware-hil failed as expected"
+    },
+    {
+      "name": "release-gate-positive",
+      "status": "PASS",
+      "required": true,
+      "details": "release manifest with required PASS hardware-hil passed"
     },
     {
       "name": "hardware-hil",
@@ -63,12 +82,12 @@
   ],
   "local_artifacts": [
     {
-      "path": "docs/work/diag/20260529T022619Z/host-tests/summary.json",
-      "sha256": "53ff866c2835b9452dd8f5b9c9a90f3cc99ebcd152f50502aa710d67d723d679"
+      "path": "docs/work/diag/20260529T024655Z/host-tests/summary.json",
+      "sha256": "a0b5813344b95f77e9b594ebf3791f5e92e38bafb2282a89f6ea0f9f08d69040"
     },
     {
-      "path": "docs/work/diag/20260529T022120Z/wave-E.md",
-      "sha256": "16bfffa1f35ecdc056093bdba22db3ccf739be78f6d338c81a733914da81a2a4"
+      "path": "docs/work/diag/20260529T024655Z/wave-F.md",
+      "sha256": "541421fc209a051b10a90d4d154f344d806e515b0fa03275e0e33d3311eaece5"
     }
   ]
 }
