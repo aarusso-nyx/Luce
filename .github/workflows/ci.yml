@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+      - "tls-prod-provisioning"
+
+jobs:
+  hardware-free-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format cmake
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+      - name: Host unit tests
+        run: scripts/run_host_tests.sh
+      - name: Docs alignment
+        run: python -m pytest tests/test_docs_alignment.py
+      - name: clang-format dry run
+        run: |
+          git ls-files 'src/*.cpp' 'src/*.h' 'include/luce/*.h' 'include/luce/*.hpp' \
+            | xargs clang-format --dry-run --Werror
+
+  verify-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify committed local evidence
+        run: python scripts/verify_evidence.py

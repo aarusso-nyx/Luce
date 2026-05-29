@@ -14,7 +14,10 @@
 #if LUCE_HAS_HTTP
 
 #include "esp_err.h"
+#include "esp_check.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
@@ -30,8 +33,12 @@
 #include "luce/mqtt.h"
 #include "luce/ota.h"
 #include "luce_build.h"
+#include "luce/http_route_logic.h"
+#include "luce/json_writer.h"
 #include "luce/nvs_helpers.h"
+#include "luce/pki.h"
 #include "luce/runtime_state.h"
+#include "luce/str_utils.h"
 #include "luce/task_budgets.h"
 
 // Captive-portal webapp assets are embedded by src/CMakeLists.txt as
@@ -58,13 +65,11 @@ constexpr std::uint16_t kCaptiveHttpPort = 80;
 constexpr std::size_t kWsClientScanMax = 8;
 constexpr const char* kDefaultToken = "luce-token";
 constexpr const char* kUnauthorizedPayload = "{\"error\":\"unauthorized\"}";
-constexpr const char* kMethodNotAllowedPayload = "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
+constexpr const char* kMethodNotAllowedPayload =
+    "{\"error\":\"method_not_allowed\",\"allowed\":\"%s\"}";
 constexpr const char* kBadRequestPayload = "{\"error\":\"bad_request\",\"message\":\"%s\"}";
 
-// PEM buffers sized for a 2048-bit RSA cert+key plus a comfortable
-// margin (a 2048-bit RSA cert PEM is typically ~1400B; the key ~1700B).
-// Backed by NVS keys http/cert_pem and http/key_pem.
-constexpr std::size_t kPemBufferSize = 2048;
+constexpr std::size_t kTlsCsrPemBufferSize = 1536;
 
 enum class HttpState : std::uint8_t {
   kDisabled = 0,
@@ -77,27 +82,14 @@ struct HttpConfig {
   bool enabled = false;
   uint16_t port = kDefaultHttpPort;
   char token[64] = {};
-  bool tls_dev_mode = false;
-  char cert_pem[kPemBufferSize] = {};
-  char key_pem[kPemBufferSize] = {};
 };
 
-HttpConfig g_cfg {};
+HttpConfig g_cfg{};
 HttpState g_state = HttpState::kDisabled;
 httpd_handle_t g_httpd = nullptr;
 httpd_handle_t g_captive_httpd = nullptr;
 TaskHandle_t g_task = nullptr;
-
-// PEM cert+key formerly lived here as hardcoded placeholder string
-// literals. They were truncated and never valid; the HTTPS server failed
-// to start as soon as anyone tried. Real certs now come from NVS keys
-// http/cert_pem and http/key_pem, loaded into HttpConfig.cert_pem /
-// HttpConfig.key_pem. If those are empty at start-up the HTTPS server
-// refuses to start and `tls.status` / /api/info surface the situation.
-//
-// Provisioning of the cert+key is intentionally out of scope for this
-// change — see the follow-up PRs for first-boot self-signed generation
-// (dev) and serial-CLI provisioning (prod).
+esp_err_t g_tls_start_err = ESP_OK;
 
 struct WebAsset {
   const char* uri;
@@ -107,32 +99,62 @@ struct WebAsset {
 };
 
 const WebAsset kWebAppAssets[] = {
-    {"/index.html", "text/html; charset=utf-8", webapp_index_html, static_cast<std::size_t>(webapp_index_html_len)},
-    {"/app.css", "text/css; charset=utf-8", webapp_app_css, static_cast<std::size_t>(webapp_app_css_len)},
-    {"/script.js", "text/javascript; charset=utf-8", webapp_script_js, static_cast<std::size_t>(webapp_script_js_len)},
+    {"/index.html", "text/html; charset=utf-8", webapp_index_html,
+     static_cast<std::size_t>(webapp_index_html_len)},
+    {"/app.css", "text/css; charset=utf-8", webapp_app_css,
+     static_cast<std::size_t>(webapp_app_css_len)},
+    {"/script.js", "text/javascript; charset=utf-8", webapp_script_js,
+     static_cast<std::size_t>(webapp_script_js_len)},
 };
 
 const char* state_name(HttpState state) {
   switch (state) {
-    case HttpState::kDisabled:
-      return "DISABLED";
-    case HttpState::kInit:
-      return "INIT";
-    case HttpState::kStarted:
-      return "STARTED";
-    case HttpState::kFailed:
-      return "FAILED";
-    default:
-      return "UNKNOWN";
+  case HttpState::kDisabled:
+    return "DISABLED";
+  case HttpState::kInit:
+    return "INIT";
+  case HttpState::kStarted:
+    return "STARTED";
+  case HttpState::kFailed:
+    return "FAILED";
+  default:
+    return "UNKNOWN";
   }
 }
 
-const char* http_state_name_impl() {
-  return state_name(g_state);
-}
+const char* http_state_name_impl() { return state_name(g_state); }
 
 void set_state(HttpState next, const char* reason = nullptr) {
   luce::runtime::set_state(g_state, next, state_name, "[HTTP]", reason);
+}
+
+const char* tls_status_name() {
+  if (!g_cfg.enabled) {
+    return "disabled";
+  }
+  const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+  if (status.read_error) {
+    return "material_read_error";
+  }
+  if (status.oversized) {
+    return "material_oversized";
+  }
+  if (!status.key_present) {
+    return "key_missing";
+  }
+  if (!status.cert_present) {
+    return luce::pki::state_name(status.state);
+  }
+  if (g_httpd != nullptr) {
+    return "started";
+  }
+  if (g_tls_start_err != ESP_OK) {
+    return "start_failed";
+  }
+  if (!wifi_is_ip_ready()) {
+    return "waiting_ip";
+  }
+  return "material_present";
 }
 
 void load_http_config() {
@@ -140,7 +162,7 @@ void load_http_config() {
   g_cfg.enabled = false;
   g_cfg.port = kDefaultHttpPort;
   std::snprintf(g_cfg.token, sizeof(g_cfg.token), "%s", kDefaultToken);
-  g_cfg.tls_dev_mode = false;
+  g_tls_start_err = ESP_OK;
 
   nvs_handle_t handle = 0;
   if (nvs_open(kHttpNs, NVS_READONLY, &handle) != ESP_OK) {
@@ -150,7 +172,6 @@ void load_http_config() {
   }
 
   std::uint8_t enabled = 0;
-  std::uint8_t tls = 0;
   std::uint16_t port = kDefaultHttpPort;
   if (luce::nvs::read_u8(handle, "enabled", enabled, 0)) {
     g_cfg.enabled = (enabled != 0);
@@ -158,29 +179,24 @@ void load_http_config() {
   if (luce::nvs::read_u16(handle, "port", port, kDefaultHttpPort) && port != 0) {
     g_cfg.port = port;
   }
-  if (luce::nvs::read_u8(handle, "tls_dev_mode", tls, 0)) {
-    g_cfg.tls_dev_mode = (tls != 0);
-  }
   (void)luce::nvs::read_string(handle, "token", g_cfg.token, sizeof(g_cfg.token), kDefaultToken);
-  // PEM cert and key: read silently into the runtime buffers. Never log
-  // either body — the key is a secret. Presence is reported via tls.status
-  // / /api/info instead.
-  (void)luce::nvs::read_string(handle, "cert_pem", g_cfg.cert_pem, sizeof(g_cfg.cert_pem), "");
-  (void)luce::nvs::read_string(handle, "key_pem", g_cfg.key_pem, sizeof(g_cfg.key_pem), "");
   nvs_close(handle);
-  set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled, g_cfg.enabled ? "config_enabled" : "config_disabled");
-  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u tls_mode=%s cert_present=%d key_present=%d",
-           g_cfg.enabled ? 1 : 0, g_cfg.port,
-           g_cfg.tls_dev_mode ? "dev" : "prod",
-           g_cfg.cert_pem[0] != '\0' ? 1 : 0,
-           g_cfg.key_pem[0] != '\0' ? 1 : 0);
+
+  const luce::pki::Status pki_status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+
+  set_state(g_cfg.enabled ? HttpState::kInit : HttpState::kDisabled,
+            g_cfg.enabled ? "config_enabled" : "config_disabled");
+  ESP_LOGI(kTag, "[HTTP] enabled=%d port=%u key_present=%d cert_present=%d tls_status=%s",
+           g_cfg.enabled ? 1 : 0, g_cfg.port, pki_status.key_present ? 1 : 0,
+           pki_status.cert_present ? 1 : 0, tls_status_name());
 }
 
 const char* as_n_a(const char* value) {
   return (value != nullptr && value[0] != '\0') ? value : "n/a";
 }
 
-esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size_t payload_len = 0) {
+esp_err_t send_json(httpd_req_t* req, int status, const char* payload,
+                    std::size_t payload_len = 0) {
   char status_line[16] = {0};
   std::snprintf(status_line, sizeof(status_line), "%d", status);
   httpd_resp_set_status(req, status_line);
@@ -196,7 +212,8 @@ esp_err_t send_json(httpd_req_t* req, int status, const char* payload, std::size
 
 esp_err_t send_method_not_allowed(httpd_req_t* req, const char* allowed_methods) {
   char payload[96] = {0};
-  std::snprintf(payload, sizeof(payload), kMethodNotAllowedPayload, allowed_methods ? allowed_methods : "GET");
+  std::snprintf(payload, sizeof(payload), kMethodNotAllowedPayload,
+                allowed_methods ? allowed_methods : "GET");
   httpd_resp_set_status(req, "405");
   if (allowed_methods != nullptr) {
     httpd_resp_set_hdr(req, "Allow", allowed_methods);
@@ -211,7 +228,8 @@ esp_err_t send_unauthorized(httpd_req_t* req) {
 
 esp_err_t send_bad_request(httpd_req_t* req, const char* message) {
   char payload[160] = {0};
-  std::snprintf(payload, sizeof(payload), kBadRequestPayload, message ? message : "invalid_request");
+  std::snprintf(payload, sizeof(payload), kBadRequestPayload,
+                message ? message : "invalid_request");
   return send_json(req, 400, payload, 0);
 }
 
@@ -253,87 +271,8 @@ bool validate_auth(httpd_req_t* req) {
          std::strcmp(header, expected) == 0;
 }
 
-bool parse_bool_token(const char* text, bool* out_value) {
-  if (!text || !out_value || text[0] == '\0') {
-    return false;
-  }
-  if (std::strcmp(text, "1") == 0 || strcasecmp(text, "on") == 0 || strcasecmp(text, "true") == 0 ||
-      strcasecmp(text, "yes") == 0) {
-    *out_value = true;
-    return true;
-  }
-  if (std::strcmp(text, "0") == 0 || strcasecmp(text, "off") == 0 || strcasecmp(text, "false") == 0 ||
-      strcasecmp(text, "no") == 0) {
-    *out_value = false;
-    return true;
-  }
-  return false;
-}
-
-bool parse_led_manual_mode_token(const char* text, LedManualMode* out_mode) {
-  if (!text || !out_mode || text[0] == '\0') {
-    return false;
-  }
-  if (strcasecmp(text, "auto") == 0) {
-    *out_mode = LedManualMode::kAuto;
-    return true;
-  }
-  if (strcasecmp(text, "blink") == 0 || strcasecmp(text, "normal") == 0) {
-    *out_mode = LedManualMode::kBlinkNormal;
-    return true;
-  }
-  if (strcasecmp(text, "fast") == 0) {
-    *out_mode = LedManualMode::kBlinkFast;
-    return true;
-  }
-  if (strcasecmp(text, "slow") == 0) {
-    *out_mode = LedManualMode::kBlinkSlow;
-    return true;
-  }
-  if (strcasecmp(text, "flash") == 0) {
-    *out_mode = LedManualMode::kFlash;
-    return true;
-  }
-  bool on = false;
-  if (parse_bool_token(text, &on)) {
-    *out_mode = on ? LedManualMode::kOn : LedManualMode::kOff;
-    return true;
-  }
-  return false;
-}
-
-const char* led_manual_mode_name(LedManualMode mode) {
-  switch (mode) {
-    case LedManualMode::kAuto:
-      return "auto";
-    case LedManualMode::kOff:
-      return "off";
-    case LedManualMode::kOn:
-      return "on";
-    case LedManualMode::kBlinkNormal:
-      return "blink";
-    case LedManualMode::kBlinkFast:
-      return "fast";
-    case LedManualMode::kBlinkSlow:
-      return "slow";
-    case LedManualMode::kFlash:
-      return "flash";
-    default:
-      return "auto";
-  }
-}
-
 bool parse_u32_token(const char* text, std::uint32_t* out_value) {
-  if (!text || !out_value || text[0] == '\0') {
-    return false;
-  }
-  char* end = nullptr;
-  const std::uint32_t parsed = static_cast<std::uint32_t>(std::strtoul(text, &end, 0));
-  if (!end || *end != '\0') {
-    return false;
-  }
-  *out_value = parsed;
-  return true;
+  return luce::str::parse_u32_token(text, out_value);
 }
 
 bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
@@ -351,7 +290,8 @@ bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
   }
 
   char query[96] = {0};
-  if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
+  if (httpd_req_get_url_query_len(req) > 0 &&
+      httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
       if (httpd_query_key_value(query, "value", out, out_size) == ESP_OK) {
         return out[0] != '\0';
@@ -361,23 +301,7 @@ bool read_request_value(httpd_req_t* req, char* out, std::size_t out_size) {
   return false;
 }
 
-void trim_ascii_whitespace_inplace(char* text) {
-  if (!text) {
-    return;
-  }
-  std::size_t len = std::strlen(text);
-  while (len > 0 && std::isspace(static_cast<unsigned char>(text[len - 1])) != 0) {
-    text[len - 1] = '\0';
-    --len;
-  }
-  std::size_t start = 0;
-  while (text[start] != '\0' && std::isspace(static_cast<unsigned char>(text[start])) != 0) {
-    ++start;
-  }
-  if (start > 0) {
-    std::memmove(text, text + start, std::strlen(text + start) + 1);
-  }
-}
+void trim_ascii_whitespace_inplace(char* text) { (void)luce::str::trim_ascii_inplace(text); }
 
 esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
@@ -385,11 +309,16 @@ esp_err_t get_uptime_payload(char* out, std::size_t out_size) {
   }
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  std::snprintf(out, out_size,
-                "{\"service\":\"luce\",\"strategy\":\"%s\",\"status\":\"ok\",\"build\":\"%s\",\"sha\":\"%s\","
-                "\"uptime_s\":%lld,\"wifi_ip\":\"%s\"}",
-                LUCE_STRATEGY_NAME, __DATE__ " " __TIME__, LUCE_GIT_SHA, (long long)(esp_timer_get_time() / 1000000ULL),
-                as_n_a(ip));
+  luce::json::Writer writer(out, out_size);
+  writer.begin_object();
+  writer.key_str("service", "luce");
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("status", "ok");
+  writer.key_str("build", __DATE__ " " __TIME__);
+  writer.key_str("sha", LUCE_GIT_SHA);
+  writer.key_uint("uptime_s", static_cast<std::uint32_t>(esp_timer_get_time() / 1000000ULL));
+  writer.key_str("wifi_ip", as_n_a(ip));
+  writer.end_object();
   return ESP_OK;
 }
 
@@ -397,21 +326,29 @@ void build_ws_snapshot_payload(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
     return;
   }
-  I2cSensorSnapshot snapshot {};
+  I2cSensorSnapshot snapshot{};
   const bool has_sensor = read_sensor_snapshot(snapshot);
   const std::uint16_t threshold = io_light_threshold();
   const std::uint8_t night_mask = io_relay_night_mask();
+  const bool hardware_degraded = io_hardware_degraded();
   const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
   std::time_t now = 0;
   (void)std::time(&now);
-  std::snprintf(
-      out, out_size,
-      "{\"type\":\"state\",\"tstamp\":%llu,\"state\":%u,\"night\":%u,\"day\":%u,\"threshold\":%u,"
-      "\"light\":%d,\"voltage\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s}",
-      static_cast<unsigned long long>(now > 0 ? now : 0), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask),
-      day ? 1u : 0u, static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
-      has_sensor ? snapshot.voltage_raw : 0, has_sensor ? snapshot.temperature_c : 0.0f,
-      has_sensor ? snapshot.humidity_percent : 0.0f, has_sensor && snapshot.dht_ok ? "true" : "false");
+  luce::json::Writer writer(out, out_size);
+  writer.begin_object();
+  writer.key_str("type", "state");
+  writer.key_uint("tstamp", static_cast<std::uint32_t>(now > 0 ? now : 0));
+  writer.key_uint("state", g_relay_mask);
+  writer.key_uint("night", night_mask);
+  writer.key_uint("day", day ? 1u : 0u);
+  writer.key_bool("hardware_degraded", hardware_degraded);
+  writer.key_uint("threshold", threshold);
+  writer.key_int("light", has_sensor ? snapshot.light_raw : 0);
+  writer.key_int("voltage", has_sensor ? snapshot.voltage_raw : 0);
+  writer.key_double("temperature", has_sensor ? snapshot.temperature_c : 0.0f, 1);
+  writer.key_double("humidity", has_sensor ? snapshot.humidity_percent : 0.0f, 1);
+  writer.key_bool("sensor_ok", has_sensor && snapshot.dht_ok);
+  writer.end_object();
 }
 
 void ws_broadcast_snapshot(httpd_handle_t server) {
@@ -425,7 +362,7 @@ void ws_broadcast_snapshot(httpd_handle_t server) {
   }
   char payload[512] = {0};
   build_ws_snapshot_payload(payload, sizeof(payload));
-  httpd_ws_frame_t ws_pkt {};
+  httpd_ws_frame_t ws_pkt{};
   ws_pkt.type = HTTPD_WS_TYPE_TEXT;
   ws_pkt.payload = reinterpret_cast<std::uint8_t*>(payload);
   ws_pkt.len = std::strlen(payload);
@@ -450,41 +387,69 @@ esp_err_t route_health_impl(httpd_req_t* req) {
 esp_err_t route_info_impl(httpd_req_t* req) {
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  I2cSensorSnapshot snapshot {};
+  I2cSensorSnapshot snapshot{};
   const bool has_sensor = read_sensor_snapshot(snapshot);
   const std::uint16_t threshold = io_light_threshold();
   const std::uint8_t night_mask = io_relay_night_mask();
+  const bool hardware_degraded = io_hardware_degraded();
   const bool day = has_sensor ? (snapshot.light_raw > static_cast<int>(threshold)) : false;
-  const bool cert_present = (g_cfg.cert_pem[0] != '\0');
-  const bool key_present = (g_cfg.key_pem[0] != '\0');
-  const char* tls_mode_str = g_cfg.tls_dev_mode ? "dev" : "prod";
-  char payload[1280] = {0};
-  std::snprintf(payload, sizeof(payload),
-                "{\"service\":\"luce\",\"name\":\"%s\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\","
-                "\"build\":\"%s %s\",\"uptimeMs\":%llu,\"uptime_s\":%llu,\"wifi_ip\":\"%s\","
-                "\"http_enabled\":%s,\"http_port\":%u,\"tls\":%d,"
-                "\"tls_mode\":\"%s\",\"cert_present\":%s,\"key_present\":%s,"
-                "\"relays\":%u,\"nightMask\":%u,\"day\":%s,\"threshold\":%u,"
-                "\"light\":%d,\"temperature\":%.1f,\"humidity\":%.1f,\"sensor_ok\":%s,"
-                "\"network\":{\"ip\":\"%s\",\"wifiConnected\":%s,\"mqttConnected\":%s,\"ntpSynced\":%s}}",
-                "luce", LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__,
-                static_cast<unsigned long long>(esp_timer_get_time() / 1000ULL),
-                static_cast<unsigned long long>(esp_timer_get_time() / 1000000ULL), as_n_a(ip),
-                g_cfg.enabled ? "true" : "false", g_cfg.port, g_cfg.tls_dev_mode ? 1 : 0,
-                tls_mode_str, cert_present ? "true" : "false", key_present ? "true" : "false",
-                static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(night_mask), day ? "true" : "false",
-                static_cast<unsigned>(threshold), has_sensor ? snapshot.light_raw : 0,
-                has_sensor ? snapshot.temperature_c : 0.0f, has_sensor ? snapshot.humidity_percent : 0.0f,
-                has_sensor && snapshot.dht_ok ? "true" : "false", as_n_a(ip), wifi_is_connected() ? "true" : "false",
-                mqtt_is_connected() ? "true" : "false", ntp_is_synced() ? "true" : "false");
+  const luce::pki::Status pki_status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+  const bool cert_present = pki_status.cert_present;
+  const bool key_present = pki_status.key_present;
+  char payload[1792] = {0};
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("service", "luce");
+  writer.key_str("name", "luce");
+  writer.key_str("version", LUCE_PROJECT_VERSION);
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("sha", LUCE_GIT_SHA);
+  writer.key_str("build", __DATE__ " " __TIME__);
+  writer.key_uint("uptimeMs", static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL));
+  writer.key_uint("uptime_s", static_cast<std::uint32_t>(esp_timer_get_time() / 1000000ULL));
+  writer.key_str("wifi_ip", as_n_a(ip));
+  writer.key_bool("http_enabled", g_cfg.enabled);
+  writer.key_uint("http_port", g_cfg.port);
+  writer.key_str("http_state", state_name(g_state));
+  writer.key_bool("https_running", g_httpd != nullptr);
+  writer.key_str("tls_state", tls_status_name());
+  writer.key_str("tls_status", tls_status_name());
+  writer.key_str("tls_last_error", pki_status.last_error);
+  writer.key_bool("key_present", key_present);
+  writer.key_bool("csr_ready", key_present);
+  writer.key_bool("cert_present", cert_present);
+  writer.key_str("cert_fingerprint", pki_status.fingerprint);
+  writer.key_str("cert_subject", pki_status.subject);
+  writer.key_str("cert_issuer", pki_status.issuer);
+  writer.key_uint("relays", g_relay_mask);
+  writer.key_uint("nightMask", night_mask);
+  writer.key_bool("day", day);
+  writer.key_bool("hardware_degraded", hardware_degraded);
+  writer.key_uint("threshold", threshold);
+  writer.key_int("light", has_sensor ? snapshot.light_raw : 0);
+  writer.key_double("temperature", has_sensor ? snapshot.temperature_c : 0.0f, 1);
+  writer.key_double("humidity", has_sensor ? snapshot.humidity_percent : 0.0f, 1);
+  writer.key_bool("sensor_ok", has_sensor && snapshot.dht_ok);
+  writer.key_object_begin("network");
+  writer.key_str("ip", as_n_a(ip));
+  writer.key_bool("wifiConnected", wifi_is_connected());
+  writer.key_bool("mqttConnected", mqtt_is_connected());
+  writer.key_bool("ntpSynced", ntp_is_synced());
+  writer.end_object();
+  writer.end_object();
   return send_json(req, 200, payload, 0);
 }
 
 esp_err_t route_version_impl(httpd_req_t* req) {
   char payload[192] = {0};
-  std::snprintf(payload, sizeof(payload),
-                "{\"service\":\"luce\",\"version\":\"%s\",\"strategy\":\"%s\",\"sha\":\"%s\",\"build\":\"%s %s\"}",
-                LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME, LUCE_GIT_SHA, __DATE__, __TIME__);
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("service", "luce");
+  writer.key_str("version", LUCE_PROJECT_VERSION);
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_str("sha", LUCE_GIT_SHA);
+  writer.key_str("build", __DATE__ " " __TIME__);
+  writer.end_object();
   return send_json(req, 200, payload, 0);
 }
 
@@ -492,11 +457,19 @@ esp_err_t route_state_impl(httpd_req_t* req) {
   char payload[384] = {0};
   char ip[16] = {0};
   wifi_copy_ip_str(ip, sizeof(ip));
-  std::snprintf(payload, sizeof(payload),
-               "{\"state\":\"running\",\"wifi_ip\":\"%s\",\"relay\":%u,\"buttons\":%u,\"requests\":1,\"unauth\":0,"
-               "\"service\":\"luce\",\"strategy\":\"%s\",\"ntp_state\":0}",
-               as_n_a(ip), static_cast<unsigned>(g_relay_mask), static_cast<unsigned>(g_button_mask),
-               LUCE_STRATEGY_NAME);
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("state", "running");
+  writer.key_str("wifi_ip", as_n_a(ip));
+  writer.key_uint("relay", g_relay_mask);
+  writer.key_uint("buttons", g_button_mask);
+  writer.key_bool("hardware_degraded", io_hardware_degraded());
+  writer.key_uint("requests", 1);
+  writer.key_uint("unauth", 0);
+  writer.key_str("service", "luce");
+  writer.key_str("strategy", LUCE_STRATEGY_NAME);
+  writer.key_uint("ntp_state", 0);
+  writer.end_object();
   return send_json(req, 200, payload, 0);
 }
 
@@ -514,11 +487,14 @@ esp_err_t route_ota_check_impl(httpd_req_t* req) {
   if (req->content_len > 0 && req->content_len < static_cast<int>(sizeof(body_url))) {
     const int got = httpd_req_recv(req, body_url, req->content_len);
     if (got > 0) {
-      body_url[got < static_cast<int>(sizeof(body_url)) ? got : static_cast<int>(sizeof(body_url) - 1)] = '\0';
+      body_url[got < static_cast<int>(sizeof(body_url)) ? got
+                                                        : static_cast<int>(sizeof(body_url) - 1)] =
+          '\0';
       trim_ascii_whitespace_inplace(body_url);
     }
   }
-  if (httpd_req_get_url_query_len(req) > 0 && httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
+  if (httpd_req_get_url_query_len(req) > 0 &&
+      httpd_req_get_url_query_len(req) < static_cast<int>(sizeof(query))) {
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
       if (httpd_query_key_value(query, "url", query_url, sizeof(query_url)) == ESP_OK) {
         trim_ascii_whitespace_inplace(query_url);
@@ -536,7 +512,11 @@ esp_err_t route_ota_check_impl(httpd_req_t* req) {
     source = "default";
   }
   char payload[160] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"status\":\"queued\",\"source\":\"%s\"}", source);
+  luce::json::Writer writer(payload, sizeof(payload));
+  writer.begin_object();
+  writer.key_str("status", "queued");
+  writer.key_str("source", source);
+  writer.end_object();
   return send_json(req, 202, payload, 0);
 }
 
@@ -547,13 +527,15 @@ esp_err_t build_leds_payload(char* out, std::size_t out_size) {
   const std::uint8_t state = led_status_current_mask();
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
-  std::snprintf(out, out_size,
-                "{\"state\":%u,\"manual_enabled\":%u,\"manual_value\":%u,"
-                "\"mode0\":\"%s\",\"mode1\":\"%s\",\"mode2\":\"%s\"}",
-                static_cast<unsigned>(state), static_cast<unsigned>(manual_enabled), static_cast<unsigned>(manual_value),
-                led_manual_mode_name(led_status_manual_mode(0)),
-                led_manual_mode_name(led_status_manual_mode(1)),
-                led_manual_mode_name(led_status_manual_mode(2)));
+  luce::json::Writer writer(out, out_size);
+  writer.begin_object();
+  writer.key_uint("state", state);
+  writer.key_uint("manual_enabled", manual_enabled);
+  writer.key_uint("manual_value", manual_value);
+  writer.key_str("mode0", led_manual_mode_name(led_status_manual_mode(0)));
+  writer.key_str("mode1", led_manual_mode_name(led_status_manual_mode(1)));
+  writer.key_str("mode2", led_manual_mode_name(led_status_manual_mode(2)));
+  writer.end_object();
   return ESP_OK;
 }
 
@@ -601,10 +583,11 @@ esp_err_t route_leds_state_0_impl(httpd_req_t* req) {
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
   char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"index\":0,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
-                static_cast<unsigned>(state & 0x1u),
-                (manual_enabled & 0x1u) ? (((manual_value & 0x1u) != 0u) ? "true" : "false") : "null",
-                led_manual_mode_name(led_status_manual_mode(0)));
+  std::snprintf(
+      payload, sizeof(payload), "{\"index\":0,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+      static_cast<unsigned>(state & 0x1u),
+      (manual_enabled & 0x1u) ? (((manual_value & 0x1u) != 0u) ? "true" : "false") : "null",
+      led_manual_mode_name(led_status_manual_mode(0)));
   return send_json(req, 200, payload, 0);
 }
 
@@ -624,10 +607,11 @@ esp_err_t route_leds_state_1_impl(httpd_req_t* req) {
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
   char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"index\":1,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
-                static_cast<unsigned>((state >> 1) & 0x1u),
-                (manual_enabled & 0x2u) ? (((manual_value & 0x2u) != 0u) ? "true" : "false") : "null",
-                led_manual_mode_name(led_status_manual_mode(1)));
+  std::snprintf(
+      payload, sizeof(payload), "{\"index\":1,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+      static_cast<unsigned>((state >> 1) & 0x1u),
+      (manual_enabled & 0x2u) ? (((manual_value & 0x2u) != 0u) ? "true" : "false") : "null",
+      led_manual_mode_name(led_status_manual_mode(1)));
   return send_json(req, 200, payload, 0);
 }
 
@@ -647,10 +631,11 @@ esp_err_t route_leds_state_2_impl(httpd_req_t* req) {
   const std::uint8_t manual_enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual_value = led_status_manual_value_mask();
   char payload[128] = {0};
-  std::snprintf(payload, sizeof(payload), "{\"index\":2,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
-                static_cast<unsigned>((state >> 2) & 0x1u),
-                (manual_enabled & 0x4u) ? (((manual_value & 0x4u) != 0u) ? "true" : "false") : "null",
-                led_manual_mode_name(led_status_manual_mode(2)));
+  std::snprintf(
+      payload, sizeof(payload), "{\"index\":2,\"state\":%u,\"manual\":%s,\"mode\":\"%s\"}",
+      static_cast<unsigned>((state >> 2) & 0x1u),
+      (manual_enabled & 0x4u) ? (((manual_value & 0x4u) != 0u) ? "true" : "false") : "null",
+      led_manual_mode_name(led_status_manual_mode(2)));
   return send_json(req, 200, payload, 0);
 }
 
@@ -658,14 +643,14 @@ esp_err_t route_ws(httpd_req_t* req) {
   if (req->method == HTTP_GET) {
     char payload[512] = {0};
     build_ws_snapshot_payload(payload, sizeof(payload));
-    httpd_ws_frame_t ws_pkt {};
+    httpd_ws_frame_t ws_pkt{};
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     ws_pkt.payload = reinterpret_cast<std::uint8_t*>(payload);
     ws_pkt.len = std::strlen(payload);
     return httpd_ws_send_frame(req, &ws_pkt);
   }
 
-  httpd_ws_frame_t ws_pkt {};
+  httpd_ws_frame_t ws_pkt{};
   ws_pkt.type = HTTPD_WS_TYPE_TEXT;
   esp_err_t rc = httpd_ws_recv_frame(req, &ws_pkt, 0);
   if (rc != ESP_OK) {
@@ -687,7 +672,7 @@ esp_err_t route_ws(httpd_req_t* req) {
   }
 
   if (ws_pkt.type == HTTPD_WS_TYPE_PING) {
-    httpd_ws_frame_t pong {};
+    httpd_ws_frame_t pong{};
     pong.type = HTTPD_WS_TYPE_PONG;
     pong.payload = ws_pkt.payload;
     pong.len = ws_pkt.len;
@@ -695,7 +680,7 @@ esp_err_t route_ws(httpd_req_t* req) {
   } else if (ws_pkt.type != HTTPD_WS_TYPE_CLOSE) {
     char payload[512] = {0};
     build_ws_snapshot_payload(payload, sizeof(payload));
-    httpd_ws_frame_t reply {};
+    httpd_ws_frame_t reply{};
     reply.type = HTTPD_WS_TYPE_TEXT;
     reply.payload = reinterpret_cast<std::uint8_t*>(payload);
     reply.len = std::strlen(payload);
@@ -726,7 +711,8 @@ const WebAsset* resolve_captive_asset(const char* path) {
 esp_err_t route_captive(httpd_req_t* req) {
   const WebAsset* asset = resolve_captive_asset(req != nullptr ? req->uri : nullptr);
   if (asset == nullptr || asset->data == nullptr || asset->size == 0) {
-    ESP_LOGW(kTag, "[HTTP][CAPTIVE] requested asset missing uri=%s", req && req->uri ? req->uri : "<null>");
+    ESP_LOGW(kTag, "[HTTP][CAPTIVE] requested asset missing uri=%s",
+             req && req->uri ? req->uri : "<null>");
     return httpd_resp_send_404(req);
   }
 
@@ -735,16 +721,16 @@ esp_err_t route_captive(httpd_req_t* req) {
 }
 
 constexpr RouteSpec kJsonApiRoutes[] = {
-    {"/api/health",       kMethodGet,                false, route_health_impl,       "GET"},
-    {"/api/info",         kMethodGet,                true,  route_info_impl,         "GET"},
-    {"/api/version",      kMethodGet,                false, route_version_impl,      "GET"},
-    {"/api/state",        kMethodGet,                true,  route_state_impl,        "GET"},
-    {"/api/ota",          kMethodGet,                true,  route_ota_impl,          "GET"},
-    {"/api/ota/check",    kMethodPost | kMethodPut,  true,  route_ota_check_impl,    "POST, PUT"},
-    {"/api/leds/state",   kMethodGet | kMethodPut,   true,  route_leds_state_impl,   "GET, PUT"},
-    {"/api/leds/state/0", kMethodGet | kMethodPut,   true,  route_leds_state_0_impl, "GET, PUT"},
-    {"/api/leds/state/1", kMethodGet | kMethodPut,   true,  route_leds_state_1_impl, "GET, PUT"},
-    {"/api/leds/state/2", kMethodGet | kMethodPut,   true,  route_leds_state_2_impl, "GET, PUT"},
+    {"/api/health", kMethodGet, false, route_health_impl, "GET"},
+    {"/api/info", kMethodGet, true, route_info_impl, "GET"},
+    {"/api/version", kMethodGet, false, route_version_impl, "GET"},
+    {"/api/state", kMethodGet, true, route_state_impl, "GET"},
+    {"/api/ota", kMethodGet, true, route_ota_impl, "GET"},
+    {"/api/ota/check", kMethodPost | kMethodPut, true, route_ota_check_impl, "POST, PUT"},
+    {"/api/leds/state", kMethodGet | kMethodPut, true, route_leds_state_impl, "GET, PUT"},
+    {"/api/leds/state/0", kMethodGet | kMethodPut, true, route_leds_state_0_impl, "GET, PUT"},
+    {"/api/leds/state/1", kMethodGet | kMethodPut, true, route_leds_state_1_impl, "GET, PUT"},
+    {"/api/leds/state/2", kMethodGet | kMethodPut, true, route_leds_state_2_impl, "GET, PUT"},
 };
 constexpr std::size_t kJsonApiRouteCount = sizeof(kJsonApiRoutes) / sizeof(kJsonApiRoutes[0]);
 
@@ -758,14 +744,15 @@ esp_err_t route_dispatch_trampoline(httpd_req_t* req) {
   if (spec == nullptr) {
     return send_method_not_allowed(req, "GET");
   }
-  const std::uint16_t method_bit = (req->method >= 0 && req->method < 16)
-                                       ? static_cast<std::uint16_t>(1u << req->method)
-                                       : 0u;
-  if ((spec->method_mask & method_bit) == 0u) {
+  const bool authenticated = !spec->requires_auth || validate_auth(req);
+  switch (luce::http::route_dispatch_decision(spec->method_mask, req->method, spec->requires_auth,
+                                              authenticated)) {
+  case luce::http::DispatchDecision::kMethodNotAllowed:
     return send_method_not_allowed(req, spec->methods_label);
-  }
-  if (spec->requires_auth && !validate_auth(req)) {
+  case luce::http::DispatchDecision::kUnauthorized:
     return send_unauthorized(req);
+  case luce::http::DispatchDecision::kInvoke:
+    break;
   }
   return spec->impl(req);
 }
@@ -814,34 +801,64 @@ void start_http_server() {
     return;
   }
 
-  if (g_cfg.cert_pem[0] == '\0' || g_cfg.key_pem[0] == '\0') {
-    ESP_LOGE(kTag,
-             "[HTTP] start refused: missing TLS material (cert_present=%d key_present=%d) — "
-             "provision http/cert_pem and http/key_pem in NVS",
-             g_cfg.cert_pem[0] != '\0' ? 1 : 0, g_cfg.key_pem[0] != '\0' ? 1 : 0);
-    set_state(HttpState::kFailed, "tls_material_missing");
+  const luce::pki::Status pki_status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+  if (pki_status.read_error) {
+    ESP_LOGE(kTag, "[HTTP] start refused: PKI material read error");
+    set_state(HttpState::kFailed, "tls_material_read_error");
     return;
   }
 
-  const std::size_t cert_len = std::strlen(g_cfg.cert_pem) + 1;
-  const std::size_t key_len = std::strlen(g_cfg.key_pem) + 1;
+  if (pki_status.oversized) {
+    ESP_LOGE(kTag, "[HTTP] start refused: PKI material oversized");
+    set_state(HttpState::kFailed, "tls_material_oversized");
+    return;
+  }
+
+  if (!pki_status.key_present) {
+    ESP_LOGE(kTag, "[HTTP] start refused: missing local HTTPS PKI key; run pki.keygen https_server "
+                   "then pki.csr/sign/import");
+    set_state(HttpState::kFailed, "tls_key_missing");
+    return;
+  }
+
+  if (!pki_status.cert_present) {
+    ESP_LOGE(kTag, "[HTTP] start refused: missing signed HTTPS PKI certificate; export CSR and "
+                   "import cert with pki.cert.*");
+    set_state(HttpState::kFailed, "tls_cert_missing");
+    return;
+  }
+
+  if (pki_status.state != luce::pki::State::kActive) {
+    ESP_LOGE(kTag, "[HTTP] start refused: HTTPS PKI state=%s error=%s",
+             luce::pki::state_name(pki_status.state), pki_status.last_error);
+    set_state(HttpState::kFailed, pki_status.last_error);
+    return;
+  }
+
+  const char* const cert_pem = luce::pki::cert_pem_for_tls(luce::pki::Role::kHttpsServer);
+  const char* const key_pem = luce::pki::private_key_pem_for_tls(luce::pki::Role::kHttpsServer);
+  const std::size_t cert_len = std::strlen(cert_pem) + 1;
+  const std::size_t key_len = std::strlen(key_pem) + 1;
 
   httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
   conf.httpd.server_port = g_cfg.port;
   conf.httpd.max_uri_handlers = 16;
   conf.httpd.task_priority = 5;
   conf.httpd.stack_size = 8192;
-  conf.servercert = reinterpret_cast<const unsigned char*>(g_cfg.cert_pem);
+  conf.servercert = reinterpret_cast<const unsigned char*>(cert_pem);
   conf.servercert_len = cert_len;
-  conf.prvtkey_pem = reinterpret_cast<const unsigned char*>(g_cfg.key_pem);
+  conf.prvtkey_pem = reinterpret_cast<const unsigned char*>(key_pem);
   conf.prvtkey_len = key_len;
 
   const esp_err_t err = httpd_ssl_start(&g_httpd, &conf);
   if (err != ESP_OK) {
     ESP_LOGW(kTag, "[HTTP] start failed=%s", esp_err_to_name(err));
     g_httpd = nullptr;
+    g_tls_start_err = err;
+    set_state(HttpState::kFailed, "httpd_ssl_start_failed");
     return;
   }
+  g_tls_start_err = ESP_OK;
 
   for (std::size_t i = 0; i < kJsonApiRouteCount; ++i) {
     const RouteSpec& spec = kJsonApiRoutes[i];
@@ -858,7 +875,8 @@ void start_http_server() {
   }
   httpd_register_uri_handler(g_httpd, &g_uri_ws);
   ESP_LOGI(kTag, "[HTTP] started");
-  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, /api/ota/check, /api/leds/state, /api/leds/state/{0,1,2}, /ws");
+  ESP_LOGI(kTag, "[HTTP] route=/api/health, /api/info, /api/version, /api/state, /api/ota, "
+                 "/api/ota/check, /api/leds/state, /api/leds/state/{0,1,2}, /ws");
 }
 
 void start_captive_http_server() {
@@ -931,19 +949,13 @@ void http_loop(void*) {
   }
 }
 
-}  // namespace
+} // namespace
 
-const char* http_state_name() {
-  return http_state_name_impl();
-}
+const char* http_state_name() { return http_state_name_impl(); }
 
-bool http_is_enabled() {
-  return g_cfg.enabled;
-}
+bool http_is_enabled() { return g_cfg.enabled; }
 
-bool http_is_running() {
-  return g_httpd != nullptr || g_captive_httpd != nullptr;
-}
+bool http_is_running() { return g_httpd != nullptr || g_captive_httpd != nullptr; }
 
 void http_startup() {
   load_http_config();
@@ -956,44 +968,104 @@ void http_startup() {
 }
 
 void http_status_for_cli() {
-  ESP_LOGI(kTag, "http.status state=%s enabled=%d https_port=%u captive_port=%u", state_name(g_state), g_cfg.enabled ? 1 : 0,
-           g_cfg.port, static_cast<unsigned>(kCaptiveHttpPort));
-}
-
-bool http_tls_dev_mode() {
-  return g_cfg.tls_dev_mode;
-}
-
-bool http_tls_cert_present() {
-  return g_cfg.cert_pem[0] != '\0';
-}
-
-bool http_tls_key_present() {
-  return g_cfg.key_pem[0] != '\0';
+  ESP_LOGI(kTag,
+           "http.status state=%s enabled=%d https_running=%d https_port=%u captive_running=%d "
+           "captive_port=%u",
+           state_name(g_state), g_cfg.enabled ? 1 : 0, g_httpd != nullptr ? 1 : 0, g_cfg.port,
+           g_captive_httpd != nullptr ? 1 : 0, static_cast<unsigned>(kCaptiveHttpPort));
 }
 
 void http_tls_status_for_cli() {
-  const std::size_t cert_len = std::strlen(g_cfg.cert_pem);
-  const std::size_t key_len = std::strlen(g_cfg.key_pem);
-  const bool ready = (cert_len > 0 && key_len > 0);
+  const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+  const bool ready = (status.state == luce::pki::State::kActive);
   ESP_LOGI(kTag,
-           "tls.status mode=%s cert_present=%d cert_pem_bytes=%u key_present=%d "
-           "key_pem_bytes=%u http_state=%s ready=%d",
-           g_cfg.tls_dev_mode ? "dev" : "prod",
-           cert_len > 0 ? 1 : 0, static_cast<unsigned>(cert_len),
-           key_len > 0 ? 1 : 0, static_cast<unsigned>(key_len),
-           state_name(g_state), ready ? 1 : 0);
+           "tls.status workflow=csr key_alg=%s key_present=%d key_pem_bytes=%u "
+           "csr_ready=%d cert_present=%d cert_pem_bytes=%u http_state=%s "
+           "https_running=%d tls_state=%s last_error=%s start_err=%s ready=%d "
+           "fingerprint=%s subject='%s' issuer='%s'",
+           status.key_alg, status.key_present ? 1 : 0, static_cast<unsigned>(status.key_pem_bytes),
+           status.key_present ? 1 : 0, status.cert_present ? 1 : 0,
+           static_cast<unsigned>(status.cert_pem_bytes), state_name(g_state),
+           g_httpd != nullptr ? 1 : 0, tls_status_name(), status.last_error,
+           esp_err_to_name(g_tls_start_err), ready ? 1 : 0,
+           status.fingerprint[0] != '\0' ? status.fingerprint : "n/a",
+           status.subject[0] != '\0' ? status.subject : "n/a",
+           status.issuer[0] != '\0' ? status.issuer : "n/a");
+}
+
+esp_err_t http_tls_keygen_for_cli() {
+  const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+  if (status.key_present) {
+    ESP_LOGW(kTag, "tls.keygen refused: key already exists; run tls.reset to reprovision");
+    return ESP_ERR_INVALID_STATE;
+  }
+  const esp_err_t err = luce::pki::ensure_key(luce::pki::Role::kHttpsServer);
+  if (err == ESP_OK) {
+    ESP_LOGI(kTag, "tls.keygen generated local EC P-256 private key; export CSR with tls.csr");
+  }
+  return err;
+}
+
+esp_err_t http_tls_csr_for_cli() {
+  if (!luce::pki::has_key(luce::pki::Role::kHttpsServer)) {
+    ESP_LOGW(kTag, "tls.csr unavailable: key missing; run tls.keygen");
+    return ESP_ERR_INVALID_STATE;
+  }
+  char csr[kTlsCsrPemBufferSize] = {};
+  const esp_err_t err = luce::pki::export_csr(luce::pki::Role::kHttpsServer, csr, sizeof(csr));
+  if (err != ESP_OK) {
+    const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+    ESP_LOGE(kTag, "tls.csr failed: %s", status.last_error);
+    return err;
+  }
+  ESP_LOGI(kTag, "tls.csr begin");
+  char* line = std::strtok(csr, "\n");
+  while (line != nullptr) {
+    ESP_LOGI(kTag, "%s", line);
+    line = std::strtok(nullptr, "\n");
+  }
+  ESP_LOGI(kTag, "tls.csr end");
+  return ESP_OK;
+}
+
+esp_err_t http_tls_cert_begin_for_cli() {
+  const esp_err_t err = luce::pki::stage_cert_begin(luce::pki::Role::kHttpsServer);
+  if (err == ESP_OK) {
+    ESP_LOGI(kTag, "tls.cert.begin ok");
+  }
+  return err;
+}
+
+esp_err_t http_tls_cert_append_for_cli(const char* line) {
+  return luce::pki::stage_cert_append(luce::pki::Role::kHttpsServer, line);
+}
+
+esp_err_t http_tls_cert_commit_for_cli() {
+  const esp_err_t err = luce::pki::stage_cert_commit(luce::pki::Role::kHttpsServer);
+  if (err != ESP_OK) {
+    const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+    ESP_LOGE(kTag, "tls.cert.commit refused: %s", status.last_error);
+    return err;
+  }
+  const luce::pki::Status status = luce::pki::get_status(luce::pki::Role::kHttpsServer);
+  ESP_LOGI(kTag, "tls.cert.commit ok fingerprint=%s subject='%s'", status.fingerprint,
+           status.subject);
+  return ESP_OK;
+}
+
+esp_err_t http_tls_reset_for_cli() {
+  const esp_err_t err = luce::pki::reset(luce::pki::Role::kHttpsServer);
+  if (err == ESP_OK) {
+    ESP_LOGW(kTag, "tls.reset erased local key and certificate; reboot recommended");
+  }
+  return err;
 }
 
 #else
 
-bool http_is_enabled() {
-  return false;
-}
+bool http_is_enabled() { return false; }
 
-bool http_is_running() {
-  return false;
-}
+bool http_is_running() { return false; }
 
 void http_startup() {}
 void http_status_for_cli() {}

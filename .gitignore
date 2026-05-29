@@ -10,6 +10,13 @@
 *.o
 *.d
 
+# Python transient files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
 # PlatformIO
 .pio/
 .pioenvs/

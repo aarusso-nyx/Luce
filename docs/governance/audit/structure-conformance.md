@@ -9,7 +9,6 @@
 - docs/work/inv
 - docs/work/diag
 - docs/work/plan
-- docs/work/tooling
 
 ## Required areas checked
 
@@ -21,4 +20,4 @@
 
 ## Notes
 
-- `docs/work/tooling` is now canonicalized as an accepted work directory and included in this conformance result.
+- Scratch and investigation artifacts are limited to `docs/work/inv`, `docs/work/diag`, and `docs/work/plan`.

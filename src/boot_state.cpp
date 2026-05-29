@@ -9,125 +9,127 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "luce/nvs_helpers.h"
+
 #include <string>
 
 constexpr const char* kTag = "[BOOT]";
 
 const char* nvs_type_name(nvs_type_t type) {
   switch (type) {
-    case NVS_TYPE_U8:
-      return "U8";
-    case NVS_TYPE_I8:
-      return "I8";
-    case NVS_TYPE_U16:
-      return "U16";
-    case NVS_TYPE_I16:
-      return "I16";
-    case NVS_TYPE_U32:
-      return "U32";
-    case NVS_TYPE_I32:
-      return "I32";
-    case NVS_TYPE_U64:
-      return "U64";
-    case NVS_TYPE_I64:
-      return "I64";
-    case NVS_TYPE_STR:
-      return "STR";
-    case NVS_TYPE_BLOB:
-      return "BLOB";
-    default:
-      return "OTHER";
+  case NVS_TYPE_U8:
+    return "U8";
+  case NVS_TYPE_I8:
+    return "I8";
+  case NVS_TYPE_U16:
+    return "U16";
+  case NVS_TYPE_I16:
+    return "I16";
+  case NVS_TYPE_U32:
+    return "U32";
+  case NVS_TYPE_I32:
+    return "I32";
+  case NVS_TYPE_U64:
+    return "U64";
+  case NVS_TYPE_I64:
+    return "I64";
+  case NVS_TYPE_STR:
+    return "STR";
+  case NVS_TYPE_BLOB:
+    return "BLOB";
+  default:
+    return "OTHER";
   }
 }
 
 void dump_nvs_value(nvs_handle_t handle, const nvs_entry_info_t& info) {
   switch (info.type) {
-    case NVS_TYPE_U8: {
-      uint8_t v = 0;
-      if (nvs_get_u8(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (u8): %u", v);
-      }
-      break;
+  case NVS_TYPE_U8: {
+    uint8_t v = 0;
+    if (nvs_get_u8(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (u8): %u", v);
     }
-    case NVS_TYPE_I8: {
-      int8_t v = 0;
-      if (nvs_get_i8(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (i8): %d", v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_I8: {
+    int8_t v = 0;
+    if (nvs_get_i8(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (i8): %d", v);
     }
-    case NVS_TYPE_U16: {
-      uint16_t v = 0;
-      if (nvs_get_u16(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (u16): %u", v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_U16: {
+    uint16_t v = 0;
+    if (nvs_get_u16(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (u16): %u", v);
     }
-    case NVS_TYPE_I16: {
-      int16_t v = 0;
-      if (nvs_get_i16(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (i16): %d", v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_I16: {
+    int16_t v = 0;
+    if (nvs_get_i16(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (i16): %d", v);
     }
-    case NVS_TYPE_U32: {
-      uint32_t v = 0;
-      if (nvs_get_u32(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (u32): %lu", (unsigned long)v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_U32: {
+    uint32_t v = 0;
+    if (nvs_get_u32(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (u32): %lu", (unsigned long)v);
     }
-    case NVS_TYPE_I32: {
-      int32_t v = 0;
-      if (nvs_get_i32(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (i32): %ld", (long)v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_I32: {
+    int32_t v = 0;
+    if (nvs_get_i32(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (i32): %ld", (long)v);
     }
-    case NVS_TYPE_U64: {
-      uint64_t v = 0;
-      if (nvs_get_u64(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (u64): 0x%016" PRIx64, v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_U64: {
+    uint64_t v = 0;
+    if (nvs_get_u64(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (u64): 0x%016" PRIx64, v);
     }
-    case NVS_TYPE_I64: {
-      int64_t v = 0;
-      if (nvs_get_i64(handle, info.key, &v) == ESP_OK) {
-        ESP_LOGI(kTag, "    value (i64): %lld", (long long)v);
-      }
-      break;
+    break;
+  }
+  case NVS_TYPE_I64: {
+    int64_t v = 0;
+    if (nvs_get_i64(handle, info.key, &v) == ESP_OK) {
+      ESP_LOGI(kTag, "    value (i64): %lld", (long long)v);
     }
-    case NVS_TYPE_STR: {
-      size_t required = 0;
-      if (nvs_get_str(handle, info.key, nullptr, &required) == ESP_OK && required > 0) {
-        char str_val[129] = {0};
-        size_t capacity = required < sizeof(str_val) ? required : sizeof(str_val);
-        if (nvs_get_str(handle, info.key, str_val, &capacity) == ESP_OK) {
-          ESP_LOGI(kTag, "    value (str): %s", str_val);
+    break;
+  }
+  case NVS_TYPE_STR: {
+    size_t required = 0;
+    if (nvs_get_str(handle, info.key, nullptr, &required) == ESP_OK && required > 0) {
+      char str_val[129] = {0};
+      size_t capacity = required < sizeof(str_val) ? required : sizeof(str_val);
+      if (nvs_get_str(handle, info.key, str_val, &capacity) == ESP_OK) {
+        ESP_LOGI(kTag, "    value (str): %s", str_val);
+      }
+    }
+    break;
+  }
+  case NVS_TYPE_BLOB: {
+    size_t required = 0;
+    if (nvs_get_blob(handle, info.key, nullptr, &required) == ESP_OK && required > 0) {
+      size_t copy_size = required < 32 ? required : 32;
+      uint8_t data[32] = {0};
+      if (nvs_get_blob(handle, info.key, data, &copy_size) == ESP_OK && copy_size > 0) {
+        char blob_preview[33] = {0};
+        for (size_t i = 0; i < copy_size; ++i) {
+          std::snprintf(blob_preview + (i * 2), 3, "%02x", data[i]);
         }
+        ESP_LOGI(kTag, "    value (blob, %u bytes): %s%s", (unsigned)required, blob_preview,
+                 required > sizeof(data) ? "..." : "");
       }
-      break;
     }
-    case NVS_TYPE_BLOB: {
-      size_t required = 0;
-      if (nvs_get_blob(handle, info.key, nullptr, &required) == ESP_OK && required > 0) {
-        size_t copy_size = required < 32 ? required : 32;
-        uint8_t data[32] = {0};
-        if (nvs_get_blob(handle, info.key, data, &copy_size) == ESP_OK && copy_size > 0) {
-          char blob_preview[33] = {0};
-          for (size_t i = 0; i < copy_size; ++i) {
-            std::snprintf(blob_preview + (i * 2), 3, "%02x", data[i]);
-          }
-          ESP_LOGI(kTag, "    value (blob, %u bytes): %s%s", (unsigned)required, blob_preview,
-                   required > sizeof(data) ? "..." : "");
-        }
-      }
-      break;
-    }
-    default:
-      ESP_LOGW(kTag, "    value unsupported for type=%s", nvs_type_name(info.type));
-      break;
+    break;
+  }
+  default:
+    ESP_LOGW(kTag, "    value unsupported for type=%s", nvs_type_name(info.type));
+    break;
   }
 }
 
@@ -202,11 +204,11 @@ esp_err_t bump_boot_state_in_handle(nvs_handle_t handle, uint32_t* boot_count_ou
   boot_count += 1;
   const uint32_t reset_reason = static_cast<uint32_t>(esp_reset_reason());
 
-  ESP_RETURN_ON_ERROR(nvs_set_u32(handle, "boot_count", boot_count), kTag,
+  ESP_RETURN_ON_ERROR(luce::nvs::write_u32(handle, "boot_count", boot_count), kTag,
                       "NVS set boot_count");
-  ESP_RETURN_ON_ERROR(nvs_set_u32(handle, "last_reset_reason", reset_reason), kTag,
+  ESP_RETURN_ON_ERROR(luce::nvs::write_u32(handle, "last_reset_reason", reset_reason), kTag,
                       "NVS set last_reset_reason");
-  ESP_RETURN_ON_ERROR(nvs_commit(handle), kTag, "NVS commit");
+  ESP_RETURN_ON_ERROR(luce::nvs::commit(handle), kTag, "NVS commit");
 
   *boot_count_out = boot_count;
   *reset_reason_out = reset_reason;
@@ -241,8 +243,8 @@ void update_boot_state_record() {
   const esp_err_t inner = bump_boot_state_in_handle(handle, &boot_count, &reset_reason);
   nvs_close(handle);
   if (inner == ESP_OK) {
-    ESP_LOGI(kTag, "NVS state: boot_count=%lu last_reset_reason=%lu",
-             (unsigned long)boot_count, (unsigned long)reset_reason);
+    ESP_LOGI(kTag, "NVS state: boot_count=%lu last_reset_reason=%lu", (unsigned long)boot_count,
+             (unsigned long)reset_reason);
   }
   dump_nvs_entries();
 }

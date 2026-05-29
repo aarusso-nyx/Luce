@@ -84,7 +84,7 @@ Acceptance criteria:
 
 After each phase:
 - Run `scripts/luce.sh health`.
-- Run `scripts/luce.sh test --env net1 --duration 45` (with attached hardware).
+- Run `./scripts/luce.sh test --env net1 --boot-duration 45` (with attached hardware).
 - Run `scripts/luce.sh http-smoke --host <device> --token <token>` where HTTP is enabled.
 - Confirm artifacts exist under `docs/work/diag/<RUN_ID>/` and are self-describing.
 - Update `docs/user/testing.md` only if operator-facing behavior changes.

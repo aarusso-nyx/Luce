@@ -38,3 +38,9 @@ Date: 2026-02-23
 - Optional ADC:
   - `GPIO34`, `GPIO35`
 
+## Degraded Mode
+
+If the I2C bus initializes but the MCP23017 is missing or stops responding,
+firmware enters hardware-degraded mode. Relay/button authority is withheld, but
+Wi-Fi, TCP CLI, HTTPS, MQTT, OTA, logs, and status endpoints continue so the
+device can be diagnosed and reconfigured remotely.

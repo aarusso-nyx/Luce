@@ -15,7 +15,9 @@ def _json_headers(token: str | None = None) -> dict[str, str]:
     return headers
 
 
-def _captive_base_url(luce_host: str) -> str:
+def _captive_base_url(luce_host: str, luce_captive_host: str = "") -> str:
+    if luce_captive_host:
+        return luce_captive_host.rstrip("/")
     parsed = urlsplit(luce_host)
     host = parsed.hostname or "127.0.0.1"
     return f"http://{host}:80"
@@ -62,12 +64,37 @@ def test_info_payload_contract(http_requester, luce_host, luce_http_token):
         "uptimeMs",
         "uptime_s",
         "wifi_ip",
+        "http_enabled",
+        "http_port",
+        "http_state",
+        "https_running",
+        "tls_state",
+        "tls_status",
+        "tls_last_error",
+        "csr_ready",
+        "cert_present",
+        "key_present",
+        "cert_fingerprint",
+        "cert_subject",
+        "cert_issuer",
         "relays",
         "nightMask",
         "threshold",
         "network",
     }
     assert required_keys.issubset(set(payload.keys()))
+    assert isinstance(payload["http_enabled"], bool)
+    assert isinstance(payload["https_running"], bool)
+    assert isinstance(payload["csr_ready"], bool)
+    assert isinstance(payload["cert_present"], bool)
+    assert isinstance(payload["key_present"], bool)
+    assert isinstance(payload["http_state"], str)
+    assert isinstance(payload["tls_state"], str)
+    assert isinstance(payload["tls_status"], str)
+    assert isinstance(payload["tls_last_error"], str)
+    assert isinstance(payload["cert_fingerprint"], str)
+    assert isinstance(payload["cert_subject"], str)
+    assert isinstance(payload["cert_issuer"], str)
 
     network = payload["network"]
     assert {"ip", "wifiConnected", "mqttConnected", "ntpSynced"}.issubset(set(network.keys()))
@@ -223,13 +250,13 @@ def test_ota_periodic_cadence_when_configured(http_requester, luce_host, luce_ht
     before_payload = before.json()
 
     if not bool(before_payload.get("enabled", False)):
-        pytest.skip("OTA disabled")
+        pytest.fail("selected HTTP layer expected OTA periodic coverage but OTA is disabled")
 
     interval_s = int(before_payload.get("interval_s", 0))
     if interval_s <= 0:
-        pytest.skip("periodic OTA disabled by config (interval_s=0)")
+        pytest.fail("selected HTTP layer expected OTA periodic coverage but interval_s=0")
     if interval_s > 60:
-        pytest.skip(f"periodic OTA interval too long for contract run ({interval_s}s)")
+        pytest.fail(f"selected HTTP layer expected OTA periodic coverage but interval is too long ({interval_s}s)")
 
     before_checks = int(before_payload.get("checks", 0))
     deadline = time.monotonic() + interval_s + 8.0
@@ -290,8 +317,8 @@ def test_led_routes_and_validation(http_requester, luce_host, luce_http_token):
 
 @pytest.mark.contract
 @pytest.mark.net
-def test_captive_routes_and_spa_fallback(http_requester, luce_host):
-    captive = _captive_base_url(luce_host)
+def test_captive_routes_and_spa_fallback(http_requester, luce_host, luce_captive_host):
+    captive = _captive_base_url(luce_host, luce_captive_host)
 
     root = http_requester("GET", f"{captive}/", headers={"Accept": "text/html"})
     index = http_requester("GET", f"{captive}/index.html", headers={"Accept": "text/html"})

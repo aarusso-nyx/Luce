@@ -21,41 +21,41 @@ constexpr const char* kTag = "[BOOT]";
 
 const char* luce_reset_reason_to_string(esp_reset_reason_t reason) {
   switch (reason) {
-    case ESP_RST_POWERON:
-      return "POWERON";
-    case ESP_RST_EXT:
-      return "EXT";
-    case ESP_RST_SW:
-      return "SOFTWARE";
-    case ESP_RST_PANIC:
-      return "PANIC";
-    case ESP_RST_INT_WDT:
-      return "INT_WDT";
-    case ESP_RST_TASK_WDT:
-      return "TASK_WDT";
-    case ESP_RST_WDT:
-      return "WDT";
-    case ESP_RST_DEEPSLEEP:
-      return "DEEPSLEEP";
-    case ESP_RST_BROWNOUT:
-      return "BROWNOUT";
-    case ESP_RST_SDIO:
-      return "SDIO";
-    case ESP_RST_USB:
-      return "USB";
-    case ESP_RST_JTAG:
-      return "JTAG";
-    case ESP_RST_EFUSE:
-      return "EFUSE";
-    case ESP_RST_PWR_GLITCH:
-      return "POWER_GLITCH";
-    default:
-      return "UNKNOWN";
+  case ESP_RST_POWERON:
+    return "POWERON";
+  case ESP_RST_EXT:
+    return "EXT";
+  case ESP_RST_SW:
+    return "SOFTWARE";
+  case ESP_RST_PANIC:
+    return "PANIC";
+  case ESP_RST_INT_WDT:
+    return "INT_WDT";
+  case ESP_RST_TASK_WDT:
+    return "TASK_WDT";
+  case ESP_RST_WDT:
+    return "WDT";
+  case ESP_RST_DEEPSLEEP:
+    return "DEEPSLEEP";
+  case ESP_RST_BROWNOUT:
+    return "BROWNOUT";
+  case ESP_RST_SDIO:
+    return "SDIO";
+  case ESP_RST_USB:
+    return "USB";
+  case ESP_RST_JTAG:
+    return "JTAG";
+  case ESP_RST_EFUSE:
+    return "EFUSE";
+  case ESP_RST_PWR_GLITCH:
+    return "POWER_GLITCH";
+  default:
+    return "UNKNOWN";
   }
 }
 
 std::size_t luce_init_path_reset_reason_line(char* out, std::size_t out_size,
-                                            esp_reset_reason_t reason) {
+                                             esp_reset_reason_t reason) {
   return std::snprintf(out, out_size, "%s (%d)", luce_reset_reason_to_string(reason),
                        static_cast<int>(reason));
 }
@@ -82,8 +82,8 @@ void luce_log_startup_banner() {
 void luce_print_chip_info() {
   esp_chip_info_t chip_info;
   esp_chip_info(&chip_info);
-  ESP_LOGI(kTag, "Chip: model=%d revision=%d cores=%d", chip_info.model,
-           chip_info.revision, chip_info.cores);
+  ESP_LOGI(kTag, "Chip: model=%d revision=%d cores=%d", chip_info.model, chip_info.revision,
+           chip_info.cores);
   ESP_LOGI(kTag, "Features: %s%s%s%s%s", chip_info.features & CHIP_FEATURE_WIFI_BGN ? "WIFI " : "",
            chip_info.features & CHIP_FEATURE_BT ? "BT " : "",
            chip_info.features & CHIP_FEATURE_BLE ? "BLE " : "",
@@ -108,7 +108,8 @@ void luce_print_app_info() {
 
 void luce_print_partition_summary() {
   ESP_LOGI(kTag, "Partition map:");
-  esp_partition_iterator_t part_it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  esp_partition_iterator_t part_it =
+      esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
   if (!part_it) {
     ESP_LOGW(kTag, "  no partition table entries found");
     return;
@@ -118,7 +119,8 @@ void luce_print_partition_summary() {
     const esp_partition_t* partition = esp_partition_get(it);
     if (partition) {
       ESP_LOGI(kTag, "  type=%d subtype=%d label=%s offset=0x%08" PRIx32 " size=0x%08" PRIx32,
-               partition->type, partition->subtype, partition->label, partition->address, partition->size);
+               partition->type, partition->subtype, partition->label, partition->address,
+               partition->size);
     }
     it = esp_partition_next(it);
   }
@@ -126,15 +128,13 @@ void luce_print_partition_summary() {
 
 void luce_print_heap_stats() {
   ESP_LOGI(kTag, "Heap free: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-  ESP_LOGI(kTag, "Heap min-free: %u bytes",
-           heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+  ESP_LOGI(kTag, "Heap min-free: %u bytes", heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
   ESP_LOGI(kTag, "Task watermark (current): %u words", uxTaskGetStackHighWaterMark(nullptr));
 }
 
 void luce_print_feature_flags() {
-  ESP_LOGI(kTag,
-           "Feature flags: NVS=1 I2C=1 LCD=1 CLI=1 WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d", LUCE_HAS_WIFI,
-           LUCE_HAS_NTP, LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
+  ESP_LOGI(kTag, "Feature flags: NVS=1 I2C=1 LCD=1 CLI=1 WIFI=%d NTP=%d mDNS=%d MQTT=%d HTTP=%d",
+           LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
 }
 
 void luce_log_status_health() {
@@ -145,15 +145,13 @@ void luce_log_status_health() {
   luce_init_path_reset_reason_line(reason_line, sizeof(reason_line), esp_reset_reason());
   ESP_LOGI(kTag, "status: strategy=%s reset=%s uptime=%llus", LUCE_STRATEGY_NAME, reason_line,
            static_cast<long long>(esp_timer_get_time() / 1000000ULL));
-  ESP_LOGI(kTag, "status: heap_free=%u min_free=%u",
-           heap_caps_get_free_size(MALLOC_CAP_8BIT),
+  ESP_LOGI(kTag, "status: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
-  ESP_LOGI(kTag,
-           "status: feature i2c=1 lcd=1 cli=1 wifi=%d ntp=%d mdns=%d mqtt=%d http=%d", LUCE_HAS_WIFI,
-           LUCE_HAS_NTP, LUCE_HAS_MDNS,
-           LUCE_HAS_MQTT, LUCE_HAS_HTTP);
-  relay_mask = g_relay_mask;
-  button_mask = g_button_mask;
-  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d REL:0x%02X BTN:0x%02X", g_i2c_initialized ? 1 : 0,
-           g_mcp_available ? 1 : 0, relay_mask, button_mask);
+  ESP_LOGI(kTag, "status: feature i2c=1 lcd=1 cli=1 wifi=%d ntp=%d mdns=%d mqtt=%d http=%d",
+           LUCE_HAS_WIFI, LUCE_HAS_NTP, LUCE_HAS_MDNS, LUCE_HAS_MQTT, LUCE_HAS_HTTP);
+  relay_mask = io_relay_mask();
+  button_mask = io_button_mask();
+  ESP_LOGI(kTag, "status: i2c_init=%d mcp=%d hardware_degraded=%d REL:0x%02X BTN:0x%02X",
+           g_i2c_initialized ? 1 : 0, g_mcp_available ? 1 : 0, io_hardware_degraded() ? 1 : 0,
+           relay_mask, button_mask);
 }

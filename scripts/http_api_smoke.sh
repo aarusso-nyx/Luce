@@ -12,6 +12,10 @@ Smoke checks:
   - /api/ota            (GET)
   - /api/ota/check      (POST and PUT)
 
+TLS note:
+  - Uses curl -k so simulator/self-signed certs can be smoked. This verifies
+    endpoint availability, not certificate trust or hostname validity.
+
 Optional args:
   --host http://host   Base URL (default: https://127.0.0.1)
   --token TOKEN        Bearer token for protected endpoints
@@ -108,6 +112,7 @@ fi
 
 echo "smoke: host=${HOST}"
 echo "smoke: token=${TOKEN:+(set)}${TOKEN:+ }"
+echo "smoke: tls_verify=disabled (-k)"
 
 expect_status GET "/api/health" 200 -k "${AUTH_ARGS[@]}" -H "Accept: application/json"
 expect_status GET "/api/version" 200 -k "${AUTH_ARGS[@]}" -H "Accept: application/json"

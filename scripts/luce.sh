@@ -18,6 +18,7 @@ DRY_RUN=0
 VERBOSE=0
 
 declare -a PIO_CMD=()
+declare -a REMAINING_ARGS=()
 
 refresh_pio_path_from_zshrc() {
   local zsh_pio=""
@@ -27,7 +28,7 @@ refresh_pio_path_from_zshrc() {
   fi
 
   if command -v zsh >/dev/null 2>&1; then
-    zsh_pio="$(zsh -lc 'source ~/.zshrc >/dev/null 2>&1; command -v pio' 2>/dev/null | tr -d '\r' | xargs)"
+    zsh_pio="$(zsh -lc 'source ~/.zshrc >/dev/null 2>&1 || true; command -v pio || command -v platformio || true' 2>/dev/null | tr -d '\r' | xargs || true)"
   fi
 
   if [ -n "${zsh_pio}" ]; then
@@ -55,6 +56,7 @@ Global options:
   monitor               Open device monitor for selected env.
   collect               Upload + capture serial logs for selected env.
   lint                  Run static checks. Defaults to all envs when no --env.
+  test                  Run layered firmware/contract tests via scripts/test_layers.py.
   health                Run quick tooling + environment preflight checks.
   http-smoke            Run HTTP API smoke checks against a running device endpoint.
   clean                 Run PlatformIO clean for selected env(s) or all.
@@ -68,6 +70,8 @@ Common command examples:
   ./scripts/luce.sh collect --env net1 --tag boot --duration 120
   ./scripts/luce.sh http-smoke --host https://192.168.1.99 --token ABC123
   ./scripts/luce.sh lint --env net1 --min-severity medium
+  ./scripts/luce.sh test --env net1 --layers boot --boot-duration 45
+  ./scripts/luce.sh test --target wokwi --env net1 --layers build,boot,http,tcp,ws,mqtt --spawn-test-mqtt-broker
   ./scripts/luce.sh health --run-build
 EOF
 }
@@ -81,12 +85,14 @@ resolve_pio_cmd() {
     PATH="${PLATFORMIO_PENV_BIN}:${PATH}"
   fi
 
-  if command -v pio >/dev/null 2>&1; then
+  if command -v pio >/dev/null 2>&1 && pio --version >/dev/null 2>&1; then
     PIO_CMD=(pio)
+  elif command -v platformio >/dev/null 2>&1 && platformio --version >/dev/null 2>&1; then
+    PIO_CMD=(platformio)
   elif python3 -m platformio --version >/dev/null 2>&1; then
     PIO_CMD=(python3 -m platformio)
   else
-    echo "error: neither 'pio' nor 'python3 -m platformio' is available" >&2
+    echo "error: no working PlatformIO command found (tried 'pio', 'platformio', and 'python3 -m platformio')" >&2
     exit 1
   fi
 }
@@ -216,6 +222,15 @@ cmd_build() {
   local include_all=1
   while [ "${#}" -gt 0 ]; do
     case "${1}" in
+      --env)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --env requires a value" >&2
+          exit 1
+        fi
+        REQUESTED_ENV="${2:-}"
+        include_all=0
+        shift 2
+        ;;
       --all) include_all=1; shift ;;
       --help|-h)
         usage
@@ -260,6 +275,27 @@ cmd_build() {
 
 cmd_upload() {
   local env="${REQUESTED_ENV:-}"
+  while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+      --env)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --env requires a value" >&2
+          exit 1
+        fi
+        env="${2:-}"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "error: unknown upload option '${1}'" >&2
+        exit 1
+        ;;
+    esac
+  done
+
   if [ -z "${env}" ]; then
     env="$(default_env)"
   fi
@@ -281,6 +317,27 @@ cmd_upload() {
 
 cmd_monitor() {
   local env="${REQUESTED_ENV:-}"
+  while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+      --env)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --env requires a value" >&2
+          exit 1
+        fi
+        env="${2:-}"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "error: unknown monitor option '${1}'" >&2
+        exit 1
+        ;;
+    esac
+  done
+
   if [ -z "${env}" ]; then
     env="$(default_env)"
   fi
@@ -296,6 +353,7 @@ cmd_monitor() {
   out_dir="$(artifact_dir monitor "${env}")"
   log_file="${out_dir}/monitor_boot.txt"
 
+  mkdir -p "${out_dir}"
   echo "env=${env} port=${MONITOR_PORT}" | tee "${log_file}"
   if [ "${DRY_RUN}" -eq 1 ]; then
     echo "DRY RUN: skipped execution" | tee -a "${log_file}"
@@ -709,6 +767,72 @@ cmd_http_smoke() {
   echo "http-smoke: PASS"
 }
 
+cmd_test() {
+  local -a args=(
+    --diag-root "${DIAG_DIR}"
+    --run-id "${RUN_ID}"
+    --upload-port "${UPLOAD_PORT}"
+    --monitor-port "${MONITOR_PORT}"
+  )
+
+  if [ -n "${REQUESTED_ENV}" ]; then
+    args+=(--env "${REQUESTED_ENV}")
+  fi
+
+  while [ "${#}" -gt 0 ]; do
+    case "${1}" in
+      --env)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --env requires a value" >&2
+          exit 1
+        fi
+        args+=(--env "${2}")
+        shift 2
+        ;;
+      --duration)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --duration requires a value" >&2
+          exit 1
+        fi
+        args+=(--boot-duration "${2}")
+        shift 2
+        ;;
+      --upload-port)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --upload-port requires a value" >&2
+          exit 1
+        fi
+        args+=(--upload-port "${2}")
+        shift 2
+        ;;
+      --monitor-port)
+        if [ "${#}" -lt 2 ]; then
+          echo "error: --monitor-port requires a value" >&2
+          exit 1
+        fi
+        args+=(--monitor-port "${2}")
+        shift 2
+        ;;
+      --help|-h)
+        python3 "${SCRIPT_DIR}/test_layers.py" --help
+        exit 0
+        ;;
+      *)
+        args+=("${1}")
+        shift
+        ;;
+    esac
+  done
+
+  local out_dir
+  local log_file
+  out_dir="$(artifact_dir test)"
+  log_file="${out_dir}/test.txt"
+
+  run_and_capture "${log_file}" python3 "${SCRIPT_DIR}/test_layers.py" "${args[@]}"
+  echo "test: PASS"
+}
+
 parse_globals() {
   while [ "${#}" -gt 0 ]; do
     case "${1}" in
@@ -770,16 +894,7 @@ parse_globals() {
         ;;
     esac
   done
-}
-
-has_help_request() {
-  local arg
-  for arg in "$@"; do
-    if [ "${arg}" = "--help" ] || [ "${arg}" = "-h" ]; then
-      return 0
-    fi
-  done
-  return 1
+  REMAINING_ARGS=("$@")
 }
 
 main() {
@@ -794,20 +909,24 @@ main() {
   fi
 
   parse_globals "$@"
+  set -- "${REMAINING_ARGS[@]}"
+  if [ "${#}" -eq 0 ]; then
+    usage
+    exit 1
+  fi
   local cmd="$1"
   shift || true
-
-  if has_help_request "$@"; then
-    usage
-    exit 0
-  fi
 
   if [ ! -f "${PLATFORMIO_INI}" ]; then
     echo "error: missing platformio.ini at ${PLATFORMIO_INI}" >&2
     exit 1
   fi
 
-  resolve_pio_cmd
+  case "${cmd}" in
+    build|upload|monitor|collect|lint|health|clean|all)
+      resolve_pio_cmd
+      ;;
+  esac
 
   case "${cmd}" in
     build) cmd_build "$@" ;;
@@ -815,6 +934,7 @@ main() {
     monitor) cmd_monitor "$@" ;;
     collect) cmd_collect "$@" ;;
     lint) cmd_lint "$@" ;;
+    test) cmd_test "$@" ;;
     health) cmd_health "$@" ;;
     http-smoke) cmd_http_smoke "$@" ;;
     clean) cmd_clean "$@" ;;

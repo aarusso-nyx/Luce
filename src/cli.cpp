@@ -32,6 +32,8 @@
 #include "luce/i2c_io.h"
 #include "luce/net_wifi.h"
 #include "luce/ntp.h"
+#include "luce/pki.h"
+#include "luce/str_utils.h"
 #if LUCE_HAS_MDNS
 #include "luce/mdns.h"
 #endif
@@ -109,6 +111,13 @@ int cli_handle_wifi_status(int, char*[]);
 int cli_handle_wifi(int, char*[]);
 int cli_handle_wifi_scan(int, char*[]);
 int cli_handle_time_status(int, char*[]);
+int cli_handle_pki_status(int, char*[]);
+int cli_handle_pki_keygen(int, char*[]);
+int cli_handle_pki_csr(int, char*[]);
+int cli_handle_pki_cert_begin(int, char*[]);
+int cli_handle_pki_cert_append(int, char*[]);
+int cli_handle_pki_cert_commit(int, char*[]);
+int cli_handle_pki_reset(int, char*[]);
 #if LUCE_HAS_OTA
 int cli_handle_ota_status(int, char*[]);
 int cli_handle_ota_check(int, char*[]);
@@ -126,6 +135,12 @@ int cli_handle_mqtt_pubtest(int, char*[]);
 #if LUCE_HAS_HTTP
 int cli_handle_http_status(int, char*[]);
 int cli_handle_tls_status(int, char*[]);
+int cli_handle_tls_keygen(int, char*[]);
+int cli_handle_tls_csr(int, char*[]);
+int cli_handle_tls_cert_begin(int, char*[]);
+int cli_handle_tls_cert_append(int, char*[]);
+int cli_handle_tls_cert_commit(int, char*[]);
+int cli_handle_tls_reset(int, char*[]);
 #endif
 
 constexpr CliCommandInfo kCliCommands[] = {
@@ -140,7 +155,10 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"sensor", false, true, "sensor [<interval_s> <count>]", cli_handle_sensor},
     {"sensors", false, true, "sensors", cli_handle_sensors},
     {"set", true, false, "set <relay|mask|led> <ids>=<on|off>", cli_handle_set},
-    {"log", true, false, "log [show | buffer [<size>] | console [level|format] [<val>] | logfile [level|format] [<val>]]", cli_handle_log},
+    {"log", true, false,
+     "log [show | buffer [<size>] | console [level|format] [<val>] | logfile [level|format] "
+     "[<val>]]",
+     cli_handle_log},
     {"logpage", true, false, "logpage <next|prev|reset|show>", cli_handle_logpage},
     {"test", true, false, "test", cli_handle_test},
     {"reset", true, false, "reset", cli_handle_reset},
@@ -152,7 +170,8 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"mcp_read", false, true, "mcp_read <gpioa|gpiob>", cli_handle_mcp_read},
     {"relay_set", true, false, "relay_set <0..7> <0|1>", cli_handle_relay_set},
     {"relay_mask", true, false, "relay_mask <hex>", cli_handle_relay_mask},
-    {"led_set", true, false, "led_set <0..2> <auto|off|on|blink|fast|slow|flash>", cli_handle_led_set},
+    {"led_set", true, false, "led_set <0..2> <auto|off|on|blink|fast|slow|flash>",
+     cli_handle_led_set},
     {"led_clear", true, false, "led_clear <0..2|all>", cli_handle_led_clear},
     {"led_status", false, true, "led_status", cli_handle_led_status},
     {"buttons", false, true, "buttons", cli_handle_buttons},
@@ -162,6 +181,14 @@ constexpr CliCommandInfo kCliCommands[] = {
     {"wifi.status", false, true, "wifi.status", cli_handle_wifi_status},
     {"wifi.scan", false, true, "wifi.scan", cli_handle_wifi_scan},
     {"time.status", false, true, "time.status", cli_handle_time_status},
+    {"pki.status", false, true, "pki.status [role]", cli_handle_pki_status},
+    {"pki.keygen", true, false, "pki.keygen <role>", cli_handle_pki_keygen},
+    {"pki.csr", false, false, "pki.csr <role>", cli_handle_pki_csr},
+    {"pki.cert.begin", true, false, "pki.cert.begin <role>", cli_handle_pki_cert_begin},
+    {"pki.cert.append", true, false, "pki.cert.append <role> <pem-line>",
+     cli_handle_pki_cert_append},
+    {"pki.cert.commit", true, false, "pki.cert.commit <role>", cli_handle_pki_cert_commit},
+    {"pki.reset", true, false, "pki.reset <role>", cli_handle_pki_reset},
 #if LUCE_HAS_MDNS
     {"mdns.status", false, true, "mdns.status", cli_handle_mdns_status},
 #endif
@@ -175,6 +202,12 @@ constexpr CliCommandInfo kCliCommands[] = {
 #if LUCE_HAS_HTTP
     {"http.status", false, true, "http.status", cli_handle_http_status},
     {"tls.status", false, true, "tls.status", cli_handle_tls_status},
+    {"tls.keygen", true, false, "tls.keygen", cli_handle_tls_keygen},
+    {"tls.csr", false, false, "tls.csr", cli_handle_tls_csr},
+    {"tls.cert.begin", true, false, "tls.cert.begin", cli_handle_tls_cert_begin},
+    {"tls.cert.append", true, false, "tls.cert.append <pem-line>", cli_handle_tls_cert_append},
+    {"tls.cert.commit", true, false, "tls.cert.commit", cli_handle_tls_cert_commit},
+    {"tls.reset", true, false, "tls.reset", cli_handle_tls_reset},
 #endif
 #if LUCE_HAS_OTA
     {"ota.status", false, true, "ota.status", cli_handle_ota_status},
@@ -222,7 +255,8 @@ void log_cli_arguments(const char* command, int argc, char* argv[]) {
   }
 }
 
-bool parse_u32_with_base(const char* text, int base, std::uint32_t* value, char* token_context = nullptr) {
+bool parse_u32_with_base(const char* text, int base, std::uint32_t* value,
+                         char* token_context = nullptr) {
   if (!text || !*text || !value) {
     return false;
   }
@@ -231,15 +265,7 @@ bool parse_u32_with_base(const char* text, int base, std::uint32_t* value, char*
     token_context[31] = '\0';
   }
 
-  errno = 0;
-  char* end = nullptr;
-  const unsigned long long parsed = std::strtoull(text, &end, base);
-  if (errno != 0 || end == text || *end != '\0' || parsed > 0xFFFFFFFFULL) {
-    return false;
-  }
-
-  *value = static_cast<std::uint32_t>(parsed);
-  return true;
+  return luce::str::parse_u32_token(text, value, base);
 }
 
 void append_argv_tokens(int argc, char* argv[], int start, char* out, std::size_t out_size) {
@@ -294,149 +320,102 @@ bool cli_command_is_readonly(const char* command) {
 
 const char* reset_reason_name(esp_reset_reason_t reason) {
   switch (reason) {
-    case ESP_RST_UNKNOWN:
-      return "UNKNOWN";
-    case ESP_RST_POWERON:
-      return "POWERON";
-    case ESP_RST_EXT:
-      return "EXT";
-    case ESP_RST_SW:
-      return "SW";
-    case ESP_RST_PANIC:
-      return "PANIC";
-    case ESP_RST_INT_WDT:
-      return "INT_WDT";
-    case ESP_RST_TASK_WDT:
-      return "TASK_WDT";
-    case ESP_RST_WDT:
-      return "WDT";
-    case ESP_RST_DEEPSLEEP:
-      return "DEEPSLEEP";
-    case ESP_RST_BROWNOUT:
-      return "BROWNOUT";
-    case ESP_RST_SDIO:
-      return "SDIO";
-    case ESP_RST_USB:
-      return "USB";
-    case ESP_RST_JTAG:
-      return "JTAG";
-    case ESP_RST_EFUSE:
-      return "EFUSE";
-    case ESP_RST_PWR_GLITCH:
-      return "POWER_GLITCH";
-    default:
-      return "OTHER";
+  case ESP_RST_UNKNOWN:
+    return "UNKNOWN";
+  case ESP_RST_POWERON:
+    return "POWERON";
+  case ESP_RST_EXT:
+    return "EXT";
+  case ESP_RST_SW:
+    return "SW";
+  case ESP_RST_PANIC:
+    return "PANIC";
+  case ESP_RST_INT_WDT:
+    return "INT_WDT";
+  case ESP_RST_TASK_WDT:
+    return "TASK_WDT";
+  case ESP_RST_WDT:
+    return "WDT";
+  case ESP_RST_DEEPSLEEP:
+    return "DEEPSLEEP";
+  case ESP_RST_BROWNOUT:
+    return "BROWNOUT";
+  case ESP_RST_SDIO:
+    return "SDIO";
+  case ESP_RST_USB:
+    return "USB";
+  case ESP_RST_JTAG:
+    return "JTAG";
+  case ESP_RST_EFUSE:
+    return "EFUSE";
+  case ESP_RST_PWR_GLITCH:
+    return "POWER_GLITCH";
+  default:
+    return "OTHER";
   }
 }
 
 const char* wakeup_reason_name(esp_sleep_wakeup_cause_t reason) {
   switch (reason) {
-    case ESP_SLEEP_WAKEUP_UNDEFINED:
-      return "UNDEFINED";
-    case ESP_SLEEP_WAKEUP_ALL:
-      return "ALL";
-    case ESP_SLEEP_WAKEUP_EXT0:
-      return "EXT0";
-    case ESP_SLEEP_WAKEUP_EXT1:
-      return "EXT1";
-    case ESP_SLEEP_WAKEUP_TIMER:
-      return "TIMER";
-    case ESP_SLEEP_WAKEUP_TOUCHPAD:
-      return "TOUCHPAD";
-    case ESP_SLEEP_WAKEUP_ULP:
-      return "ULP";
-    case ESP_SLEEP_WAKEUP_GPIO:
-      return "GPIO";
-    case ESP_SLEEP_WAKEUP_UART:
-      return "UART";
-    case ESP_SLEEP_WAKEUP_WIFI:
-      return "WIFI";
-    case ESP_SLEEP_WAKEUP_COCPU:
-      return "COCPU";
-    case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG:
-      return "COCPU_TRAP";
-    case ESP_SLEEP_WAKEUP_BT:
-      return "BT";
-    default:
-      return "UNKNOWN";
+  case ESP_SLEEP_WAKEUP_UNDEFINED:
+    return "UNDEFINED";
+  case ESP_SLEEP_WAKEUP_ALL:
+    return "ALL";
+  case ESP_SLEEP_WAKEUP_EXT0:
+    return "EXT0";
+  case ESP_SLEEP_WAKEUP_EXT1:
+    return "EXT1";
+  case ESP_SLEEP_WAKEUP_TIMER:
+    return "TIMER";
+  case ESP_SLEEP_WAKEUP_TOUCHPAD:
+    return "TOUCHPAD";
+  case ESP_SLEEP_WAKEUP_ULP:
+    return "ULP";
+  case ESP_SLEEP_WAKEUP_GPIO:
+    return "GPIO";
+  case ESP_SLEEP_WAKEUP_UART:
+    return "UART";
+  case ESP_SLEEP_WAKEUP_WIFI:
+    return "WIFI";
+  case ESP_SLEEP_WAKEUP_COCPU:
+    return "COCPU";
+  case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG:
+    return "COCPU_TRAP";
+  case ESP_SLEEP_WAKEUP_BT:
+    return "BT";
+  default:
+    return "UNKNOWN";
   }
 }
 
 bool parse_bool_value(const char* token, bool* out_value) {
-  if (!token || !out_value) {
-    return false;
-  }
-  if (std::strcmp(token, "1") == 0 || strcasecmp(token, "on") == 0 ||
-      strcasecmp(token, "true") == 0 || strcasecmp(token, "yes") == 0) {
-    *out_value = true;
-    return true;
-  }
-  if (std::strcmp(token, "0") == 0 || strcasecmp(token, "off") == 0 ||
-      strcasecmp(token, "false") == 0 || strcasecmp(token, "no") == 0) {
-    *out_value = false;
-    return true;
-  }
-  return false;
+  return luce::str::parse_bool_token(token, out_value);
 }
 
-bool parse_onoff(const char* token, bool* value) {
-  return parse_bool_value(token, value);
-}
+bool parse_onoff(const char* token, bool* value) { return parse_bool_value(token, value); }
 
-bool parse_led_manual_mode_token(const char* token, LedManualMode* mode) {
-  if (!token || !mode) {
-    return false;
+int log_set_id_error(const char* kind, luce::parse::IdSetError result,
+                     const luce::parse::IdSetIssue& issue, std::uint32_t min_id,
+                     std::uint32_t max_id) {
+  switch (result) {
+  case luce::parse::IdSetError::kOk:
+    return 0;
+  case luce::parse::IdSetError::kEmpty:
+    ESP_LOGW(kTag, "CLI command set: no %s ids selected", kind);
+    return 1;
+  case luce::parse::IdSetError::kInvalidToken:
+    ESP_LOGW(kTag, "CLI command set: invalid %s token '%s'", kind, issue.token);
+    return 1;
+  case luce::parse::IdSetError::kInvalidRange:
+    ESP_LOGW(kTag, "CLI command set: invalid %s range '%s'", kind, issue.token);
+    return 1;
+  case luce::parse::IdSetError::kOutOfRange:
+    ESP_LOGW(kTag, "CLI command set: invalid %s id %lu (expected %lu..%lu)", kind,
+             static_cast<unsigned long>(issue.bad_id), static_cast<unsigned long>(min_id),
+             static_cast<unsigned long>(max_id));
+    return 1;
   }
-  if (strcasecmp(token, "auto") == 0) {
-    *mode = LedManualMode::kAuto;
-    return true;
-  }
-  if (strcasecmp(token, "off") == 0 || std::strcmp(token, "0") == 0) {
-    *mode = LedManualMode::kOff;
-    return true;
-  }
-  if (strcasecmp(token, "on") == 0 || std::strcmp(token, "1") == 0) {
-    *mode = LedManualMode::kOn;
-    return true;
-  }
-  if (strcasecmp(token, "blink") == 0 || strcasecmp(token, "normal") == 0) {
-    *mode = LedManualMode::kBlinkNormal;
-    return true;
-  }
-  if (strcasecmp(token, "fast") == 0) {
-    *mode = LedManualMode::kBlinkFast;
-    return true;
-  }
-  if (strcasecmp(token, "slow") == 0) {
-    *mode = LedManualMode::kBlinkSlow;
-    return true;
-  }
-  if (strcasecmp(token, "flash") == 0) {
-    *mode = LedManualMode::kFlash;
-    return true;
-  }
-  return false;
-}
-
-const char* led_manual_mode_name(LedManualMode mode) {
-  switch (mode) {
-    case LedManualMode::kAuto:
-      return "auto";
-    case LedManualMode::kOff:
-      return "off";
-    case LedManualMode::kOn:
-      return "on";
-    case LedManualMode::kBlinkNormal:
-      return "blink";
-    case LedManualMode::kBlinkFast:
-      return "fast";
-    case LedManualMode::kBlinkSlow:
-      return "slow";
-    case LedManualMode::kFlash:
-      return "flash";
-    default:
-      return "auto";
-  }
+  return 1;
 }
 
 int cli_handle_help(int, char*[]) {
@@ -470,8 +449,9 @@ int cli_handle_uptime(int, char*[]) {
 int cli_handle_wakeup(int, char*[]) {
   const esp_reset_reason_t reset_reason = esp_reset_reason();
   const esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  ESP_LOGI(kTag, "CLI command wakeup: reset=%s (0x%x) wakeup=%s (0x%x)", reset_reason_name(reset_reason),
-           static_cast<unsigned>(reset_reason), wakeup_reason_name(wakeup_reason), static_cast<unsigned>(wakeup_reason));
+  ESP_LOGI(kTag, "CLI command wakeup: reset=%s (0x%x) wakeup=%s (0x%x)",
+           reset_reason_name(reset_reason), static_cast<unsigned>(reset_reason),
+           wakeup_reason_name(wakeup_reason), static_cast<unsigned>(wakeup_reason));
   return 0;
 }
 
@@ -492,7 +472,9 @@ int cli_handle_state(int, char*[]) {
 
 int cli_handle_sensor(int argc, char* argv[]) {
   if (argc > 1 && (std::strcmp(argv[1], "-h") == 0 || std::strcmp(argv[1], "--help") == 0)) {
-    ESP_LOGI(kTag, "CLI command sensor: reads [interval_s] [count], no interval polling in this firmware");
+    ESP_LOGI(
+        kTag,
+        "CLI command sensor: reads [interval_s] [count], no interval polling in this firmware");
     return 0;
   }
 
@@ -531,9 +513,7 @@ int cli_handle_sensor(int argc, char* argv[]) {
   return 0;
 }
 
-int cli_handle_sensors(int, char*[]) {
-  return cli_handle_sensor(1, nullptr);
-}
+int cli_handle_sensors(int, char*[]) { return cli_handle_sensor(1, nullptr); }
 
 int cli_handle_nvs_dump(int, char*[]) {
   cli_cmd_nvs_dump();
@@ -571,7 +551,8 @@ int cli_handle_relay_set(int argc, char* argv[]) {
   const bool ok1 = parse_u32_with_base(argv[1], 10, &channel, channel_text);
   const bool ok2 = parse_u32_with_base(argv[2], 10, &value, value_text);
   if (!ok1 || !ok2 || value > 1 || channel > 7) {
-    ESP_LOGW(kTag, "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)", channel_text, value_text);
+    ESP_LOGW(kTag, "CLI command relay_set: parse error or out-of-range (channel=%s value=%s)",
+             channel_text, value_text);
     return 1;
   }
   cli_cmd_relay_set(static_cast<int>(channel), static_cast<int>(value));
@@ -615,10 +596,12 @@ int cli_handle_led_set(int argc, char* argv[]) {
     return 1;
   }
   if (!led_status_set_manual_mode(static_cast<std::uint8_t>(index), mode)) {
-    ESP_LOGW(kTag, "CLI command led_set: failed to apply index=%lu", static_cast<unsigned long>(index));
+    ESP_LOGW(kTag, "CLI command led_set: failed to apply index=%lu",
+             static_cast<unsigned long>(index));
     return 1;
   }
-  ESP_LOGI(kTag, "CLI command led_set: led[%lu]=%s", static_cast<unsigned long>(index), led_manual_mode_name(mode));
+  ESP_LOGI(kTag, "CLI command led_set: led[%lu]=%s", static_cast<unsigned long>(index),
+           led_manual_mode_name(mode));
   return 0;
 }
 
@@ -639,10 +622,12 @@ int cli_handle_led_clear(int argc, char* argv[]) {
     return 1;
   }
   if (!led_status_clear_manual(static_cast<std::uint8_t>(index))) {
-    ESP_LOGW(kTag, "CLI command led_clear: failed to clear index=%lu", static_cast<unsigned long>(index));
+    ESP_LOGW(kTag, "CLI command led_clear: failed to clear index=%lu",
+             static_cast<unsigned long>(index));
     return 1;
   }
-  ESP_LOGI(kTag, "CLI command led_clear: led[%lu] manual override cleared", static_cast<unsigned long>(index));
+  ESP_LOGI(kTag, "CLI command led_clear: led[%lu] manual override cleared",
+           static_cast<unsigned long>(index));
   return 0;
 }
 
@@ -651,7 +636,8 @@ int cli_handle_led_status(int, char*[]) {
   const std::uint8_t enabled = led_status_manual_enabled_mask();
   const std::uint8_t manual = led_status_manual_value_mask();
   ESP_LOGI(kTag, "CLI command led_status: state=0x%02X manual_enabled=0x%02X manual_value=0x%02X",
-           static_cast<unsigned>(state), static_cast<unsigned>(enabled), static_cast<unsigned>(manual));
+           static_cast<unsigned>(state), static_cast<unsigned>(enabled),
+           static_cast<unsigned>(manual));
   ESP_LOGI(kTag, "CLI command led_status: led0=%s led1=%s led2=%s",
            led_manual_mode_name(led_status_manual_mode(0)),
            led_manual_mode_name(led_status_manual_mode(1)),
@@ -692,8 +678,9 @@ int cli_handle_set(int argc, char* argv[]) {
     ESP_LOGW(kTag, "CLI command set: invalid target '%s'", mode);
     return 1;
   }
+  const char* const eq = std::strchr(spec, '=');
+  const std::size_t eq_pos = static_cast<std::size_t>(eq - spec);
   if (target_is_led) {
-    const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
     const std::string ids(spec, eq_pos);
     const std::string value_str(spec + eq_pos + 1);
     LedManualMode led_mode = LedManualMode::kAuto;
@@ -707,43 +694,25 @@ int cli_handle_set(int argc, char* argv[]) {
     }
 
     std::uint16_t applied = 0;
-    luce::parse::IdSetIssue issue {};
+    luce::parse::IdSetIssue issue{};
     const auto result = luce::parse::parse_id_set(
         ids.c_str(), /*min_id=*/0, /*max_id=*/2, /*allow_all=*/true, &applied,
         [&](std::uint32_t id) {
           (void)led_status_set_manual_mode(static_cast<std::uint8_t>(id), led_mode);
         },
         &issue);
-    switch (result) {
-      case luce::parse::IdSetError::kOk:
-        break;
-      case luce::parse::IdSetError::kEmpty:
-        ESP_LOGW(kTag, "CLI command set: no led ids selected");
-        return 1;
-      case luce::parse::IdSetError::kInvalidToken:
-        ESP_LOGW(kTag, "CLI command set: invalid led token '%s'", issue.token);
-        return 1;
-      case luce::parse::IdSetError::kInvalidRange:
-        ESP_LOGW(kTag, "CLI command set: invalid led range '%s'", issue.token);
-        return 1;
-      case luce::parse::IdSetError::kOutOfRange:
-        ESP_LOGW(kTag, "CLI command set: invalid led id %lu (expected 0..2)",
-                 static_cast<unsigned long>(issue.bad_id));
-        return 1;
+    if (result != luce::parse::IdSetError::kOk) {
+      return log_set_id_error("led", result, issue, 0, 2);
     }
     if (applied == 0) {
       ESP_LOGW(kTag, "CLI command set: no led ids selected");
       return 1;
     }
-    ESP_LOGI(kTag, "CLI command set: led=%s applied=%u", led_manual_mode_name(led_mode), static_cast<unsigned>(applied));
+    ESP_LOGI(kTag, "CLI command set: led=%s applied=%u", led_manual_mode_name(led_mode),
+             static_cast<unsigned>(applied));
     return 0;
   }
 
-  const std::size_t eq_pos = static_cast<std::size_t>(std::strchr(spec, '=') - spec);
-  if (eq_pos == std::string::npos) {
-    ESP_LOGW(kTag, "CLI command set usage: set <relay|mask|led> <ids>=<on|off>");
-    return 1;
-  }
   const std::string ids(spec, eq_pos);
   const std::string value_str(spec + eq_pos + 1);
   bool value = false;
@@ -757,9 +726,9 @@ int cli_handle_set(int argc, char* argv[]) {
     return 1;
   }
 
-  std::uint8_t next_mask = g_relay_mask;
+  std::uint8_t next_mask = io_relay_mask();
   std::uint16_t applied = 0;
-  luce::parse::IdSetIssue issue {};
+  luce::parse::IdSetIssue issue{};
   const auto result = luce::parse::parse_id_set(
       ids.c_str(), /*min_id=*/1, /*max_id=*/8, /*allow_all=*/false, &applied,
       [&](std::uint32_t ch1) {
@@ -767,22 +736,8 @@ int cli_handle_set(int argc, char* argv[]) {
         next_mask = relay_mask_for_channel_state(static_cast<int>(next_channel), value, next_mask);
       },
       &issue);
-  switch (result) {
-    case luce::parse::IdSetError::kOk:
-      break;
-    case luce::parse::IdSetError::kEmpty:
-      ESP_LOGW(kTag, "CLI command set: no channels selected");
-      return 1;
-    case luce::parse::IdSetError::kInvalidToken:
-      ESP_LOGW(kTag, "CLI command set: invalid id token '%s'", issue.token);
-      return 1;
-    case luce::parse::IdSetError::kInvalidRange:
-      ESP_LOGW(kTag, "CLI command set: invalid range token '%s'", issue.token);
-      return 1;
-    case luce::parse::IdSetError::kOutOfRange:
-      ESP_LOGW(kTag, "CLI command set: invalid relay id %lu",
-               static_cast<unsigned long>(issue.bad_id));
-      return 1;
+  if (result != luce::parse::IdSetError::kOk) {
+    return log_set_id_error("relay", result, issue, 1, 8);
   }
 
   if (applied == 0) {
@@ -792,7 +747,6 @@ int cli_handle_set(int argc, char* argv[]) {
 
   const esp_err_t err = set_relay_mask_safe(next_mask);
   if (err == ESP_OK) {
-    g_relay_mask = next_mask;
     ESP_LOGI(kTag, "CLI command set: %s=%s mask=0x%02X", target_is_mask ? "mask" : "relay",
              value ? "on" : "off", next_mask);
     return 0;
@@ -910,10 +864,7 @@ int cli_handle_wifi_status(int, char*[]) {
   return 0;
 }
 
-int cli_handle_wifi(int, char*[]) {
-  wifi_status_for_cli();
-  return 0;
-}
+int cli_handle_wifi(int argc, char* argv[]) { return cli_handle_wifi_status(argc, argv); }
 
 int cli_handle_wifi_scan(int, char*[]) {
   wifi_scan_for_cli();
@@ -923,6 +874,130 @@ int cli_handle_wifi_scan(int, char*[]) {
 int cli_handle_time_status(int, char*[]) {
   ntp_status_for_cli();
   return 0;
+}
+
+bool parse_pki_role_arg(const char* token, luce::pki::Role* out_role) {
+  bool ok = false;
+  const luce::pki::Role role = luce::pki::role_from_token(token, &ok);
+  if (!ok || out_role == nullptr) {
+    ESP_LOGW(kTag,
+             "CLI command pki: invalid role '%s' (expected https_server|mqtt_client|ota_client)",
+             token ? token : "(null)");
+    return false;
+  }
+  *out_role = role;
+  return true;
+}
+
+void print_pki_status(luce::pki::Role role) {
+  const luce::pki::Status status = luce::pki::get_status(role);
+  ESP_LOGI(kTag,
+           "pki.status role=%s state=%s key_alg=%s key_present=%d key_pem_bytes=%u "
+           "csr_ready=%d staged=%d cert_present=%d cert_pem_bytes=%u last_error=%s "
+           "fingerprint=%s subject='%s' issuer='%s'",
+           status.role, luce::pki::state_name(status.state), status.key_alg,
+           status.key_present ? 1 : 0, static_cast<unsigned>(status.key_pem_bytes),
+           status.key_present ? 1 : 0, status.staged_present ? 1 : 0, status.cert_present ? 1 : 0,
+           static_cast<unsigned>(status.cert_pem_bytes), status.last_error,
+           status.fingerprint[0] != '\0' ? status.fingerprint : "n/a",
+           status.subject[0] != '\0' ? status.subject : "n/a",
+           status.issuer[0] != '\0' ? status.issuer : "n/a");
+}
+
+int cli_handle_pki_status(int argc, char* argv[]) {
+  if (argc == 1) {
+    print_pki_status(luce::pki::Role::kHttpsServer);
+    print_pki_status(luce::pki::Role::kMqttClient);
+    print_pki_status(luce::pki::Role::kOtaClient);
+    return 0;
+  }
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.status usage: pki.status [role]");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  if (!parse_pki_role_arg(argv[1], &role)) {
+    return 1;
+  }
+  print_pki_status(role);
+  return 0;
+}
+
+int cli_handle_pki_keygen(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.keygen usage: pki.keygen <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::ensure_key(role) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_csr(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.csr usage: pki.csr <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  if (!parse_pki_role_arg(argv[1], &role)) {
+    return 1;
+  }
+  char csr[1536] = {};
+  const esp_err_t err = luce::pki::export_csr(role, csr, sizeof(csr));
+  if (err != ESP_OK) {
+    const luce::pki::Status status = luce::pki::get_status(role);
+    ESP_LOGE(kTag, "pki.csr failed role=%s error=%s", luce::pki::role_name(role),
+             status.last_error);
+    return 1;
+  }
+  ESP_LOGI(kTag, "pki.csr role=%s begin", luce::pki::role_name(role));
+  char* line = std::strtok(csr, "\n");
+  while (line != nullptr) {
+    ESP_LOGI(kTag, "%s", line);
+    line = std::strtok(nullptr, "\n");
+  }
+  ESP_LOGI(kTag, "pki.csr role=%s end", luce::pki::role_name(role));
+  return 0;
+}
+
+int cli_handle_pki_cert_begin(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.cert.begin usage: pki.cert.begin <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::stage_cert_begin(role) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_cert_append(int argc, char* argv[]) {
+  if (argc < 3) {
+    ESP_LOGW(kTag, "CLI command pki.cert.append usage: pki.cert.append <role> <pem-line>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  if (!parse_pki_role_arg(argv[1], &role)) {
+    return 1;
+  }
+  char line[kCliLineBuffer] = {};
+  append_argv_tokens(argc, argv, 2, line, sizeof(line));
+  return luce::pki::stage_cert_append(role, line) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_cert_commit(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.cert.commit usage: pki.cert.commit <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::stage_cert_commit(role) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_pki_reset(int argc, char* argv[]) {
+  if (argc != 2) {
+    ESP_LOGW(kTag, "CLI command pki.reset usage: pki.reset <role>");
+    return 1;
+  }
+  luce::pki::Role role = luce::pki::Role::kHttpsServer;
+  return parse_pki_role_arg(argv[1], &role) && luce::pki::reset(role) == ESP_OK ? 0 : 1;
 }
 
 #if LUCE_HAS_OTA
@@ -981,11 +1056,33 @@ int cli_handle_tls_status(int, char*[]) {
   http_tls_status_for_cli();
   return 0;
 }
+
+int cli_handle_tls_keygen(int, char*[]) { return http_tls_keygen_for_cli() == ESP_OK ? 0 : 1; }
+
+int cli_handle_tls_csr(int, char*[]) { return http_tls_csr_for_cli() == ESP_OK ? 0 : 1; }
+
+int cli_handle_tls_cert_begin(int, char*[]) {
+  return http_tls_cert_begin_for_cli() == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_cert_append(int argc, char* argv[]) {
+  if (argc < 2) {
+    ESP_LOGW(kTag, "CLI command tls.cert.append usage: tls.cert.append <pem-line>");
+    return 1;
+  }
+  char line[kCliLineBuffer] = {};
+  append_argv_tokens(argc, argv, 1, line, sizeof(line));
+  return http_tls_cert_append_for_cli(line) == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_cert_commit(int, char*[]) {
+  return http_tls_cert_commit_for_cli() == ESP_OK ? 0 : 1;
+}
+
+int cli_handle_tls_reset(int, char*[]) { return http_tls_reset_for_cli() == ESP_OK ? 0 : 1; }
 #endif
 
-void cli_cmd_status() {
-  luce_log_status_health();
-}
+void cli_cmd_status() { luce_log_status_health(); }
 
 void cli_cmd_uptime() {
   const std::uint64_t uptime_s = esp_timer_get_time() / 1000000ULL;
@@ -998,12 +1095,12 @@ void cli_cmd_uptime() {
   char date_line[40] = "n/a";
   if (tm_utc != nullptr) {
     std::snprintf(date_line, sizeof(date_line), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                  tm_utc->tm_year + 1900, tm_utc->tm_mon + 1, tm_utc->tm_mday,
-                  tm_utc->tm_hour, tm_utc->tm_min, tm_utc->tm_sec);
+                  tm_utc->tm_year + 1900, tm_utc->tm_mon + 1, tm_utc->tm_mday, tm_utc->tm_hour,
+                  tm_utc->tm_min, tm_utc->tm_sec);
   }
-  ESP_LOGI(kTag, "CLI command uptime: %llud %lluh %llum %llus", static_cast<unsigned long long>(days),
-           static_cast<unsigned long long>(hours), static_cast<unsigned long long>(mins),
-           static_cast<unsigned long long>(secs));
+  ESP_LOGI(kTag, "CLI command uptime: %llud %lluh %llum %llus",
+           static_cast<unsigned long long>(days), static_cast<unsigned long long>(hours),
+           static_cast<unsigned long long>(mins), static_cast<unsigned long long>(secs));
   ESP_LOGI(kTag, "CLI command uptime: boot_time=%s", date_line);
 }
 
@@ -1031,7 +1128,8 @@ void cli_cmd_state() {
 
 void cli_cmd_parts() {
   ESP_LOGI(kTag, "CLI command parts: scanning partition table");
-  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  esp_partition_iterator_t it =
+      esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
   if (!it) {
     ESP_LOGW(kTag, "CLI command parts: no partitions found");
     return;
@@ -1039,8 +1137,9 @@ void cli_cmd_parts() {
   for (esp_partition_iterator_t cur = it; cur;) {
     const esp_partition_t* partition = esp_partition_get(cur);
     if (partition) {
-      ESP_LOGI(kTag, "  type=0x%02X subtype=0x%02X label=%s addr=0x%06lX size=0x%06lX", partition->type,
-               partition->subtype, partition->label, static_cast<unsigned long>(partition->address),
+      ESP_LOGI(kTag, "  type=0x%02X subtype=0x%02X label=%s addr=0x%06lX size=0x%06lX",
+               partition->type, partition->subtype, partition->label,
+               static_cast<unsigned long>(partition->address),
                static_cast<unsigned long>(partition->size));
     }
     cur = esp_partition_next(cur);
@@ -1049,7 +1148,8 @@ void cli_cmd_parts() {
 }
 
 void cli_cmd_free() {
-  ESP_LOGI(kTag, "CLI command free: heap_free=%u min_free=%u", heap_caps_get_free_size(MALLOC_CAP_8BIT),
+  ESP_LOGI(kTag, "CLI command free: heap_free=%u min_free=%u",
+           heap_caps_get_free_size(MALLOC_CAP_8BIT),
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
 }
 
@@ -1059,7 +1159,7 @@ void cli_cmd_sensor_snapshot() {
   int light = 0;
   int voltage = 0;
   bool dht_ok = false;
-  I2cSensorSnapshot snapshot {};
+  I2cSensorSnapshot snapshot{};
   if (read_sensor_snapshot(snapshot)) {
     temperature = snapshot.temperature_c;
     humidity = snapshot.humidity_percent;
@@ -1067,8 +1167,8 @@ void cli_cmd_sensor_snapshot() {
     voltage = snapshot.voltage_raw;
     dht_ok = snapshot.dht_ok;
   }
-  ESP_LOGI(kTag, "CLI command sensor: temp=%.1fC hum=%.1f%% light=%d voltage=%d dht=%s", temperature, humidity, light, voltage,
-           dht_ok ? "ok" : "invalid");
+  ESP_LOGI(kTag, "CLI command sensor: temp=%.1fC hum=%.1f%% light=%d voltage=%d dht=%s",
+           temperature, humidity, light, voltage, dht_ok ? "ok" : "invalid");
 }
 
 void cli_cmd_test() {
@@ -1077,26 +1177,22 @@ void cli_cmd_test() {
     return;
   }
   ESP_LOGI(kTag, "CLI command test: cycling each relay");
-  const std::uint8_t start_mask = g_relay_mask;
+  const std::uint8_t start_mask = io_relay_mask();
   for (int i = 0; i < 8; ++i) {
-    const std::uint8_t on_mask = relay_mask_for_channel_state(i, true, g_relay_mask);
-    (void)set_relay_mask_safe(on_mask);
-    g_relay_mask = on_mask;
+    (void)set_relay_channel_safe(i, true);
     vTaskDelay(pdMS_TO_TICKS(250));
 
-    const std::uint8_t off_mask = relay_mask_for_channel_state(i, false, g_relay_mask);
-    (void)set_relay_mask_safe(off_mask);
-    g_relay_mask = off_mask;
+    (void)set_relay_channel_safe(i, false);
     vTaskDelay(pdMS_TO_TICKS(120));
   }
   (void)set_relay_mask_safe(start_mask);
-  g_relay_mask = start_mask;
   ESP_LOGI(kTag, "CLI command test: done");
 }
 
 void cli_cmd_log() {
   ESP_LOGI(kTag, "CLI command log: legacy CLI logging controls are no longer persisted");
-  ESP_LOGI(kTag, "  options: show | buffer [size] | console [level|format] [value] | logfile [level|format] [value]");
+  ESP_LOGI(kTag, "  options: show | buffer [size] | console [level|format] [value] | logfile "
+                 "[level|format] [value]");
 }
 
 void cli_cmd_nvs_dump() {
@@ -1106,7 +1202,7 @@ void cli_cmd_nvs_dump() {
 }
 
 void cli_cmd_i2c_scan() {
-  I2cScanResult scan {};
+  I2cScanResult scan{};
   const InitPathResult scan_result = run_i2c_scan_flow(scan, "CLI command i2c_scan", false);
   ESP_LOGI(kTag, "CLI command i2c_scan: found=%d mcp=%d lcd=%d ok=%d", scan.found_count,
            scan.mcp ? 1 : 0, scan.lcd ? 1 : 0, scan_result.ok ? 1 : 0);
@@ -1117,7 +1213,8 @@ void cli_cmd_i2c_scan() {
 
 void cli_cmd_mcp_read(const char* port) {
   if (!g_mcp_available) {
-    ESP_LOGW(kTag, "CLI command mcp_read: MCP unavailable");
+    ESP_LOGW(kTag, "CLI command mcp_read: %s",
+             io_hardware_degraded() ? "hardware_degraded" : "MCP unavailable");
     return;
   }
   const std::uint8_t reg = (std::strcmp(port, "gpioa") == 0 || std::strcmp(port, "a") == 0)
@@ -1129,27 +1226,27 @@ void cli_cmd_mcp_read(const char* port) {
 }
 
 void cli_cmd_relay_set(int channel, int on_off) {
-  const std::uint8_t new_mask = relay_mask_for_channel_state(channel, on_off != 0, g_relay_mask);
-  const esp_err_t err = set_relay_mask_safe(new_mask);
-  if (err == ESP_OK) {
-    g_relay_mask = new_mask;
+  const esp_err_t err = set_relay_channel_safe(channel, on_off != 0);
+  ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d mask=0x%02X rc=%s", channel, on_off,
+           io_relay_mask(), esp_err_to_name(err));
+  if (err != ESP_OK && io_hardware_degraded()) {
+    ESP_LOGW(kTag, "CLI command relay_set: hardware_degraded");
   }
-  ESP_LOGI(kTag, "CLI command relay_set: ch=%d value=%d new_mask=0x%02X rc=%s", channel, on_off,
-           new_mask, esp_err_to_name(err));
 }
 
 void cli_cmd_relay_mask(std::uint32_t value) {
   const std::uint8_t mask = static_cast<std::uint8_t>(value & 0xFF);
   const esp_err_t err = set_relay_mask_safe(mask);
-  if (err == ESP_OK) {
-    g_relay_mask = mask;
-  }
   ESP_LOGI(kTag, "CLI command relay_mask: mask=0x%02X rc=%s", mask, esp_err_to_name(err));
+  if (err != ESP_OK && io_hardware_degraded()) {
+    ESP_LOGW(kTag, "CLI command relay_mask: hardware_degraded");
+  }
 }
 
 void cli_cmd_buttons() {
   if (!g_mcp_available) {
-    ESP_LOGW(kTag, "CLI command buttons: MCP unavailable");
+    ESP_LOGW(kTag, "CLI command buttons: %s",
+             io_hardware_degraded() ? "hardware_degraded" : "MCP unavailable");
     return;
   }
   std::uint8_t value = 0x00;
@@ -1188,7 +1285,7 @@ int cli_execute_command(int argc, char* argv[]) {
 }
 
 void cli_task(void*) {
-  uart_config_t uart_cfg {};
+  uart_config_t uart_cfg{};
   uart_cfg.baud_rate = 115200;
   uart_cfg.data_bits = UART_DATA_8_BITS;
   uart_cfg.parity = UART_PARITY_DISABLE;
@@ -1199,7 +1296,7 @@ void cli_task(void*) {
     ESP_LOGW(kTag, "CLI uart_param_config failed");
   }
   if (uart_set_pin(UART_NUM_0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
-                  UART_PIN_NO_CHANGE) != ESP_OK) {
+                   UART_PIN_NO_CHANGE) != ESP_OK) {
     ESP_LOGW(kTag, "CLI uart_set_pin failed");
   }
   const esp_err_t install_result = uart_driver_install(UART_NUM_0, 256, 0, 0, nullptr, 0);
@@ -1214,7 +1311,8 @@ void cli_task(void*) {
   char ch = 0;
 
   while (true) {
-    const int read = uart_read_bytes(UART_NUM_0, reinterpret_cast<uint8_t*>(&ch), 1, pdMS_TO_TICKS(200));
+    const int read =
+        uart_read_bytes(UART_NUM_0, reinterpret_cast<uint8_t*>(&ch), 1, pdMS_TO_TICKS(200));
     if (read <= 0) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
@@ -1232,7 +1330,8 @@ void cli_task(void*) {
       line_len = 0;
 
       char* argv[8] = {nullptr};
-      const std::size_t argc = tokenize_cli_line(command_buffer, argv, sizeof(argv) / sizeof(argv[0]));
+      const std::size_t argc =
+          tokenize_cli_line(command_buffer, argv, sizeof(argv) / sizeof(argv[0]));
       if (argc == 0) {
         continue;
       }

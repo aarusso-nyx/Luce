@@ -15,7 +15,8 @@ MQTT client with inbound control subscriptions and outbound telemetry/compatibil
 - `mqtt/username` (string, optional)
 - `mqtt/password` (string, optional)
 - `mqtt/tls_enabled` (u8, default `0`)
-- `mqtt/ca_pem_source` (string: `embedded`, `nvs`, `partition`, `none`)
+- `mqtt/ca_pem_source` (string, default `nvs`; currently the only supported CA source)
+- `mqtt/ca_pem` (string, PEM CA material used for broker verification when source is `nvs`)
 - `mqtt/qos` (u32, 0..2)
 - `mqtt/keepalive_s` (u32)
 
@@ -23,7 +24,9 @@ MQTT client with inbound control subscriptions and outbound telemetry/compatibil
 
 - Enabled only when `mqtt/enabled = 1`.
 - If no IP yet, service remains initialized in `waiting_ip` state until networking is ready.
-- Connect/reconnect with exponential backoff.
+- Connect/reconnect with exponential backoff from `1000ms` to `300000ms`
+  using deterministic bounded jitter from `luce::backoff`.
+- TLS broker verification still requires configured CA material when TLS is enabled. If PKI role `mqtt_client` is active, the client also presents that certificate and private key for mutual TLS. If the role is empty, incomplete, staged, or in error, client identity stays dormant and CA verification still fails closed.
 - Subscribes to inbound control topics on connect (base topic):
   - `config/#`
   - `relays/#`
@@ -81,7 +84,7 @@ This document describes implemented MQTT behavior. Automated contract enforcemen
   - reboot persistence verification for `config/http/token`
 - Partially enforced:
   - broader `config/*` key matrix is implemented but not exhaustively reboot-verified for every key in a single automated run
-  - reconnect/backoff timing characteristics are validated functionally (disconnect/reconnect), not with strict timing bounds
+  - reconnect/backoff integration is validated functionally (disconnect/reconnect), while the pure backoff bounds and deterministic jitter are covered by host unit tests
 
 Unsupported legacy control topics now produce deterministic compatibility responses under:
 - `compat/unsupported`
@@ -94,15 +97,16 @@ Unsupported legacy control topics now produce deterministic compatibility respon
 ## CLI
 
 - `mqtt.status` prints connected state, counters, URI summary, and last publish fields.
+- `mqtt.status` includes `client_identity` and `client_cert_present` from PKI role `mqtt_client`.
 - `mqtt.pubtest` publishes one test message and logs return code.
 
 ## Security
 
 - Passwords are masked in logs.
 - TLS mode is selected by URI + `mqtt/tls_enabled`.
-- CA loading path is logged from config source.
+- Set `mqtt/ca_pem_source=nvs` with `mqtt/ca_pem` to validate the broker against the configured CA. Empty or unsupported CA configuration prevents client startup.
+- Provision `mqtt_client` with `pki.keygen mqtt_client`, `pki.csr mqtt_client`, and `pki.cert.* mqtt_client` only when the broker requires mutual TLS. The private key is never printed or exported.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_221921/90_summary.md`
-- Evidence SHA: `2a3b9df`
+- Generate current local evidence under `docs/work/diag/` with `./scripts/luce.sh test --layers mqtt --env net1 --mqtt-host <broker-ip> --mqtt-topic luce/net1`.

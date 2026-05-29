@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "run_id": "20260529T024655Z",
+  "source": {
+    "git_sha": "4dc5e7cdc2605d696092581c4973de8de0d17e88",
+    "target": "wave-f-local"
+  },
+  "release": false,
+  "checks": [
+    {
+      "name": "platformio:default",
+      "status": "PASS",
+      "required": true,
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1"
+    },
+    {
+      "name": "platformio:net0",
+      "status": "PASS",
+      "required": true,
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1"
+    },
+    {
+      "name": "platformio:net1",
+      "status": "PASS",
+      "required": true,
+      "details": "source ~/.zshrc; pio run -e default -e net0 -e net1"
+    },
+    {
+      "name": "host-tests",
+      "status": "PASS",
+      "required": true,
+      "details": "scripts/run_host_tests.sh, 725 assertions"
+    },
+    {
+      "name": "docs-alignment",
+      "status": "PASS",
+      "required": true,
+      "details": ".venv/bin/python -m pytest tests/test_docs_alignment.py"
+    },
+    {
+      "name": "script-syntax",
+      "status": "PASS",
+      "required": true,
+      "details": "python3 -m py_compile scripts/test_layers.py scripts/verify_evidence.py"
+    },
+    {
+      "name": "evidence-verifier",
+      "status": "PASS",
+      "required": true,
+      "details": "python scripts/verify_evidence.py"
+    },
+    {
+      "name": "diff-check",
+      "status": "PASS",
+      "required": true,
+      "details": "git diff --check"
+    },
+    {
+      "name": "clang-format:src-include",
+      "status": "PASS",
+      "required": true,
+      "details": "tracked src and include/luce files through clang-format --dry-run --Werror"
+    },
+    {
+      "name": "release-gate-negative",
+      "status": "PASS",
+      "required": true,
+      "details": "release manifest with advisory PREREQ_MISSING hardware-hil failed as expected"
+    },
+    {
+      "name": "release-gate-positive",
+      "status": "PASS",
+      "required": true,
+      "details": "release manifest with required PASS hardware-hil passed"
+    },
+    {
+      "name": "hardware-hil",
+      "status": "PREREQ_MISSING",
+      "required": false,
+      "details": "No device IP, tokens, broker endpoint, or serial roundtrip capture was available in this local pass."
+    }
+  ],
+  "local_artifacts": [
+    {
+      "path": "docs/work/diag/20260529T024655Z/host-tests/summary.json",
+      "sha256": "a0b5813344b95f77e9b594ebf3791f5e92e38bafb2282a89f6ea0f9f08d69040"
+    },
+    {
+      "path": "docs/work/diag/20260529T024655Z/wave-F.md",
+      "sha256": "541421fc209a051b10a90d4d154f344d806e515b0fa03275e0e33d3311eaece5"
+    }
+  ]
+}

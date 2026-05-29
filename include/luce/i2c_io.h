@@ -54,8 +54,13 @@ InitPathResult run_i2c_scan_flow(I2cScanResult& scan, const char* context, bool 
 esp_err_t i2c_probe_device(uint8_t address, TickType_t timeout_ticks = pdMS_TO_TICKS(20));
 esp_err_t mcp_read_reg(uint8_t reg, uint8_t* value);
 esp_err_t set_relay_mask_safe(uint8_t mask);
+esp_err_t set_relay_channel_safe(int channel, bool on);
 uint8_t relay_mask_for_channel_state(int channel, bool on, uint8_t current_mask);
 bool read_button_inputs(uint8_t* value);
+std::uint8_t io_relay_mask();
+std::uint8_t io_relay_output_mask();
+std::uint8_t io_button_mask();
+bool io_hardware_degraded();
 void configure_int_pin();
 void io_startup();
 bool read_sensor_snapshot(I2cSensorSnapshot& snapshot);

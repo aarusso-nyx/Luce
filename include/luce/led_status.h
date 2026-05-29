@@ -2,15 +2,7 @@
 
 #include <cstdint>
 
-enum class LedManualMode : std::uint8_t {
-  kAuto = 0,
-  kOff,
-  kOn,
-  kBlinkNormal,
-  kBlinkFast,
-  kBlinkSlow,
-  kFlash,
-};
+#include "luce/led_manual_mode.h"
 
 void led_status_startup();
 

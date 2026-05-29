@@ -7,7 +7,8 @@
 namespace luce {
 namespace runtime {
 
-inline constexpr std::uint32_t clamp_u32(std::uint32_t value, std::uint32_t min_val, std::uint32_t max_val) {
+inline constexpr std::uint32_t clamp_u32(std::uint32_t value, std::uint32_t min_val,
+                                         std::uint32_t max_val) {
   if (value < min_val) {
     return min_val;
   }
@@ -18,8 +19,8 @@ inline constexpr std::uint32_t clamp_u32(std::uint32_t value, std::uint32_t min_
 }
 
 template <typename StateT>
-inline void set_state(StateT& state, StateT next, const char* (*state_name)(StateT), const char* lifecycle_tag,
-                      const char* reason = nullptr) {
+inline void set_state(StateT& state, StateT next, const char* (*state_name)(StateT),
+                      const char* lifecycle_tag, const char* reason = nullptr) {
   if (state == next) {
     return;
   }
@@ -31,5 +32,5 @@ inline void set_state(StateT& state, StateT next, const char* (*state_name)(Stat
   }
 }
 
-}  // namespace runtime
-}  // namespace luce
+} // namespace runtime
+} // namespace luce

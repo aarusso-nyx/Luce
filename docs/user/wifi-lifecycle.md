@@ -15,7 +15,7 @@ Runtime reads settings from NVS namespace `wifi`:
 - `backoff_min_ms` (u32)
 - `backoff_max_ms` (u32)
 
-Missing keys use safe defaults and are logged.
+Missing keys use safe defaults and are logged. Wi-Fi defaults to disabled and has no compiled SSID/password fallback.
 
 ## Runtime behavior
 
@@ -31,7 +31,7 @@ Missing keys use safe defaults and are logged.
 
 ## CLI and observability
 
-- `wifi.status` prints current state, attempts, backoff, RSSI and IP/gateway/mask snapshot.
+- `wifi.status` is the canonical status command for current state, attempts, backoff, RSSI and IP/gateway/mask snapshot.
 - `wifi.scan` prints scan results and RSSI.
 - Logging tags:
   - `[WIFI][LIFECYCLE]`
@@ -47,5 +47,4 @@ Missing keys use safe defaults and are logged.
 
 ## Verification
 
-- Evidence: `docs/work/diag/evidence/20260222_214039/90_summary.md`
-- Evidence SHA: `2a3b9df`
+- Generate current local evidence under `docs/work/diag/` with `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45` and device-side `wifi.status`/`wifi.scan` captures.

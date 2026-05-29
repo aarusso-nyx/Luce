@@ -13,6 +13,7 @@
 
 #if LUCE_HAS_WIFI
 
+#include "esp_check.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -30,9 +31,8 @@ constexpr const char* kTag = "[WIFI]";
 constexpr const char* kNvsTag = "[WIFI][NVS]";
 constexpr const char* kWifiNs = "wifi";
 constexpr const char* kDefaultHostname = "luce-esp32";
-constexpr const char* kDefaultSsid = "NYXK";
-constexpr const char* kDefaultPass = "It's$14.99!";
-constexpr TickType_t kStatusLogPeriodMs = 3000;
+constexpr const char* kDefaultSsid = "";
+constexpr const char* kDefaultPass = "";
 constexpr TickType_t kStoppedLogPeriodMs = 10000;
 constexpr TickType_t kBackoffLogPeriodMs = 5000;
 
@@ -57,7 +57,7 @@ struct WifiConfig {
 
 WifiConfig g_cfg;
 esp_netif_t* g_sta_if = nullptr;
-wifi_config_t g_wifi_config_storage {};
+wifi_config_t g_wifi_config_storage{};
 TaskHandle_t g_wifi_task = nullptr;
 esp_event_handler_instance_t g_wifi_handler_instance = nullptr;
 esp_event_handler_instance_t g_ip_handler_instance = nullptr;
@@ -74,26 +74,24 @@ bool g_have_ip = false;
 
 const char* wifi_state_name(WifiState state) {
   switch (state) {
-    case WifiState::kDisabled:
-      return "DISABLED";
-    case WifiState::kInit:
-      return "INIT";
-    case WifiState::kConnecting:
-      return "CONNECTING";
-    case WifiState::kGotIp:
-      return "GOT_IP";
-    case WifiState::kBackoff:
-      return "BACKOFF";
-    case WifiState::kStopped:
-      return "STOPPED";
-    default:
-      return "UNKNOWN";
+  case WifiState::kDisabled:
+    return "DISABLED";
+  case WifiState::kInit:
+    return "INIT";
+  case WifiState::kConnecting:
+    return "CONNECTING";
+  case WifiState::kGotIp:
+    return "GOT_IP";
+  case WifiState::kBackoff:
+    return "BACKOFF";
+  case WifiState::kStopped:
+    return "STOPPED";
+  default:
+    return "UNKNOWN";
   }
 }
 
-const char* mask_password() {
-  return "********";
-}
+const char* mask_password() { return "********"; }
 
 void set_state(WifiState next, const char* reason) {
   luce::runtime::set_state(g_state, next, wifi_state_name, "[WIFI][LIFECYCLE]", reason);
@@ -128,45 +126,49 @@ void load_wifi_config() {
   std::snprintf(g_cfg.hostname, sizeof(g_cfg.hostname), "%s", kDefaultHostname);
   std::snprintf(g_cfg.ssid, sizeof(g_cfg.ssid), "%s", kDefaultSsid);
   std::snprintf(g_cfg.pass, sizeof(g_cfg.pass), "%s", kDefaultPass);
-  g_cfg.enabled = true;
+  g_cfg.enabled = false;
   g_cfg.max_retries = 6;
   g_cfg.backoff_min_ms = 500;
   g_cfg.backoff_max_ms = 8000;
 
-  nvs_handle_t nvs_handle {};
+  nvs_handle_t nvs_handle{};
   if (nvs_open(kWifiNs, NVS_READONLY, &nvs_handle) != ESP_OK) {
     ESP_LOGW(kTag, "[WIFI][NVS] namespace '%s' not found; defaults active", kWifiNs);
-    ESP_LOGW(kTag, "[WIFI][NVS] key=enabled missing; using default=1");
-    ESP_LOGI(
-        kTag,
-        "[WIFI][NVS] config summary ssid='%s' pass=%s hostname='%s' enabled=%d max_retries=%lu backoff_min_ms=%lu "
-        "backoff_max_ms=%lu",
-        g_cfg.ssid, mask_password(), g_cfg.hostname, g_cfg.enabled ? 1 : 0,
-        static_cast<unsigned long>(g_cfg.max_retries), static_cast<unsigned long>(g_cfg.backoff_min_ms),
-        static_cast<unsigned long>(g_cfg.backoff_max_ms));
+    ESP_LOGW(kTag, "[WIFI][NVS] key=enabled missing; using default=0");
+    ESP_LOGI(kTag,
+             "[WIFI][NVS] config summary ssid='%s' pass=%s hostname='%s' enabled=%d "
+             "max_retries=%lu backoff_min_ms=%lu "
+             "backoff_max_ms=%lu",
+             g_cfg.ssid, mask_password(), g_cfg.hostname, g_cfg.enabled ? 1 : 0,
+             static_cast<unsigned long>(g_cfg.max_retries),
+             static_cast<unsigned long>(g_cfg.backoff_min_ms),
+             static_cast<unsigned long>(g_cfg.backoff_max_ms));
     return;
   }
 
   bool found_flag = false;
   std::uint8_t value_u8 = 0;
-  if (!luce::nvs::read_u8(nvs_handle, "enabled", value_u8, 1)) {
+  if (!luce::nvs::read_u8(nvs_handle, "enabled", value_u8, 0)) {
     found_flag = false;
   } else {
     found_flag = true;
   }
   g_cfg.enabled = (value_u8 != 0);
-  luce::nvs::log_nvs_u8(kNvsTag, "enabled", value_u8, found_flag, 1);
+  luce::nvs::log_nvs_u8(kNvsTag, "enabled", value_u8, found_flag, 0);
 
   bool found_ssid = false;
-  found_ssid = luce::nvs::read_string(nvs_handle, "ssid", g_cfg.ssid, sizeof(g_cfg.ssid), kDefaultSsid);
+  found_ssid =
+      luce::nvs::read_string(nvs_handle, "ssid", g_cfg.ssid, sizeof(g_cfg.ssid), kDefaultSsid);
   log_nvs_str("ssid", g_cfg.ssid, found_ssid, "");
 
   bool found_pass = false;
-  found_pass = luce::nvs::read_string(nvs_handle, "pass", g_cfg.pass, sizeof(g_cfg.pass), kDefaultPass);
+  found_pass =
+      luce::nvs::read_string(nvs_handle, "pass", g_cfg.pass, sizeof(g_cfg.pass), kDefaultPass);
   log_nvs_str("pass", g_cfg.pass, found_pass, "");
 
   bool found_hostname = false;
-  found_hostname = luce::nvs::read_string(nvs_handle, "hostname", g_cfg.hostname, sizeof(g_cfg.hostname), kDefaultHostname);
+  found_hostname = luce::nvs::read_string(nvs_handle, "hostname", g_cfg.hostname,
+                                          sizeof(g_cfg.hostname), kDefaultHostname);
   log_nvs_str("hostname", g_cfg.hostname, found_hostname, kDefaultHostname);
 
   bool found_max_retries = false;
@@ -178,22 +180,25 @@ void load_wifi_config() {
   bool found_backoff_min = false;
   found_backoff_min = luce::nvs::read_u32(nvs_handle, "backoff_min_ms", value_u32, 500);
   g_cfg.backoff_min_ms = luce::runtime::clamp_u32(value_u32, 250u, 300000u);
-  luce::nvs::log_nvs_u32(kNvsTag, "backoff_min_ms", value_u32, found_backoff_min, g_cfg.backoff_min_ms);
+  luce::nvs::log_nvs_u32(kNvsTag, "backoff_min_ms", value_u32, found_backoff_min,
+                         g_cfg.backoff_min_ms);
 
   bool found_backoff_max = false;
   found_backoff_max = luce::nvs::read_u32(nvs_handle, "backoff_max_ms", value_u32, 8000);
   g_cfg.backoff_max_ms = luce::runtime::clamp_u32(value_u32, g_cfg.backoff_min_ms, 300000u);
-  luce::nvs::log_nvs_u32(kNvsTag, "backoff_max_ms", value_u32, found_backoff_max, g_cfg.backoff_max_ms);
+  luce::nvs::log_nvs_u32(kNvsTag, "backoff_max_ms", value_u32, found_backoff_max,
+                         g_cfg.backoff_max_ms);
 
   nvs_close(nvs_handle);
 
-  ESP_LOGI(
-      kTag,
-      "[WIFI][NVS] config summary ssid='%s' pass=%s hostname='%s' enabled=%d max_retries=%lu backoff_min_ms=%lu "
-      "backoff_max_ms=%lu",
-      g_cfg.ssid, mask_password(), g_cfg.hostname, g_cfg.enabled ? 1 : 0,
-      static_cast<unsigned long>(g_cfg.max_retries), static_cast<unsigned long>(g_cfg.backoff_min_ms),
-      static_cast<unsigned long>(g_cfg.backoff_max_ms));
+  ESP_LOGI(kTag,
+           "[WIFI][NVS] config summary ssid='%s' pass=%s hostname='%s' enabled=%d max_retries=%lu "
+           "backoff_min_ms=%lu "
+           "backoff_max_ms=%lu",
+           g_cfg.ssid, mask_password(), g_cfg.hostname, g_cfg.enabled ? 1 : 0,
+           static_cast<unsigned long>(g_cfg.max_retries),
+           static_cast<unsigned long>(g_cfg.backoff_min_ms),
+           static_cast<unsigned long>(g_cfg.backoff_max_ms));
 }
 
 void apply_wifi_config() {
@@ -244,10 +249,11 @@ void connect_wifi(const char* reason) {
   ++g_retry_count;
   g_last_disconnect_reason = 0;
   g_next_backoff_ms = 0;
-    set_state(WifiState::kConnecting, reason ? reason : "connect");
+  set_state(WifiState::kConnecting, reason ? reason : "connect");
 }
 
-void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
+void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id,
+                        void* event_data) {
   (void)arg;
 
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -290,31 +296,42 @@ void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
   }
 }
 
-void initialize_wifi_stack() {
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+esp_err_t initialize_wifi_stack_impl() {
+  ESP_RETURN_ON_ERROR(esp_netif_init(), kTag, "esp_netif_init");
+  const esp_err_t loop_err = esp_event_loop_create_default();
+  if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
+    ESP_RETURN_ON_ERROR(loop_err, kTag, "esp_event_loop_create_default");
+  }
   g_sta_if = esp_netif_create_default_wifi_sta();
   if (g_sta_if == nullptr) {
-    ESP_LOGE(kTag, "[WIFI] failed to create default Wi-Fi STA interface");
-    return;
+    return ESP_FAIL;
   }
 
   wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
-  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-  ESP_ERROR_CHECK(
-      esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr, &g_wifi_handler_instance));
-  ESP_ERROR_CHECK(
-      esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, nullptr, &g_ip_handler_instance));
+  ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), kTag, "esp_wifi_init");
+  ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), kTag, "esp_wifi_set_storage");
+  ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                          &wifi_event_handler, nullptr,
+                                                          &g_wifi_handler_instance),
+                      kTag, "register wifi handler");
+  ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
+                                                          &wifi_event_handler, nullptr,
+                                                          &g_ip_handler_instance),
+                      kTag, "register ip handler");
+  ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "esp_wifi_set_mode");
+  ESP_RETURN_ON_ERROR(esp_wifi_start(), kTag, "esp_wifi_start");
+  return ESP_OK;
+}
 
-  if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
-    ESP_LOGW(kTag, "[WIFI] unable to set Wi-Fi mode");
-  }
-  if (esp_wifi_start() != ESP_OK) {
-    ESP_LOGW(kTag, "[WIFI] esp_wifi_start failed");
+void initialize_wifi_stack() {
+  const esp_err_t err = initialize_wifi_stack_impl();
+  // Wi-Fi is optional for the baseline build, so init failures are reported
+  // and leave the task stopped instead of aborting the firmware.
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "[WIFI] stack initialization failed: %s", esp_err_to_name(err));
+    set_state(WifiState::kStopped, "init_failed");
     return;
   }
-
   set_state(WifiState::kInit, "stack_initialized");
 }
 
@@ -337,28 +354,24 @@ void wifi_task(void*) {
     if (g_state == WifiState::kStopped) {
       if (now - g_last_status_tick > pdMS_TO_TICKS(kStoppedLogPeriodMs)) {
         g_last_status_tick = now;
-        ESP_LOGW(kTag, "[WIFI] state=%s max_retries_exceeded. reboot config to retry.", wifi_state_name(g_state));
+        ESP_LOGW(kTag, "[WIFI] state=%s max_retries_exceeded. reboot config to retry.",
+                 wifi_state_name(g_state));
       }
     }
 
     if (g_state == WifiState::kBackoff) {
       if (now - g_last_backoff_tick > pdMS_TO_TICKS(kBackoffLogPeriodMs)) {
         g_last_backoff_tick = now;
-        ESP_LOGW(kTag, "[WIFI][BACKOFF] remaining_ms=%lu", static_cast<unsigned long>(g_next_backoff_ms));
+        ESP_LOGW(kTag, "[WIFI][BACKOFF] remaining_ms=%lu",
+                 static_cast<unsigned long>(g_next_backoff_ms));
       }
-    }
-
-    if ((g_state == WifiState::kGotIp || g_state == WifiState::kConnecting || g_state == WifiState::kBackoff ||
-         g_state == WifiState::kInit) &&
-        now - g_last_status_tick > pdMS_TO_TICKS(kStatusLogPeriodMs)) {
-      g_last_status_tick = now;
     }
 
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
-}  // namespace
+} // namespace
 
 void wifi_startup() {
   load_wifi_config();
@@ -375,6 +388,28 @@ void wifi_startup() {
 }
 
 void wifi_status_for_cli() {
+  char ip[16] = "n/a";
+  char gw[16] = "n/a";
+  char netmask[16] = "n/a";
+  esp_netif_ip_info_t ip_info{};
+  if (g_sta_if && g_have_ip && esp_netif_get_ip_info(g_sta_if, &ip_info) == ESP_OK) {
+    std::snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ip_info.ip));
+    std::snprintf(gw, sizeof(gw), IPSTR, IP2STR(&ip_info.gw));
+    std::snprintf(netmask, sizeof(netmask), IPSTR, IP2STR(&ip_info.netmask));
+  }
+
+  int rssi = 0;
+  wifi_get_rssi(&rssi);
+  ESP_LOGI(kTag,
+           "wifi.status state=%s enabled=%d ip_ready=%d ssid='%s' hostname='%s' retry_count=%lu "
+           "max_retries=%lu backoff_count=%lu next_backoff_ms=%lu last_disconnect_reason=%u "
+           "rssi=%d ip=%s gw=%s netmask=%s",
+           wifi_state_name(g_state), g_cfg.enabled ? 1 : 0, g_have_ip ? 1 : 0,
+           g_cfg.ssid[0] != '\0' ? g_cfg.ssid : "n/a", g_cfg.hostname,
+           static_cast<unsigned long>(g_retry_count), static_cast<unsigned long>(g_cfg.max_retries),
+           static_cast<unsigned long>(g_backoff_count),
+           static_cast<unsigned long>(g_next_backoff_ms),
+           static_cast<unsigned>(g_last_disconnect_reason), rssi, ip, gw, netmask);
 }
 
 void wifi_scan_for_cli() {
@@ -388,7 +423,7 @@ void wifi_scan_for_cli() {
     return;
   }
 
-  wifi_scan_config_t scan_cfg {};
+  wifi_scan_config_t scan_cfg{};
   scan_cfg.scan_type = WIFI_SCAN_TYPE_ACTIVE;
   scan_cfg.show_hidden = false;
   scan_cfg.scan_time.active.min = 100;
@@ -406,7 +441,7 @@ void wifi_scan_for_cli() {
     return;
   }
 
-  std::array<wifi_ap_record_t, 16> records {};
+  std::array<wifi_ap_record_t, 16> records{};
   uint16_t to_read = static_cast<uint16_t>(records.size());
   if (to_read > count) {
     to_read = count;
@@ -419,26 +454,21 @@ void wifi_scan_for_cli() {
   ESP_LOGI(kTag, "[WIFI][SCAN] count=%u", static_cast<unsigned>(to_read));
   for (uint16_t i = 0; i < to_read; ++i) {
     ESP_LOGI(kTag, "[WIFI][SCAN] %u: ssid=%s rssi=%d auth=%d", static_cast<unsigned>(i + 1),
-             records[i].ssid[0] != '\0' ? reinterpret_cast<const char*>(records[i].ssid) : "(hidden)",
+             records[i].ssid[0] != '\0' ? reinterpret_cast<const char*>(records[i].ssid)
+                                        : "(hidden)",
              records[i].rssi, static_cast<int>(records[i].authmode));
   }
 }
 
-bool wifi_is_enabled() {
-  return g_cfg.enabled;
-}
+bool wifi_is_enabled() { return g_cfg.enabled; }
 
 bool wifi_is_connecting() {
   return g_cfg.enabled && (g_state == WifiState::kConnecting || g_state == WifiState::kBackoff);
 }
 
-bool wifi_is_ip_ready() {
-  return g_have_ip;
-}
+bool wifi_is_ip_ready() { return g_have_ip; }
 
-bool wifi_is_connected() {
-  return g_cfg.enabled && (g_state == WifiState::kGotIp) && g_have_ip;
-}
+bool wifi_is_connected() { return g_cfg.enabled && (g_state == WifiState::kGotIp) && g_have_ip; }
 
 void wifi_get_ssid(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
@@ -456,7 +486,7 @@ void wifi_copy_ip_str(char* out, std::size_t out_size) {
     return;
   }
 
-  esp_netif_ip_info_t ip_info {};
+  esp_netif_ip_info_t ip_info{};
   if (esp_netif_get_ip_info(g_sta_if, &ip_info) != ESP_OK) {
     std::snprintf(out, out_size, "n/a");
     return;
@@ -468,7 +498,7 @@ void wifi_get_rssi(int* rssi_out) {
   if (!rssi_out) {
     return;
   }
-  wifi_ap_record_t ap {};
+  wifi_ap_record_t ap{};
   if (!g_have_ip || esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
     *rssi_out = 0;
     return;
@@ -481,21 +511,13 @@ void wifi_get_rssi(int* rssi_out) {
 void wifi_startup() {}
 void wifi_status_for_cli() {}
 void wifi_scan_for_cli() {}
-bool wifi_is_enabled() {
-  return false;
-}
+bool wifi_is_enabled() { return false; }
 
-bool wifi_is_connecting() {
-  return false;
-}
+bool wifi_is_connecting() { return false; }
 
-bool wifi_is_ip_ready() {
-  return false;
-}
+bool wifi_is_ip_ready() { return false; }
 
-bool wifi_is_connected() {
-  return false;
-}
+bool wifi_is_connected() { return false; }
 
 void wifi_get_ssid(char* out, std::size_t out_size) {
   if (!out || out_size == 0) {
@@ -518,4 +540,4 @@ void wifi_get_rssi(int* rssi_out) {
   *rssi_out = 0;
 }
 
-#endif  // LUCE_HAS_WIFI
+#endif // LUCE_HAS_WIFI

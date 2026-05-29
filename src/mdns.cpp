@@ -56,7 +56,7 @@ struct MdnsConfig {
   char instance[33] = {};
 };
 
-MdnsConfig g_cfg {};
+MdnsConfig g_cfg{};
 MdnsState g_state = MdnsState::kDisabledByConfig;
 char g_hostname[33] = {0};
 std::uint16_t g_port = kDefaultPort;
@@ -74,22 +74,20 @@ char g_txt_build_value[kTxtFieldMax] = {};
 
 const char* state_name(MdnsState state) {
   switch (state) {
-    case MdnsState::kDisabledByConfig:
-      return "DISABLED";
-    case MdnsState::kInit:
-      return "INIT";
-    case MdnsState::kStarted:
-      return "STARTED";
-    case MdnsState::kFailed:
-      return "FAILED";
-    default:
-      return "UNKNOWN";
+  case MdnsState::kDisabledByConfig:
+    return "DISABLED";
+  case MdnsState::kInit:
+    return "INIT";
+  case MdnsState::kStarted:
+    return "STARTED";
+  case MdnsState::kFailed:
+    return "FAILED";
+  default:
+    return "UNKNOWN";
   }
 }
 
-const char* mdns_state_name_impl() {
-  return state_name(g_state);
-}
+const char* mdns_state_name_impl() { return state_name(g_state); }
 
 void set_state(MdnsState next, const char* reason = nullptr) {
   luce::runtime::set_state(g_state, next, state_name, "[mDNS]", reason);
@@ -182,10 +180,9 @@ esp_err_t start_mdns_stack_and_service() {
       {"device", g_txt_device_value},
       {"build", g_txt_build_value},
   };
-  ESP_RETURN_ON_ERROR(
-      mdns_service_add(g_cfg.instance, kServiceType, kServiceProto, g_port, items,
-                       sizeof(items) / sizeof(items[0])),
-      kTag, "mdns_service_add");
+  ESP_RETURN_ON_ERROR(mdns_service_add(g_cfg.instance, kServiceType, kServiceProto, g_port, items,
+                                       sizeof(items) / sizeof(items[0])),
+                      kTag, "mdns_service_add");
   return ESP_OK;
 }
 
@@ -207,7 +204,8 @@ void start_mdns_service() {
 
   g_service_registered = true;
   set_state(MdnsState::kStarted, "started");
-  ESP_LOGI(kTag, "[mDNS] started hostname=%s instance=%s port=%u", g_hostname, g_cfg.instance, g_port);
+  ESP_LOGI(kTag, "[mDNS] started hostname=%s instance=%s port=%u", g_hostname, g_cfg.instance,
+           g_port);
 }
 
 void stop_mdns_service() {
@@ -245,19 +243,13 @@ void mdns_task(void*) {
   }
 }
 
-}  // namespace
+} // namespace
 
-const char* mdns_state_name() {
-  return mdns_state_name_impl();
-}
+const char* mdns_state_name() { return mdns_state_name_impl(); }
 
-bool mdns_is_enabled() {
-  return g_cfg.enabled;
-}
+bool mdns_is_enabled() { return g_cfg.enabled; }
 
-bool mdns_is_running() {
-  return g_service_registered;
-}
+bool mdns_is_running() { return g_service_registered; }
 
 void mdns_startup() {
   load_mdns_config();
@@ -275,23 +267,21 @@ void mdns_status_for_cli() {
   }
 
   ESP_LOGI(kTag,
-           "mdns.status state=%s enabled=%d hostname=%s instance=%s service=%s wifi_ip=%s fw=%s strategy=%s",
-           state_name(g_state), g_cfg.enabled ? 1 : 0, g_hostname[0] != '\0' ? g_hostname : "(unset)",
+           "mdns.status state=%s enabled=%d hostname=%s instance=%s service=%s wifi_ip=%s fw=%s "
+           "strategy=%s",
+           state_name(g_state), g_cfg.enabled ? 1 : 0,
+           g_hostname[0] != '\0' ? g_hostname : "(unset)",
            g_cfg.instance[0] != '\0' ? g_cfg.instance : kDefaultInstance,
            g_service_registered ? "1" : "0", wifi_ip, LUCE_PROJECT_VERSION, LUCE_STRATEGY_NAME);
 }
 
 #else
 
-bool mdns_is_enabled() {
-  return false;
-}
+bool mdns_is_enabled() { return false; }
 
-bool mdns_is_running() {
-  return false;
-}
+bool mdns_is_running() { return false; }
 
 void mdns_startup() {}
 void mdns_status_for_cli() {}
 
-#endif  // LUCE_HAS_MDNS
+#endif // LUCE_HAS_MDNS
