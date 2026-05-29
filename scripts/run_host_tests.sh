@@ -27,7 +27,7 @@ else
   {
     printf 'cmake not found; using direct compiler fallback: %s\n' "${compiler}"
     "${compiler}" -std=c++17 -Wall -Wextra -Werror -I"${repo_root}/include" \
-      "${repo_root}/test/host/test_main.cpp" -o "${build_dir}/luce_host_tests"
+      "${repo_root}"/test/host/test_*.cpp -o "${build_dir}/luce_host_tests"
   } >"${log_file}" 2>&1 || {
     status="FAIL"
     exit_code=1
@@ -42,6 +42,13 @@ fi
 failures=0
 if [[ "${status}" != "PASS" ]]; then
   failures=1
+fi
+assertions=0
+if [[ -f "${log_file}" ]]; then
+  parsed_assertions="$(sed -n 's/.*host tests: PASS (\([0-9][0-9]*\) assertions).*/\1/p' "${log_file}" | tail -n 1)"
+  if [[ -n "${parsed_assertions}" ]]; then
+    assertions="${parsed_assertions}"
+  fi
 fi
 
 cat >"${junit_file}" <<XML
@@ -65,8 +72,12 @@ cat >"${summary_file}" <<JSON
 {
   "run_id": "${run_id}",
   "status": "${status}",
-  "tests": 1,
+  "tests": ${assertions},
   "failures": ${failures},
+  "coverage": {
+    "kind": "assertion-count",
+    "assertions": ${assertions}
+  },
   "junit": "${junit_file}",
   "log": "${log_file}"
 }

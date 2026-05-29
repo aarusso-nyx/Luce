@@ -15,10 +15,9 @@ snapshots:
 - Local evidence is the source of truth for the active checkout.
 - Firmware builds are verified locally for `default`, `net0`, and `net1`.
 - Hardware-backed HIL evidence remains the release gate for device behavior.
-- Host unit tests are being introduced for pure C++ helpers so correctness can
-  be checked without a connected ESP32.
-- CI gating is expected to consume committed/local evidence after the host-test
-  lane is in place; CI is not the producer of this program's evidence.
+- Host unit tests cover pure C++ helpers without a connected ESP32.
+- CI runs hardware-free checks directly and verifies committed local evidence;
+  CI is not the producer of hardware evidence.
 
 ```yaml
 verification_model:
@@ -28,8 +27,8 @@ verification_model:
     - net0
     - net1
   release_gate: hardware-backed HIL contract evidence
-  host_unit_tests: incoming in Wave A, populated in Wave E
-  ci_gate: incoming in Wave E, checks committed evidence and host tests
+  host_unit_tests: populated in Wave E
+  ci_gate: Wave E, checks committed evidence and host tests
   archived_scorecards_are_current_claims: false
   nci_status: requires fresh local evidence before reassertion
   program:
@@ -49,4 +48,5 @@ source ~/.zshrc
 pio run -e default -e net0 -e net1
 scripts/run_host_tests.sh
 .venv/bin/python -m pytest tests/test_docs_alignment.py
+python scripts/verify_evidence.py
 ```

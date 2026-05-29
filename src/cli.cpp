@@ -390,62 +390,6 @@ bool parse_onoff(const char* token, bool* value) {
   return parse_bool_value(token, value);
 }
 
-bool parse_led_manual_mode_token(const char* token, LedManualMode* mode) {
-  if (!token || !mode) {
-    return false;
-  }
-  if (strcasecmp(token, "auto") == 0) {
-    *mode = LedManualMode::kAuto;
-    return true;
-  }
-  if (strcasecmp(token, "off") == 0 || std::strcmp(token, "0") == 0) {
-    *mode = LedManualMode::kOff;
-    return true;
-  }
-  if (strcasecmp(token, "on") == 0 || std::strcmp(token, "1") == 0) {
-    *mode = LedManualMode::kOn;
-    return true;
-  }
-  if (strcasecmp(token, "blink") == 0 || strcasecmp(token, "normal") == 0) {
-    *mode = LedManualMode::kBlinkNormal;
-    return true;
-  }
-  if (strcasecmp(token, "fast") == 0) {
-    *mode = LedManualMode::kBlinkFast;
-    return true;
-  }
-  if (strcasecmp(token, "slow") == 0) {
-    *mode = LedManualMode::kBlinkSlow;
-    return true;
-  }
-  if (strcasecmp(token, "flash") == 0) {
-    *mode = LedManualMode::kFlash;
-    return true;
-  }
-  return false;
-}
-
-const char* led_manual_mode_name(LedManualMode mode) {
-  switch (mode) {
-    case LedManualMode::kAuto:
-      return "auto";
-    case LedManualMode::kOff:
-      return "off";
-    case LedManualMode::kOn:
-      return "on";
-    case LedManualMode::kBlinkNormal:
-      return "blink";
-    case LedManualMode::kBlinkFast:
-      return "fast";
-    case LedManualMode::kBlinkSlow:
-      return "slow";
-    case LedManualMode::kFlash:
-      return "flash";
-    default:
-      return "auto";
-  }
-}
-
 int log_set_id_error(const char* kind,
                      luce::parse::IdSetError result,
                      const luce::parse::IdSetIssue& issue,

@@ -17,8 +17,15 @@
   - [tests/test_mqtt_contract.py](/Users/aarusso/Development/Luce/tests/test_mqtt_contract.py)
 - Network lifecycle and serial parser matrix: reboot capture assertions for Wi-Fi/NTP/mDNS lifecycle tags and serial CLI parser/error handling matrix.
   - [tests/test_serial_cli_contract.py](/Users/aarusso/Development/Luce/tests/test_serial_cli_contract.py)
+- First-party host unit tests: deterministic native checks for `id_set_parser`,
+  `relay_logic`, `backoff`, `json_writer`, `str_utils`, `nvs_helpers`, PKI pure
+  helpers, HTTP route decision ordering, and LED manual-mode parsing.
+  - [test/host](/Users/aarusso/Development/Luce/test/host)
+  - [scripts/run_host_tests.sh](/Users/aarusso/Development/Luce/scripts/run_host_tests.sh)
 
 ## Remaining notes
 
 - OTA cadence assertions are configuration-sensitive and may skip when `ota.interval_s=0` or large.
 - MQTT reconnect/backoff test requires managed broker mode (`--spawn-test-mqtt-broker`) to exercise outage/recovery deterministically.
+- Hardware-free CI can run host tests and docs alignment directly; HIL remains
+  local evidence consumed through the evidence manifest.

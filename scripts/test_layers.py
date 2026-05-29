@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -105,6 +106,21 @@ def run_cmd(
         append_log(log_path, proc.stderr)
     append_log(log_path, f"command_exit={proc.returncode}")
     return proc.returncode
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def git_sha(repo_root: Path) -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
+    except subprocess.CalledProcessError:
+        return "unknown"
 
 
 def platformio_shell_command(repo_root: Path, args: Sequence[str]) -> str:
@@ -946,6 +962,49 @@ def write_summaries(out_dir: Path, run_id: str, results: list[LayerResult]) -> N
     js.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def write_evidence_manifest(repo_root: Path, out_dir: Path, run_id: str, results: list[LayerResult], manifest_path: Path) -> None:
+    summary_json = out_dir / "summary.json"
+    local_artifacts = []
+    for path in [summary_json, out_dir / "summary.md"]:
+        if path.exists():
+            local_artifacts.append({"path": str(path.relative_to(repo_root)), "sha256": sha256_file(path)})
+    checks = [
+        {
+            "name": f"layer:{r.layer}",
+            "status": r.status,
+            "required": r.status != "DESELECTED",
+            "log": str(Path(r.log).relative_to(repo_root)) if Path(r.log).is_absolute() and Path(r.log).exists() else r.log,
+            "details": r.details,
+        }
+        for r in results
+    ]
+    source = {"git_sha": git_sha(repo_root), "target": "test_layers"}
+    evidence_path = manifest_path.with_name("evidence-latest.json")
+    evidence = {
+        "schema": 1,
+        "run_id": run_id,
+        "source": source,
+        "checks": checks,
+        "local_artifacts": local_artifacts,
+    }
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    manifest = {
+        "schema": 1,
+        "run_id": run_id,
+        "source": source,
+        "checks": checks,
+        "artifacts": [
+            {
+                "path": str(evidence_path.relative_to(repo_root)),
+                "sha256": sha256_file(evidence_path),
+            }
+        ],
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="scripts/test_layers.py",
@@ -1051,6 +1110,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     parser.add_argument("--diag-root", default=os.getenv("LUCE_DIAG_DIR", "docs/work/diag"), help="Diagnostics root path.")
     parser.add_argument("--run-id", default="", help="Optional run id override; default UTC timestamp.")
+    parser.add_argument(
+        "--write-evidence-manifest",
+        action="store_true",
+        help="Refresh docs/governance/health/evidence-manifest.json from this local run.",
+    )
     parser.add_argument(
         "--wokwi-timeout-ms",
         type=int,
@@ -1203,6 +1267,14 @@ def main(argv: Sequence[str]) -> int:
             print("test-mqtt-broker: STOPPED")
 
     write_summaries(out_dir, run_id, results)
+    if args.write_evidence_manifest:
+        write_evidence_manifest(
+            repo_root,
+            out_dir,
+            run_id,
+            results,
+            repo_root / "docs" / "governance" / "health" / "evidence-manifest.json",
+        )
 
     failed = any(r.status == "FAIL" for r in results)
     print(f"summary: {out_dir / 'summary.md'}")

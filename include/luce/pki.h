@@ -4,24 +4,10 @@
 #include <cstdint>
 
 #include "esp_err.h"
+#include "luce/pki_helpers.h"
 
 namespace luce {
 namespace pki {
-
-enum class Role : std::uint8_t {
-  kHttpsServer = 0,
-  kMqttClient,
-  kOtaClient,
-};
-
-enum class State : std::uint8_t {
-  kEmpty = 0,
-  kKeyReady,
-  kCsrReady,
-  kCertStaged,
-  kActive,
-  kError,
-};
 
 struct Status {
   State state = State::kEmpty;
@@ -39,10 +25,6 @@ struct Status {
   char subject[128] = {};
   char issuer[128] = {};
 };
-
-const char* role_name(Role role);
-const char* state_name(State state);
-Role role_from_token(const char* token, bool* ok = nullptr);
 
 Status get_status(Role role);
 esp_err_t refresh(Role role);

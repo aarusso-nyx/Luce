@@ -11,14 +11,14 @@
   - `default`: `docs/work/diag/20260527_232623/build/default/build.txt`
   - `net0`: `docs/work/diag/20260527_232623/build/net0/build.txt`
   - `net1`: `docs/work/diag/20260527_232610/build/net1/build.txt`
-- test: PARTIAL_PASS; filesystem docs-alignment pytest passed with `.venv/bin/python -m pytest tests/test_docs_alignment.py`. Hardware-backed boot/protocol layers are not reproduced in this run.
+- test: PARTIAL_PASS; host unit tests and filesystem docs-alignment pytest pass. Hardware-backed boot/protocol layers are not reproduced in this run.
 - upload: SKIPPED (no hardware upload validated in this evidence update).
 - boot: SKIPPED (no upload path validated in this evidence update).
 - e2e: PREREQ_MISSING for NET1 (device IP, tokens, broker, and hardware prerequisites required).
 
 ## Notes
 
-- Native host testing retired by policy.
+- Native host testing is active for pure helper logic; hardware remains required for firmware release evidence.
 - Canonical test target is real firmware on `net1`.
 - Historical PASS entries are retained in archived scorecards/logs only; this file describes current reproducibility status.
 - Local `platformio` at `/opt/homebrew/bin/platformio` still has a broken interpreter, but `source ~/.zshrc` exposes a working `pio` at `~/.platformio/penv/bin/pio`.

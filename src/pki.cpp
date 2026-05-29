@@ -15,7 +15,6 @@
 
 #include "luce/nvs_helpers.h"
 #include "luce/runtime_state.h"
-#include "luce/str_utils.h"
 
 extern "C" {
 #include "mbedtls/md.h"
@@ -135,12 +134,7 @@ void format_subject(Role role, char* out, std::size_t out_size) {
     return;
   }
   std::uint8_t mac[6] = {};
-  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
-    std::snprintf(out, out_size, "CN=luce-%02x%02x%02x%02x%02x%02x-%s,O=LUCE",
-                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], role_name(role));
-    return;
-  }
-  std::snprintf(out, out_size, "CN=luce-device-%s,O=LUCE", role_name(role));
+  make_csr_subject(role, esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK ? mac : nullptr, out, out_size);
 }
 
 void format_sha256_fingerprint(const unsigned char* data, std::size_t len, char* out, std::size_t out_size) {
@@ -156,14 +150,7 @@ void format_sha256_fingerprint(const unsigned char* data, std::size_t len, char*
   if (sha256 == nullptr || mbedtls_md(sha256, data, len, digest) != 0) {
     return;
   }
-  std::size_t used = 0;
-  for (std::size_t i = 0; i < sizeof(digest) && used + 3 < out_size; ++i) {
-    const int written = std::snprintf(out + used, out_size - used, "%s%02X", i == 0 ? "" : ":", digest[i]);
-    if (written <= 0) {
-      break;
-    }
-    used += static_cast<std::size_t>(written);
-  }
+  format_hex_fingerprint(digest, sizeof(digest), out, out_size);
 }
 
 bool validate_pair(Role role,
@@ -292,55 +279,6 @@ void ensure_loaded(Role role) {
 }
 
 }  // namespace
-
-const char* role_name(Role role) {
-  switch (role) {
-    case Role::kHttpsServer:
-      return "https_server";
-    case Role::kMqttClient:
-      return "mqtt_client";
-    case Role::kOtaClient:
-      return "ota_client";
-  }
-  return "https_server";
-}
-
-const char* state_name(State state) {
-  switch (state) {
-    case State::kEmpty:
-      return "empty";
-    case State::kKeyReady:
-      return "key_present";
-    case State::kCsrReady:
-      return "csr_ready";
-    case State::kCertStaged:
-      return "cert_staged";
-    case State::kActive:
-      return "cert_committed";
-    case State::kError:
-      return "error";
-  }
-  return "error";
-}
-
-Role role_from_token(const char* token, bool* ok) {
-  bool matched = true;
-  Role role = Role::kHttpsServer;
-  if (luce::str::ascii_iequals(token, "https") || luce::str::ascii_iequals(token, "https_server") ||
-      luce::str::ascii_iequals(token, "http")) {
-    role = Role::kHttpsServer;
-  } else if (luce::str::ascii_iequals(token, "mqtt") || luce::str::ascii_iequals(token, "mqtt_client")) {
-    role = Role::kMqttClient;
-  } else if (luce::str::ascii_iequals(token, "ota") || luce::str::ascii_iequals(token, "ota_client")) {
-    role = Role::kOtaClient;
-  } else {
-    matched = false;
-  }
-  if (ok != nullptr) {
-    *ok = matched;
-  }
-  return role;
-}
 
 Status get_status(Role role) {
   (void)load_role(role);

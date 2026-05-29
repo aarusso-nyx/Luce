@@ -1,6 +1,7 @@
 # Firmware Test Workflow
 
-LUCE test policy is firmware-only on real hardware.
+LUCE uses hardware-free checks for pure logic and hardware-backed evidence for
+firmware behavior.
 
 ## Canonical target
 
@@ -30,12 +31,12 @@ What it does:
 
 ## Test policy note
 
-This repository uses firmware-only validation on real hardware.
-
-Native host tests and stubs were removed.
+Native host tests cover pure C++ helpers without ESP32 hardware. They do not
+replace firmware, serial, relay, button, LCD, I2C, or network contract evidence.
 
 ## Canonical Test Path
 
+- Hardware-free pure logic: `scripts/run_host_tests.sh`
 - Build firmware: `./scripts/luce.sh build --env net1`
 - Flash + capture + assert boot markers:
   - `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45`
@@ -61,6 +62,20 @@ Dependencies:
 - `.venv/bin/python -m pip install -r tests/requirements.txt`
 
 Homebrew-managed Python may reject system installs. Use the repo-local `.venv` path above for local contract-test dependencies.
+
+## Host Unit Tests
+
+Run from the repository root:
+
+```sh
+scripts/run_host_tests.sh
+```
+
+The host lane builds native C++17 tests for `id_set_parser`, `relay_logic`,
+`backoff`, `json_writer`, `str_utils`, `nvs_helpers` status handling, PKI pure
+helpers, HTTP route decisions, and LED manual-mode parsing. It writes
+`summary.json`, JUnit XML, and logs under
+`docs/work/diag/<run_id>/host-tests/`.
 
 ## Wokwi Simulated Lane
 
@@ -106,6 +121,8 @@ Notes:
 
 Outputs:
 
+- `docs/work/diag/<run_id>/host-tests/summary.json`
+- `docs/work/diag/<run_id>/host-tests/junit.xml`
 - `docs/work/diag/<run_id>/test-layers/<layer>.log`
 - `docs/work/diag/<run_id>/test-layers/junit-<layer>.xml` (pytest layers)
 - `docs/work/diag/<run_id>/test-layers/summary.md`

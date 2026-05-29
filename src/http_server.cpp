@@ -33,6 +33,7 @@
 #include "luce/mqtt.h"
 #include "luce/ota.h"
 #include "luce_build.h"
+#include "luce/http_route_logic.h"
 #include "luce/json_writer.h"
 #include "luce/nvs_helpers.h"
 #include "luce/pki.h"
@@ -263,63 +264,6 @@ bool validate_auth(httpd_req_t* req) {
   }
   return std::strlen(header) == static_cast<std::size_t>(written) &&
          std::strcmp(header, expected) == 0;
-}
-
-bool parse_bool_token(const char* text, bool* out_value) {
-  return luce::str::parse_bool_token(text, out_value);
-}
-
-bool parse_led_manual_mode_token(const char* text, LedManualMode* out_mode) {
-  if (!text || !out_mode || text[0] == '\0') {
-    return false;
-  }
-  if (strcasecmp(text, "auto") == 0) {
-    *out_mode = LedManualMode::kAuto;
-    return true;
-  }
-  if (strcasecmp(text, "blink") == 0 || strcasecmp(text, "normal") == 0) {
-    *out_mode = LedManualMode::kBlinkNormal;
-    return true;
-  }
-  if (strcasecmp(text, "fast") == 0) {
-    *out_mode = LedManualMode::kBlinkFast;
-    return true;
-  }
-  if (strcasecmp(text, "slow") == 0) {
-    *out_mode = LedManualMode::kBlinkSlow;
-    return true;
-  }
-  if (strcasecmp(text, "flash") == 0) {
-    *out_mode = LedManualMode::kFlash;
-    return true;
-  }
-  bool on = false;
-  if (parse_bool_token(text, &on)) {
-    *out_mode = on ? LedManualMode::kOn : LedManualMode::kOff;
-    return true;
-  }
-  return false;
-}
-
-const char* led_manual_mode_name(LedManualMode mode) {
-  switch (mode) {
-    case LedManualMode::kAuto:
-      return "auto";
-    case LedManualMode::kOff:
-      return "off";
-    case LedManualMode::kOn:
-      return "on";
-    case LedManualMode::kBlinkNormal:
-      return "blink";
-    case LedManualMode::kBlinkFast:
-      return "fast";
-    case LedManualMode::kBlinkSlow:
-      return "slow";
-    case LedManualMode::kFlash:
-      return "flash";
-    default:
-      return "auto";
-  }
 }
 
 bool parse_u32_token(const char* text, std::uint32_t* out_value) {
@@ -789,14 +733,14 @@ esp_err_t route_dispatch_trampoline(httpd_req_t* req) {
   if (spec == nullptr) {
     return send_method_not_allowed(req, "GET");
   }
-  const std::uint16_t method_bit = (req->method >= 0 && req->method < 16)
-                                       ? static_cast<std::uint16_t>(1u << req->method)
-                                       : 0u;
-  if ((spec->method_mask & method_bit) == 0u) {
-    return send_method_not_allowed(req, spec->methods_label);
-  }
-  if (spec->requires_auth && !validate_auth(req)) {
-    return send_unauthorized(req);
+  const bool authenticated = !spec->requires_auth || validate_auth(req);
+  switch (luce::http::route_dispatch_decision(spec->method_mask, req->method, spec->requires_auth, authenticated)) {
+    case luce::http::DispatchDecision::kMethodNotAllowed:
+      return send_method_not_allowed(req, spec->methods_label);
+    case luce::http::DispatchDecision::kUnauthorized:
+      return send_unauthorized(req);
+    case luce::http::DispatchDecision::kInvoke:
+      break;
   }
   return spec->impl(req);
 }

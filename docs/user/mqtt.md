@@ -24,7 +24,8 @@ MQTT client with inbound control subscriptions and outbound telemetry/compatibil
 
 - Enabled only when `mqtt/enabled = 1`.
 - If no IP yet, service remains initialized in `waiting_ip` state until networking is ready.
-- Connect/reconnect with exponential backoff.
+- Connect/reconnect with exponential backoff from `1000ms` to `300000ms`
+  using deterministic bounded jitter from `luce::backoff`.
 - TLS broker verification still requires configured CA material when TLS is enabled. If PKI role `mqtt_client` is active, the client also presents that certificate and private key for mutual TLS. If the role is empty, incomplete, staged, or in error, client identity stays dormant and CA verification still fails closed.
 - Subscribes to inbound control topics on connect (base topic):
   - `config/#`
@@ -83,7 +84,7 @@ This document describes implemented MQTT behavior. Automated contract enforcemen
   - reboot persistence verification for `config/http/token`
 - Partially enforced:
   - broader `config/*` key matrix is implemented but not exhaustively reboot-verified for every key in a single automated run
-  - reconnect/backoff timing characteristics are validated functionally (disconnect/reconnect), not with strict timing bounds
+  - reconnect/backoff integration is validated functionally (disconnect/reconnect), while the pure backoff bounds and deterministic jitter are covered by host unit tests
 
 Unsupported legacy control topics now produce deterministic compatibility responses under:
 - `compat/unsupported`

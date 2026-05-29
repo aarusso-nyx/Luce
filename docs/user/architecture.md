@@ -37,6 +37,24 @@ Network services are started only when their dependency state is available.
 
 - Relay/button masks are maintained in `src/i2c_io.cpp` and exposed through the I/O helper API.
 - Runtime service states are stored in per-subsystem runtime structs.
+- I/O mask state is protected by `g_io_mask_lock`; relay operations use the
+  recursive relay operation mutex. Network services read I/O snapshots through
+  helper APIs instead of sharing the lock directly.
+- PKI is a leaf module. HTTP, MQTT, and OTA may consume PKI material, but PKI
+  does not call back into network services while holding NVS state.
+
+## Degraded Mode
+
+If MCP23017 hardware is unavailable, firmware enters hardware-degraded mode.
+Relay/button control paths refuse unsafe I/O, while Wi-Fi, TCP CLI, HTTPS, MQTT,
+OTA, status JSON, and logs continue to run for diagnostics.
+
+## Verification Model
+
+Pure helper logic is covered by native host tests in `test/host`. Hardware-free
+CI runs those tests, docs alignment, and formatting checks. Device behavior
+still requires local firmware builds and hardware-backed HIL evidence, with the
+committed evidence manifest validated by CI.
 
 ## Verification
 
@@ -44,6 +62,7 @@ Fresh evidence for this model should be generated locally under `docs/work/diag/
 
 - `./scripts/luce.sh health`
 - `./scripts/luce.sh build --env net1`
+- `scripts/run_host_tests.sh`
 - `./scripts/luce.sh test --layers boot --env net1 --boot-duration 45` when hardware is attached
 
 Governance status is summarized in `docs/governance/compliance/scorecard-current.md`.
